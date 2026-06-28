@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>com.aidevplatform</groupId>
+        <artifactId>ai-customerservice-backend</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+    </parent>
+    <artifactId>ai-knowledge</artifactId>
+    <packaging>pom</packaging>
+    <name>AI Knowledge - 知识库模块</name>
+    <modules>
+        <module>knowledge-service</module>
+        <module>knowledge-client</module>
+    </modules>
+</project>

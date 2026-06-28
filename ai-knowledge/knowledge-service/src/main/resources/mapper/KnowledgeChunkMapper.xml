@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+    "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.aidevplatform.knowledge.infrastructure.persistence.mapper.KnowledgeChunkMapper">
+
+    <!--
+        ResultMap：将查询结果列别名映射到 ChunkHitDO 字段（下划线转驼峰）
+    -->
+    <resultMap id="ChunkHitResult"
+               type="com.aidevplatform.knowledge.infrastructure.persistence.do_.ChunkHitDO">
+        <id     property="chunkId"       column="chunk_id"/>
+        <result property="docId"         column="doc_id"/>
+        <result property="content"       column="content"/>
+        <result property="breadcrumb"    column="breadcrumb"/>
+        <result property="parentChunkId" column="parent_chunk_id"/>
+        <result property="score"         column="score"/>
+    </resultMap>
+
+    <!--
+        向量相似度检索（pgvector 余弦距离 <=> 操作符）。
+        使用 CDATA 包裹 SQL，避免 <=> 和 < 被 XML 解析器误识别。
+        单表查询：kb_id / doc_status 冗余在 knowledge_chunk，性能优于 JOIN。
+        idx_chunk_kb_status 部分索引覆盖 WHERE 条件，提升查询效率。
+    -->
+    <select id="selectByVector" resultMap="ChunkHitResult">
+        <![CDATA[
+        SELECT id              AS chunk_id,
+               doc_id,
+               content,
+               breadcrumb,
+               parent_chunk_id,
+               1 - (content_vector <=> #{vec}::vector) AS score
+        FROM knowledge_chunk
+        WHERE kb_id          = #{kbId}
+          AND doc_status     = 'PUBLISHED'
+          AND retrieval_weight > 0
+        ORDER BY content_vector <=> #{vec}::vector
+        LIMIT #{topK}
+        ]]>
+    </select>
+
+    <!--
+        全文检索（PostgreSQL ts_rank_cd TF-IDF 近似，依赖 pg_jieba 扩展）。
+        使用 CDATA 包裹 SQL，避免 @@ 运算符被 XML 误解析。
+        pg_jieba 未安装时，将 'jieba' 改为 'simple'（降级，中文效果变差）。
+    -->
+    <select id="selectByFullText" resultMap="ChunkHitResult">
+        <![CDATA[
+        SELECT id              AS chunk_id,
+               doc_id,
+               content,
+               breadcrumb,
+               parent_chunk_id,
+               ts_rank_cd(to_tsvector('jieba', content),
+                          plainto_tsquery('jieba', #{query})) AS score
+        FROM knowledge_chunk
+        WHERE kb_id          = #{kbId}
+          AND doc_status     = 'PUBLISHED'
+          AND retrieval_weight > 0
+          AND to_tsvector('jieba', content)
+              @@ plainto_tsquery('jieba', #{query})
+        ORDER BY score DESC
+        LIMIT #{topK}
+        ]]>
+    </select>
+
+</mapper>

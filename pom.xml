@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.aidevplatform</groupId>
+    <artifactId>ai-customerservice-backend</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>pom</packaging>
+    <name>AI CustomerService Backend</name>
+    <description>智能客服系统后端：知识库 + 对话 + 认证授权</description>
+
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.release>17</maven.compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!-- 框架版本统一管理 -->
+        <spring-boot.version>3.3.5</spring-boot.version>
+        <mybatis-plus.version>3.5.7</mybatis-plus.version>
+        <sa-token.version>1.39.0</sa-token.version>
+        <flyway.version>10.15.0</flyway.version>
+        <springdoc.version>2.6.0</springdoc.version>
+
+        <!-- 工具库版本 -->
+        <lombok.version>1.18.34</lombok.version>
+        <pdfbox.version>3.0.3</pdfbox.version>
+        <jsoup.version>1.18.3</jsoup.version>
+        <poi.version>5.3.0</poi.version>
+        <langchain4j.version>0.36.2</langchain4j.version>
+        <resilience4j.version>2.2.0</resilience4j.version>
+        <okhttp.version>4.12.0</okhttp.version>
+
+        <!-- 内部模块版本 -->
+        <cs.common.version>1.0.0-SNAPSHOT</cs.common.version>
+    </properties>
+
+    <modules>
+        <module>ai-common</module>
+        <module>ai-knowledge</module>
+        <module>ai-conversation</module>
+        <module>ai-auth</module>
+    </modules>
+
+    <dependencyManagement>
+        <dependencies>
+            <!-- ===== Spring Boot BOM（统一管理 Spring 生态版本） ===== -->
+            <dependency>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-dependencies</artifactId>
+                <version>${spring-boot.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- ===== 内部公共模块 ===== -->
+            <dependency>
+                <groupId>com.aidevplatform.customerservice</groupId>
+                <artifactId>common-core</artifactId>
+                <version>${cs.common.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.aidevplatform.customerservice</groupId>
+                <artifactId>common-web</artifactId>
+                <version>${cs.common.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.aidevplatform.customerservice</groupId>
+                <artifactId>common-client</artifactId>
+                <version>${cs.common.version}</version>
+            </dependency>
+
+            <!-- ===== ORM ===== -->
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+                <version>${mybatis-plus.version}</version>
+            </dependency>
+
+            <!-- ===== Sa-Token（认证授权） ===== -->
+            <dependency>
+                <groupId>cn.dev33</groupId>
+                <artifactId>sa-token-spring-boot3-starter</artifactId>
+                <version>${sa-token.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.dev33</groupId>
+                <artifactId>sa-token-redis-jackson</artifactId>
+                <version>${sa-token.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>cn.dev33</groupId>
+                <artifactId>sa-token-jwt</artifactId>
+                <version>${sa-token.version}</version>
+            </dependency>
+
+            <!-- ===== 数据库迁移 ===== -->
+            <dependency>
+                <groupId>org.flywaydb</groupId>
+                <artifactId>flyway-core</artifactId>
+                <version>${flyway.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.flywaydb</groupId>
+                <artifactId>flyway-database-postgresql</artifactId>
+                <version>${flyway.version}</version>
+            </dependency>
+
+            <!-- ===== API 文档 ===== -->
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+
+            <!-- ===== 密码加密 ===== -->
+            <dependency>
+                <groupId>org.springframework.security</groupId>
+                <artifactId>spring-security-crypto</artifactId>
+                <version>6.3.3</version>
+            </dependency>
+
+            <!-- ===== HTTP 客户端 ===== -->
+            <dependency>
+                <groupId>com.squareup.okhttp3</groupId>
+                <artifactId>okhttp</artifactId>
+                <version>${okhttp.version}</version>
+            </dependency>
+
+            <!-- ===== 文档解析 ===== -->
+            <dependency>
+                <groupId>org.apache.pdfbox</groupId>
+                <artifactId>pdfbox</artifactId>
+                <version>${pdfbox.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.jsoup</groupId>
+                <artifactId>jsoup</artifactId>
+                <version>${jsoup.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.poi</groupId>
+                <artifactId>poi-ooxml</artifactId>
+                <version>${poi.version}</version>
+            </dependency>
+
+            <!-- ===== AI / 熔断 ===== -->
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-spring-boot-starter</artifactId>
+                <version>${langchain4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.github.resilience4j</groupId>
+                <artifactId>resilience4j-spring-boot3</artifactId>
+                <version>${resilience4j.version}</version>
+            </dependency>
+
+            <!-- ===== 工具 ===== -->
+            <dependency>
+                <groupId>org.projectlombok</groupId>
+                <artifactId>lombok</artifactId>
+                <version>${lombok.version}</version>
+                <scope>provided</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>3.13.0</version>
+                    <configuration>
+                        <release>17</release>
+                        <encoding>UTF-8</encoding>
+                    </configuration>
+                </plugin>
+                <!--
+                    Spring Boot 打包插件：统一排除 lombok（编译期工具，不需打入 fat jar）。
+                    各可执行服务模块只需声明 plugin 引用，无需重复 excludes 配置。
+                -->
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>${spring-boot.version}</version>
+                    <configuration>
+                        <excludes>
+                            <exclude>
+                                <groupId>org.projectlombok</groupId>
+                                <artifactId>lombok</artifactId>
+                            </exclude>
+                        </excludes>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+</project>

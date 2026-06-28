@@ -1,0 +1,68 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: cs-auth-service
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ai_customerservice
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+  flyway:
+    schemas: cs_auth
+    locations: classpath:db/migration
+    default-schema: cs_auth
+    create-schemas: true
+    baseline-on-migrate: true
+    baseline-version: 0
+    validate-on-migrate: false
+    out-of-order: false
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  mapper-locations: classpath:mapper/*.xml
+  global-config:
+    db-config:
+      logic-delete-field: deletedAt
+      logic-delete-value: "NOW()"
+      logic-not-delete-value: "null"
+
+# Sa-Token JWT 配置
+sa-token:
+  token-name: Authorization
+  timeout: 28800
+  token-prefix: "Bearer"
+  is-read-header: true
+  is-read-cookie: false
+  max-login-count: 5
+  jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}
+
+# SpringDoc OpenAPI
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+# 客服认证服务自定义配置
+cs:
+  auth:
+    default-avatar: "https://unpkg.com/@vbenjs/static-source@0.1.7/source/avatar-v2.webp"
+    # 登录失败锁定策略
+    max-fail-count: 5
+    lock-duration-minutes: 30
+
+logging:
+  level:
+    com.aidevplatform.customerservice.auth: DEBUG
+    org.springframework.web: INFO

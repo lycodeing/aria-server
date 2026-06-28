@@ -1,0 +1,25 @@
+# Java 编译产物
+target/
+*.class
+*.jar
+*.war
+
+# Maven
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+
+# IDEA
+.idea/
+*.iws
+*.iml
+*.ipr
+.DS_Store
+
+# 日志
+*.log
+logs/
+
+# 环境变量（不提交密钥）
+.env
+.env.local

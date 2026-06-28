@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.aidevplatform.customerservice.auth.infrastructure.persistence.menu.MenuMapper">
+
+    <!--
+        查询用户拥有的菜单列表（通过角色-菜单关联）。
+        仅返回 status=active 且 is_visible=true 的菜单，用于构建前端动态路由。
+        BUTTON 类型 is_visible=false，不生成路由但会被权限码接口单独查询。
+    -->
+    <select id="findMenusByUserId" resultType="com.aidevplatform.customerservice.auth.infrastructure.persistence.menu.MenuDO">
+        SELECT DISTINCT m.*
+        FROM cs_auth.sys_menu m
+                 INNER JOIN cs_auth.sys_role_menu rm ON rm.menu_id = m.id
+                 INNER JOIN cs_auth.sys_user_role ur ON ur.role_id = rm.role_id
+        WHERE ur.user_id = #{userId}
+          AND m.status = 'active'
+          AND m.is_visible = true
+        ORDER BY m.sort_order
+    </select>
+
+    <!-- 查询角色已关联的菜单 ID 列表 -->
+    <select id="findMenuIdsByRoleId" resultType="java.lang.Long">
+        SELECT menu_id
+        FROM cs_auth.sys_role_menu
+        WHERE role_id = #{roleId}
+    </select>
+
+    <!-- 删除角色的所有菜单关联（先删后批量插，保证幂等） -->
+    <delete id="deleteRoleMenus">
+        DELETE FROM cs_auth.sys_role_menu
+        WHERE role_id = #{roleId}
+    </delete>
+
+    <!--
+        批量插入角色-菜单关联记录（单次 SQL，避免 N 次独立 INSERT）。
+        ON CONFLICT DO NOTHING 防止重复插入。
+    -->
+    <insert id="batchInsertRoleMenus">
+        INSERT INTO cs_auth.sys_role_menu (role_id, menu_id)
+        VALUES
+        <foreach collection="menuIds" item="menuId" separator=",">
+            (#{roleId}, #{menuId})
+        </foreach>
+        ON CONFLICT DO NOTHING
+    </insert>
+
+</mapper>

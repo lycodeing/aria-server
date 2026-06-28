@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.aidevplatform.customerservice.auth.infrastructure.persistence.role.RoleMapper">
+
+    <!-- 查询用户拥有的角色列表（状态为 active） -->
+    <select id="findRolesByUserId" resultType="com.aidevplatform.customerservice.auth.infrastructure.persistence.role.RoleDO">
+        SELECT r.*
+        FROM cs_auth.sys_role r
+                 INNER JOIN cs_auth.sys_user_role ur ON r.id = ur.role_id
+        WHERE ur.user_id = #{userId}
+          AND r.status = 'active'
+    </select>
+
+    <!-- 删除角色的所有接口权限关联（先清后插，保证幂等） -->
+    <delete id="deleteRolePermissions">
+        DELETE FROM cs_auth.sys_role_permission
+        WHERE role_id = #{roleId}
+    </delete>
+
+    <!-- 插入角色-接口权限关联记录 -->
+    <insert id="insertRolePermission">
+        INSERT INTO cs_auth.sys_role_permission (role_id, permission_id)
+        VALUES (#{roleId}, #{permissionId})
+    </insert>
+
+    <!-- 查询角色数据权限范围类型：ALL/DEPT_TREE/DEPT_ONLY/CUSTOM_DEPT/SELF -->
+    <select id="findScopeTypeByRoleId" resultType="java.lang.String">
+        SELECT scope_type
+        FROM cs_auth.sys_role_data_scope
+        WHERE role_id = #{roleId}
+    </select>
+
+    <!--
+        插入或更新角色数据权限范围（UPSERT）。
+        ON CONFLICT 保证同一 role_id 不重复插入。
+    -->
+    <insert id="upsertDataScope">
+        INSERT INTO cs_auth.sys_role_data_scope (role_id, scope_type)
+        VALUES (#{roleId}, #{scopeType})
+        ON CONFLICT (role_id) DO UPDATE
+            SET scope_type = EXCLUDED.scope_type,
+                updated_at = NOW()
+    </insert>
+
+</mapper>

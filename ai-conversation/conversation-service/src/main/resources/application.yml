@@ -1,0 +1,32 @@
+server:
+  port: 8082
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: conversation-service
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+
+# 天翼云 AI 配置（DeepSeek-V4-Flash）
+ai:
+  ctyun:
+    base-url: https://wishub-x6.ctyun.cn/v1
+    api-key: c4747b2f3e3e49308b5fb0ba256cb70e
+    model: DeepSeek-V4-Flash
+    timeout-seconds: 60
+
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+
+logging:
+  level:
+    com.aidevplatform.conversation: DEBUG
+    org.springframework.web.reactive: DEBUG

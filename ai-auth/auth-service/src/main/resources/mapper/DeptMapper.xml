@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="com.aidevplatform.customerservice.auth.infrastructure.persistence.dept.DeptMapper">
+
+    <!-- 查询用户所属部门 ID 列表 -->
+    <select id="findDeptIdsByUserId" resultType="java.lang.Long">
+        SELECT d.id
+        FROM cs_auth.sys_dept d
+                 INNER JOIN cs_auth.sys_user_dept ud ON d.id = ud.dept_id
+        WHERE ud.user_id = #{userId}
+          AND d.deleted_at IS NULL
+    </select>
+
+    <!--
+        查询部门子树所有 ID（含自身），使用 PostgreSQL 递归 CTE。
+        用于 DEPT_TREE 数据权限范围计算。
+    -->
+    <select id="findSubtreeDeptIds" resultType="java.lang.Long">
+        WITH RECURSIVE subtree AS (
+            SELECT id FROM cs_auth.sys_dept WHERE id = #{deptId} AND deleted_at IS NULL
+            UNION ALL
+            SELECT d.id FROM cs_auth.sys_dept d
+                                 INNER JOIN subtree s ON d.parent_id = s.id
+            WHERE d.deleted_at IS NULL
+        )
+        SELECT id FROM subtree
+    </select>
+
+    <!--
+        查询角色自定义部门列表（scope_type = CUSTOM_DEPT 时生效）。
+        从 sys_role_data_scope 的 custom_dept_ids JSONB 字段中展开部门 ID。
+    -->
+    <select id="findCustomDeptIdsByRoleId" resultType="java.lang.Long">
+        SELECT jsonb_array_elements_text(custom_dept_ids)::BIGINT AS dept_id
+        FROM cs_auth.sys_role_data_scope
+        WHERE role_id = #{roleId}
+          AND scope_type = 'CUSTOM_DEPT'
+    </select>
+
+    <!-- 插入用户-部门关联 -->
+    <insert id="insertUserDept">
+        INSERT INTO cs_auth.sys_user_dept (user_id, dept_id, is_primary)
+        VALUES (#{userId}, #{deptId}, #{isPrimary})
+        ON CONFLICT (user_id, dept_id) DO NOTHING
+    </insert>
+
+    <!-- 删除用户的所有部门关联（重新分配前先清空） -->
+    <delete id="deleteUserDepts">
+        DELETE FROM cs_auth.sys_user_dept
+        WHERE user_id = #{userId}
+    </delete>
+
+</mapper>
