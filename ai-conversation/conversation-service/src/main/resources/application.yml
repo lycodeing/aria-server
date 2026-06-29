@@ -6,19 +6,86 @@ server:
 spring:
   application:
     name: conversation-service
+
+  # -------- 数据库（对话历史持久化） --------
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ai_customerservice
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+
+  # -------- Flyway（自动建表） --------
+  flyway:
+    schemas: cs_conversation
+    locations: classpath:db/migration
+    default-schema: cs_conversation
+    create-schemas: true
+    baseline-on-migrate: true
+    baseline-version: 0
+    validate-on-migrate: false
+
+  # -------- Redis --------
   data:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
 
-# 天翼云 AI 配置（DeepSeek-V4-Flash）
+  # -------- RabbitMQ（对话消息可靠持久化） --------
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    # C1: Publisher Confirms — Broker 持久化确认后才返回，保障发布端可靠性
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    listener:
+      simple:
+        # C2: 启用消费端重试，retry 耗尽后 nack(requeue=false) → DLX → DLQ
+        # 不配置此项时默认 nack(requeue=true)，消息永远不进 DLQ，无限循环
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1000
+          multiplier: 2.0
+          max-interval: 10000
+
+# -------- 天翼云 AI 配置（DeepSeek-V4-Flash） --------
 ai:
   ctyun:
     base-url: https://wishub-x6.ctyun.cn/v1
-    api-key: c4747b2f3e3e49308b5fb0ba256cb70e
+    # 【安全】API Key 必须通过环境变量 AI_CTYUN_API_KEY 注入，未设置时应用拒绝启动
+    api-key: ${AI_CTYUN_API_KEY}
     model: DeepSeek-V4-Flash
     timeout-seconds: 60
+
+# -------- 对话 MQ 配置 --------
+conversation:
+  # 持久化队列（消息/会话生命周期写 DB）
+  persist:
+    exchange: cs.conversation
+    queue: cs.conversation.persist
+    dlq: cs.conversation.persist.dlq
+    routing-key: persist
+  # 事件广播（Fanout，实时推送给座席 SSE）
+  events:
+    exchange: cs.conversation.events
+
+# -------- MyBatis-Plus --------
+mybatis-plus:
+  mapper-locations: classpath:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    # 【强制】全局枚举处理器，使 @EnumValue 标注的枚举自动与 DB 列双向映射
+    # 作用范围：ConversationEntity.status(SessionStatus) / ConversationMessageEntity.role(MessageRole)
+    default-enum-type-handler: com.baomidou.mybatisplus.core.handlers.MybatisEnumTypeHandler
+  global-config:
+    db-config:
+      schema: cs_conversation
 
 springdoc:
   api-docs:
@@ -26,7 +93,15 @@ springdoc:
   swagger-ui:
     path: /swagger-ui.html
 
+# -------- CORS 配置 --------
+# 生产环境请通过环境变量 APP_CORS_ALLOWED_ORIGINS 设置实际前端域名，禁止通配符
+app:
+  cors:
+    # 开发环境默认允许本地前端，生产必须替换
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:5666,http://localhost:5667}
+
 logging:
   level:
     com.aidevplatform.conversation: DEBUG
-    org.springframework.web.reactive: DEBUG
+    org.springframework.web.reactive: WARN
+
