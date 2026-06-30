@@ -2,9 +2,12 @@ package com.aidevplatform.conversation.infrastructure.repository;
 
 import com.aidevplatform.conversation.infrastructure.mq.ConversationMessagePublisher;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -124,20 +127,33 @@ public class ConversationHistoryRepository {
 
     /**
      * 全量覆盖保存历史（AI 流式回复完成后调用）。
-     * 仅将最后一条 assistant 消息发布到 Stream，避免重复发布 user 消息。
+     *
+     * <p>使用 Redis Pipeline 将 DEL 和所有 RPUSH 包在同一批次，
+     * 避免并发场景下 delete 与 rightPush 之间产生竞态导致历史丢失或顺序错乱。
+     * 仅将最后一条 assistant 消息发布到 MQ，避免重复发布 user 消息。
      *
      * @param sessionId 会话 ID
      * @param messages  消息列表（已截断至 MAX_HISTORY_TURNS）
      */
     public void saveAll(String sessionId, List<Map<String, String>> messages) {
         String key = KEY_PREFIX + sessionId;
-        redis.delete(key);
-        for (Map<String, String> msg : messages) {
-            redis.opsForList().rightPush(key, msg.get("role"));
-            redis.opsForList().rightPush(key, msg.get("content"));
-        }
-        redis.expire(key, Duration.ofHours(TTL_HOURS));
+        byte[] rawKey = key.getBytes(StandardCharsets.UTF_8);
+        long ttlSeconds = Duration.ofHours(TTL_HOURS).getSeconds();
 
+        // Pipeline：DEL + 所有 RPUSH + EXPIRE 在同一批次执行，消除并发写入竞态
+        redis.executePipelined((RedisCallback<Object>) connection -> {
+            connection.keyCommands().del(rawKey);
+            for (Map<String, String> msg : messages) {
+                byte[] roleBytes    = msg.get("role").getBytes(StandardCharsets.UTF_8);
+                byte[] contentBytes = msg.get("content").getBytes(StandardCharsets.UTF_8);
+                connection.listCommands().rPush(rawKey, roleBytes);
+                connection.listCommands().rPush(rawKey, contentBytes);
+            }
+            connection.keyCommands().expire(rawKey, ttlSeconds);
+            return null;
+        });
+
+        // Pipeline 完成后再发布 MQ 事件（最后一条 assistant 消息）
         if (!messages.isEmpty()) {
             Map<String, String> last = messages.get(messages.size() - 1);
             if (ROLE_ASSISTANT.equals(last.get("role"))) {

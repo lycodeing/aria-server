@@ -1,16 +1,19 @@
 package com.aidevplatform.conversation.application.service;
 
+import com.aidevplatform.conversation.application.exception.SessionEnqueueException;
+import com.aidevplatform.conversation.domain.SessionAlreadyAcceptedException;
 import com.aidevplatform.conversation.infrastructure.mq.ConversationMessagePublisher;
 import com.aidevplatform.conversation.domain.SessionEventType;
 import com.aidevplatform.conversation.domain.SessionStatus;
 import com.aidevplatform.conversation.infrastructure.persistence.ConversationPersistRepository;
-import com.aidevplatform.conversation.infrastructure.persistence.entity.ConversationEntity;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -47,6 +50,27 @@ public class SessionQueueService {
 
     // ---- Redis key 常量 ----
     private static final String QUEUE_KEY = "agent:session:queue";
+
+    /**
+     * Lua CAS 脚本：原子地检查并更新会话状态。
+     *
+     * <p>KEYS[1] = Hash key（agent:session:queue）
+     * <p>ARGV[1] = sessionId（Hash field）
+     * <p>ARGV[2] = 期望的当前状态 JSON 中的 status 字段值（如 "WAITING"）
+     * <p>ARGV[3] = 更新后的完整 JSON 字符串
+     *
+     * <p>返回值：1 表示 CAS 成功；0 表示 field 不存在或状态不符（已被抢占）。
+     */
+    private static final String ACCEPT_CAS_LUA =
+            "local val = redis.call('HGET', KEYS[1], ARGV[1])\n" +
+            "if val == false then return 0 end\n" +
+            "if string.find(val, ARGV[2]) == nil then return 0 end\n" +
+            "redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])\n" +
+            "return 1";
+
+    /** 包装后的 Lua 脚本，Spring Data Redis 执行时自动缓存 SHA1 */
+    private static final RedisScript<Long> ACCEPT_CAS_SCRIPT =
+            new DefaultRedisScript<>(ACCEPT_CAS_LUA, Long.class);
 
     private final StringRedisTemplate redis;
     /** 注入 Spring 管理的 ObjectMapper，确保继承 Boot 自动配置（record 支持、null 处理等） */
@@ -96,16 +120,17 @@ public class SessionQueueService {
                 sessionId, userName, transferReason, tag,
                 Instant.now().getEpochSecond(), SessionStatus.WAITING
         );
+        // Redis 写入失败为不可恢复错误，直接抛出让 Controller 返回 503
         try {
             redis.opsForHash().put(QUEUE_KEY, sessionId, objectMapper.writeValueAsString(item));
-            // 实时通知座席（RabbitMQ Fanout → SSE 广播）
-            publishEvent(new SessionEvent(SessionEventType.ENQUEUE, item));
-            // 持久化队列（RabbitMQ Direct，异步写入 PostgreSQL）
-            publishSessionStart(sessionId, userName, transferReason, tag, item.waitSince());
-            log.info("[SessionQueue] enqueue sessionId={} userName={}", sessionId, userName);
         } catch (Exception e) {
-            log.error("[SessionQueue] enqueue error sessionId={}", sessionId, e);
+            log.error("[SessionQueue] enqueue Redis 写入失败 sessionId={}", sessionId, e);
+            throw new SessionEnqueueException("会话入队失败，请稍后重试", sessionId, e);
         }
+        // MQ 发布失败为可降级场景：座席刷新队列仍可看到（数据在 Redis），仅记录警告
+        publishEvent(new SessionEvent(SessionEventType.ENQUEUE, item));
+        publishSessionStart(sessionId, userName, transferReason, tag, item.waitSince());
+        log.info("[SessionQueue] enqueue sessionId={} userName={}", sessionId, userName);
         return item;
     }
 
@@ -157,30 +182,54 @@ public class SessionQueueService {
 
     /**
      * 座席接入会话，状态 WAITING → ACTIVE。
-     * 状态转换由 {@link SessionStatus#transitionTo} 校验合法性。
+     *
+     * <p>使用 Lua CAS 脚本保证原子性，防止两名座席并发接入同一会话（TOCTOU 竞态）。
+     * Lua 脚本执行过程：
+     * 1. HGET 读取当前 JSON，检查其中是否包含 "WAITING" 状态标记
+     * 2. 若状态符合，HSET 写入更新后的 JSON（ACTIVE 状态）并返回 1
+     * 3. 若已被抢占（状态不是 WAITING），返回 0 → 抛出 {@link SessionAlreadyAcceptedException}
      *
      * @param sessionId 会话唯一标识
      * @return 更新后的会话队列项
-     * @throws RuntimeException 会话不存在或状态非法时抛出
+     * @throws SessionAlreadyAcceptedException 会话已被其他座席抢占
+     * @throws IllegalArgumentException        会话不存在
      */
     public SessionQueueItem accept(String sessionId) {
         try {
+            // 先读取当前值，构造更新后的 JSON
             Object raw = redis.opsForHash().get(QUEUE_KEY, sessionId);
             if (raw == null) {
-                throw new IllegalArgumentException("Session not found: " + sessionId);
+                throw new IllegalArgumentException("会话不存在: " + sessionId);
             }
             SessionQueueItem old = objectMapper.readValue((String) raw, SessionQueueItem.class);
+            // 状态机校验（非 WAITING 状态时此处已抛出异常）
             SessionStatus newStatus = old.status().transitionTo(SessionStatus.ACTIVE);
             SessionQueueItem updated = new SessionQueueItem(
                     old.sessionId(), old.userName(), old.transferReason(),
                     old.tag(), old.waitSince(), newStatus
             );
-            redis.opsForHash().put(QUEUE_KEY, sessionId, objectMapper.writeValueAsString(updated));
-            // 实时广播（Fanout SSE）
+            String updatedJson = objectMapper.writeValueAsString(updated);
+
+            // Lua CAS：检查 JSON 中包含 "WAITING" 字样再写入，防止并发抢占
+            // KEYS[1]=Hash key，ARGV[1]=field，ARGV[2]=期望状态关键词，ARGV[3]=新 JSON
+            Long result = redis.execute(
+                    ACCEPT_CAS_SCRIPT,
+                    Collections.singletonList(QUEUE_KEY),
+                    sessionId, "\"status\":\"WAITING\"", updatedJson
+            );
+
+            if (result == null || result == 0L) {
+                // CAS 失败：已被其他座席抢先接入
+                throw new SessionAlreadyAcceptedException(sessionId);
+            }
+
+            // CAS 成功后广播事件和持久化
             publishEvent(new SessionEvent(SessionEventType.ACCEPTED, updated));
-            // 持久化：DB 状态 WAITING → ACTIVE（source of truth）
             publishSessionAccept(sessionId, Instant.now().getEpochSecond());
+            log.info("[SessionQueue] accept 成功 sessionId={}", sessionId);
             return updated;
+        } catch (SessionAlreadyAcceptedException | IllegalArgumentException e) {
+            throw e;
         } catch (Exception e) {
             log.error("[SessionQueue] accept error sessionId={}", sessionId, e);
             throw new RuntimeException(e);
