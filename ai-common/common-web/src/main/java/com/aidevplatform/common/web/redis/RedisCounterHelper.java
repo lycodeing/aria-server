@@ -45,6 +45,9 @@ public class RedisCounterHelper {
     private static final RedisScript<Long> INCR_WITH_TTL_SCRIPT =
             new DefaultRedisScript<>(INCR_WITH_TTL_LUA, Long.class);
 
+    /** 封禁/窗口标识用的哨兵值，区分"已存在"和"不存在"，具体内容不重要 */
+    private static final String SENTINEL_VALUE = "1";
+
     private final StringRedisTemplate redis;
 
     /**
@@ -63,9 +66,7 @@ public class RedisCounterHelper {
      * @return 累计后的计数值，Lua 异常时返回 0
      */
     public long increment(String key, Duration ttl) {
-        if (ttl == null || ttl.isZero() || ttl.isNegative()) {
-            throw new IllegalArgumentException("TTL 必须大于零 key=" + key);
-        }
+        validateDuration(key, ttl, "TTL");
         Long count = redis.execute(
                 INCR_WITH_TTL_SCRIPT,
                 Collections.singletonList(key),
@@ -94,8 +95,14 @@ public class RedisCounterHelper {
     }
 
     /**
-     * 频率限制窗口判定：若 key 在窗口内首次出现，返回 true 并设置 TTL；
-     * 否则返回 false（窗口内重复访问）。
+     * 频率限制窗口判定：若 key 在窗口内"首次出现"，返回 true 并设置 TTL；
+     * 否则返回 false（窗口内重复访问，已存在 key 不会被覆盖也不会延长 TTL）。
+     *
+     * <p>与 {@link #ban} 的区别（底层都基于 SET NX EX，但语义对立）：
+     * <ul>
+     *   <li>{@code firstAccess} — <b>幂等性判定</b>：返回值决定业务流向（首次=放行，重复=拒绝）</li>
+     *   <li>{@code ban}         — <b>强制写入</b>：覆盖已有值并刷新 TTL，调用方不关心返回</li>
+     * </ul>
      *
      * <p>典型用法：短信防重发（60s 内只允许一次）：
      * <pre>
@@ -109,24 +116,23 @@ public class RedisCounterHelper {
      * @return true=首次访问；false=窗口内已访问过
      */
     public boolean firstAccess(String key, Duration window) {
-        if (window == null || window.isZero() || window.isNegative()) {
-            throw new IllegalArgumentException("窗口时长必须大于零 key=" + key);
-        }
-        Boolean ok = redis.opsForValue().setIfAbsent(key, "1", window);
+        validateDuration(key, window, "窗口时长");
+        Boolean ok = redis.opsForValue().setIfAbsent(key, SENTINEL_VALUE, window);
         return Boolean.TRUE.equals(ok);
     }
 
     /**
-     * 封禁指定 key（写入哨兵值），用于"错误次数达上限后锁定一段时间"场景。
+     * 封禁指定 key（写入哨兵值，覆盖已有），用于"错误次数达上限后锁定一段时间"场景。
+     *
+     * <p>使用 SET EX 而非 SET NX EX：调用方明确意图是"无论如何都封禁"，
+     * 重复调用会刷新封禁 TTL（如累积错误次数达阈值时延长锁定）。
      *
      * @param key      封禁 key
      * @param duration 封禁时长
      */
     public void ban(String key, Duration duration) {
-        if (duration == null || duration.isZero() || duration.isNegative()) {
-            throw new IllegalArgumentException("封禁时长必须大于零 key=" + key);
-        }
-        redis.opsForValue().set(key, "1", duration);
+        validateDuration(key, duration, "封禁时长");
+        redis.opsForValue().set(key, SENTINEL_VALUE, duration);
     }
 
     /**
@@ -146,5 +152,18 @@ public class RedisCounterHelper {
      */
     public void reset(String key) {
         redis.delete(key);
+    }
+
+    /**
+     * 统一的时长合法性校验，强制大于零（杜绝"永不过期"键）。
+     *
+     * @param key      用于异常信息定位
+     * @param duration 待校验的时长
+     * @param desc     时长用途描述（如"窗口时长"、"封禁时长"）
+     */
+    private void validateDuration(String key, Duration duration, String desc) {
+        if (duration == null || duration.isZero() || duration.isNegative()) {
+            throw new IllegalArgumentException(desc + "必须大于零 key=" + key);
+        }
     }
 }
