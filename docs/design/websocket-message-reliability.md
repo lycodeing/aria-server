@@ -15,6 +15,7 @@
 5. [最终方案：seq 单调序号 + sinceSeq 增量同步](#5-最终方案seq-单调序号--sinceseq-增量同步)
 6. [实施清单](#6-实施清单)
 7. [边界场景](#7-边界场景)
+   - 7.5 [双端支持（访客端 + 座席端）](#75-双端支持访客端--座席端)
 8. [前后端协议契约](#8-前后端协议契约)
 9. [迁移与回滚策略](#9-迁移与回滚策略)
 10. [监控与运维](#10-监控与运维)
@@ -319,6 +320,189 @@ ws.addEventListener('open', async () => {
 | 8 | 同一 sessionId 并发写消息（多座席场景） | INCR 原子性保证 seq 不冲突，写入顺序由 Redis 单线程仲裁 |
 | 9 | 客户端长时间离线（>30 天） | DB 永久存储，仍可拉到完整增量；可选优化：超过 N 天给客户端返回 truncated 标志 |
 | 10 | seq 溢出（BIGINT 上限 9223372036854775807） | 单 session 每秒 10 万消息持续写入约需 290 万年，实际不会触发 |
+
+## 7.5 双端支持（访客端 + 座席端）
+
+本方案**对两个端点对称生效**，但客户端实现细节存在差异。下表给出完整对照。
+
+### 7.5.1 后端处理对称性
+
+| 维度 | 访客端 `/ws/chat/{sessionId}` | 座席端 `/ws/agent/{sessionId}` |
+|------|------------------------------|-------------------------------|
+| Handler | `ChatWebSocketHandler` | `ChatWebSocketHandler`（同一类） |
+| seq 生成 | `nextSeq(sessionId)` | `nextSeq(sessionId)` — **共享同一个 seq 序列** |
+| Redis key | `chat:seq:{sessionId}` | `chat:seq:{sessionId}` — **同一个 key** |
+| 写入路径 | `historyRepository.append(sessionId, "user", content)` | `historyRepository.appendAgentMessage(sessionId, content)` |
+| WS payload | 含 `seq` 字段 | 含 `seq` 字段 |
+| history 接口 | `GET /chat-api/chat/history?sessionId=X&sinceSeq=N` | 同一个接口，agent token 鉴权 |
+| 鉴权 | 公开（chat-widget 嵌入第三方站点） | Bearer Token（座席登录后） |
+
+**关键设计**：访客和座席的消息共享同一个 `sessionId` 内的 seq 序列。例如：
+
+```
+访客发 "你好"      → seq=1
+座席发 "您好"      → seq=2
+访客发 "请问退款"   → seq=3
+AI 转人工提示      → seq=4
+座席发 "正在查询"   → seq=5
+```
+
+无论谁断线重连，传 `sinceSeq=2` 都能拉到 3、4、5 三条，完全感知不到对面是访客还是座席的消息。
+
+### 7.5.2 双端写入路径的 seq 一致性
+
+```
+访客发消息：
+  handleTextMessage (role=chat)
+    → historyRepository.append(sid, "user", content)
+        → long seq = nextSeq(sid)              ← INCR chat:seq:{sid}
+        → Redis List RPUSH [user, content, seq]
+        → MQ publish (含 seq)
+    → 推送给座席 WS (payload 含 seq)
+
+座席发消息：
+  handleTextMessage (role=agent)
+    → historyRepository.appendAgentMessage(sid, content)
+        → long seq = nextSeq(sid)              ← 同一个 INCR 序列
+        → Redis List RPUSH [assistant, content, seq]
+        → MQ publish (含 seq, role=agent → DB)
+    → 推送给访客 WS (payload 含 seq)
+```
+
+两端写入共用同一个 `nextSeq()` 方法，由 Redis INCR 原子性保证不冲突。
+
+### 7.5.3 双端前端实现差异
+
+#### 访客端（chat-widget/index.vue）
+
+**特点**：单会话、单 sessionId、移动端友好
+
+```typescript
+// 访客只关心当前会话，lastSeq 单一值
+const lastSeq = ref<number>(
+    Number(sessionStorage.getItem(`chat:lastSeq:${sessionId}`) ?? '0')
+);
+
+ws.addEventListener('open', async () => {
+    if (lastSeq.value > 0) {
+        const missing = await getHistorySinceApi(sessionId, lastSeq.value);
+        missing.forEach(applyMessage);  // 渲染到当前对话窗口
+    }
+});
+
+ws.addEventListener('message', e => {
+    const msg = JSON.parse(e.data) as WsChatMessage;
+    if (msg.seq && msg.seq > lastSeq.value) {
+        lastSeq.value = msg.seq;
+        sessionStorage.setItem(`chat:lastSeq:${sessionId}`, String(msg.seq));
+    }
+    applyMessage(msg);
+});
+```
+
+#### 座席端（agent/index.vue）
+
+**特点**：多会话并发、每会话独立 lastSeq、需要按 sessionId 路由消息
+
+```typescript
+// 座席同时管理多个会话，按 sessionId 隔离 lastSeq
+const lastSeqMap = new Map<string, number>();
+
+function getLastSeq(sid: string): number {
+    if (!lastSeqMap.has(sid)) {
+        const stored = localStorage.getItem(`agent:lastSeq:${sid}`) ?? '0';
+        lastSeqMap.set(sid, Number(stored));
+    }
+    return lastSeqMap.get(sid)!;
+}
+
+function updateLastSeq(sid: string, seq: number) {
+    if (seq > getLastSeq(sid)) {
+        lastSeqMap.set(sid, seq);
+        localStorage.setItem(`agent:lastSeq:${sid}`, String(seq));
+    }
+}
+
+// useAgentWebSocket composable 中，每个会话 WS 独立处理
+function connectSession(sid: string) {
+    const ws = connectAgentWs(sid, (msg) => {
+        if (msg.seq) updateLastSeq(sid, msg.seq);
+        appendToSessionMsgs(sid, msg);  // 推送到对应 session 的 msgs 列表
+    });
+    ws.addEventListener('open', async () => {
+        const sinceSeq = getLastSeq(sid);
+        if (sinceSeq > 0) {
+            const missing = await getHistorySinceApi(sid, sinceSeq);
+            missing.forEach(m => appendToSessionMsgs(sid, m));
+        }
+    });
+}
+```
+
+#### 关键差异点
+
+| 维度 | 访客端 | 座席端 |
+|------|--------|--------|
+| lastSeq 存储 | `sessionStorage`（单 sessionId 单值） | `localStorage`（多 sessionId 多值，按 sid 隔离） |
+| 持久化时长 | tab 关闭即失效 | 跨浏览器重启保留 |
+| 重连触发 | 单 WS onopen | 每个会话 WS 独立 onopen |
+| 增量拉取并发 | 1 次/sessionId | N 次（N = 同时接入的会话数）|
+| 拉取后路由 | 直接渲染到当前窗口 | 按 sessionId 路由到对应 session 的 msgs 数组 |
+
+### 7.5.4 跨端场景验证
+
+**场景 A：访客离线，座席继续回复**
+
+```
+T1 访客在线：lastSeq=10
+T2 访客网络中断
+T3 座席发消息 → seq=11, 12, 13（推送到访客 WS 失败，仅写 Redis + DB）
+T4 访客重连
+T5 访客调 history?sinceSeq=10 → 拉到 11, 12, 13 ✅
+```
+
+**场景 B：座席切换设备，访客发消息**
+
+```
+T1 座席 A 设备登录 sessionId=X, lastSeq=20
+T2 座席关闭 A 设备浏览器
+T3 访客发消息 seq=21, 22
+T4 座席登录 B 设备 → localStorage 中无 sessionId=X 的 lastSeq → 默认 0
+T5 history?sinceSeq=0 → 拉到全量历史 ✅（B 设备首次接入）
+```
+
+**场景 C：座席同时接 5 个会话，其中 sid=A 网络抖动**
+
+```
+T1 座席接入 sid=A,B,C,D,E
+T2 sid=A 的 WS 抖动重连
+T3 访客 A 在抖动期间发了 3 条消息 → seq=51, 52, 53
+T4 sid=A 的 ws.onopen → 调 history?sessionId=A&sinceSeq=50
+T5 返回 51, 52, 53，按 sid=A 路由到对应 session.msgs ✅
+T6 sid=B,C,D,E 不受影响，各自独立维护 lastSeq
+```
+
+### 7.5.5 双端联调测试用例（必备）
+
+| # | 用例 | 预期 |
+|---|------|------|
+| 1 | 访客发 10 条消息，关闭浏览器 5 分钟，重新打开 | 看到全部 10 条 |
+| 2 | 座席接入 3 个会话，刷新页面 | 3 个会话历史完整恢复 |
+| 3 | 访客离线 25 小时（超过 Redis TTL）后重连 | 从 DB 拉到全量历史 |
+| 4 | 访客和座席同时在线，并发发送 100 条消息 | 双方都看到 100 条，seq 严格递增无丢失 |
+| 5 | 座席 A 转交给座席 B，B 接入后调 history | B 看到完整历史（含转交前的对话）|
+| 6 | 网络模拟：WS 发 IOException 100 次 | 客户端通过重连补齐，最终消息数一致 |
+
+### 7.5.6 监控双端独立指标
+
+| 指标 | 访客端 | 座席端 |
+|------|--------|--------|
+| WS 连接数 | `ws.visitor.active` | `ws.agent.active` |
+| 重连补发消息数 | `chat.history.since_seq.visitor.avg` | `chat.history.since_seq.agent.avg` |
+| sendJson 失败率 | `ws.send_failed.visitor` | `ws.send_failed.agent` |
+| 全量重拉（lastSeq=0）次数 | 偏高提示 sessionStorage 异常 | 偏高提示跨设备登录频繁 |
+
+---
 
 ## 8. 前后端协议契约
 
