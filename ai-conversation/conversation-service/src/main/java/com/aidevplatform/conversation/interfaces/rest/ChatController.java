@@ -13,6 +13,7 @@ import reactor.core.publisher.Flux;
 
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
 /**
  * 对话接口。
@@ -50,7 +51,7 @@ public class ChatController {
     public Flux<ServerSentEvent<String>> streamChat(@RequestBody ChatRequest req) {
         String sessionId = req.getSessionId() != null
                 ? req.getSessionId()
-                : GUEST_SESSION_PREFIX + System.currentTimeMillis();
+                : GUEST_SESSION_PREFIX + UUID.randomUUID().toString().replace("-", "");
 
         // 已接入人工 → 存消息到 history + 返回提示，不走 AI
         if (sessionQueueService.isActive(sessionId)) {
@@ -75,7 +76,7 @@ public class ChatController {
     public R<Map<String, String>> chat(@RequestBody ChatRequest req) {
         String sessionId = req.getSessionId() != null
                 ? req.getSessionId()
-                : GUEST_SESSION_PREFIX + System.currentTimeMillis();
+                : GUEST_SESSION_PREFIX + UUID.randomUUID().toString().replace("-", "");
         String reply = chatService.chat(sessionId, req.getMessage());
         return R.ok(Map.of("reply", reply, "sessionId", sessionId));
     }
