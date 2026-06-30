@@ -16,6 +16,7 @@ import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
 
@@ -49,7 +50,9 @@ import java.util.*;
 public class SessionQueueService {
 
     // ---- Redis key 常量 ----
-    private static final String QUEUE_KEY = "agent:session:queue";
+    private static final String QUEUE_KEY         = "agent:session:queue";
+    /** 在线座席注册表，Hash：{agentId → JSON{name,connectedAt}} */
+    private static final String ONLINE_AGENTS_KEY = "agent:online";
 
     /**
      * Lua CAS 脚本：原子地检查并更新会话状态。
@@ -118,7 +121,7 @@ public class SessionQueueService {
                                     String transferReason, String tag) {
         SessionQueueItem item = new SessionQueueItem(
                 sessionId, userName, transferReason, tag,
-                Instant.now().getEpochSecond(), SessionStatus.WAITING
+                Instant.now().getEpochSecond(), SessionStatus.WAITING, null
         );
         // Redis 写入失败为不可恢复错误，直接抛出让 Controller 返回 503
         try {
@@ -159,7 +162,8 @@ public class SessionQueueService {
                         e.getTransferReason(),
                         e.getTag(),
                         e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
-                        SessionStatus.ACTIVE))
+                        SessionStatus.ACTIVE,
+                        null))
                 .toList();
     }
 
@@ -184,17 +188,12 @@ public class SessionQueueService {
      * 座席接入会话，状态 WAITING → ACTIVE。
      *
      * <p>使用 Lua CAS 脚本保证原子性，防止两名座席并发接入同一会话（TOCTOU 竞态）。
-     * Lua 脚本执行过程：
-     * 1. HGET 读取当前 JSON，检查其中是否包含 "WAITING" 状态标记
-     * 2. 若状态符合，HSET 写入更新后的 JSON（ACTIVE 状态）并返回 1
-     * 3. 若已被抢占（状态不是 WAITING），返回 0 → 抛出 {@link SessionAlreadyAcceptedException}
      *
      * @param sessionId 会话唯一标识
+     * @param agentId   接入座席 ID（从 token 中解析）
      * @return 更新后的会话队列项
-     * @throws SessionAlreadyAcceptedException 会话已被其他座席抢占
-     * @throws IllegalArgumentException        会话不存在
      */
-    public SessionQueueItem accept(String sessionId) {
+    public SessionQueueItem accept(String sessionId, String agentId) {
         try {
             // 先读取当前值，构造更新后的 JSON
             Object raw = redis.opsForHash().get(QUEUE_KEY, sessionId);
@@ -206,7 +205,7 @@ public class SessionQueueService {
             SessionStatus newStatus = old.status().transitionTo(SessionStatus.ACTIVE);
             SessionQueueItem updated = new SessionQueueItem(
                     old.sessionId(), old.userName(), old.transferReason(),
-                    old.tag(), old.waitSince(), newStatus
+                    old.tag(), old.waitSince(), newStatus, agentId
             );
             String updatedJson = objectMapper.writeValueAsString(updated);
 
@@ -257,14 +256,14 @@ public class SessionQueueService {
                 SessionStatus newStatus = old.status().transitionTo(SessionStatus.CLOSED);
                 SessionQueueItem closed = new SessionQueueItem(
                         old.sessionId(), old.userName(), old.transferReason(),
-                        old.tag(), old.waitSince(), newStatus
+                        old.tag(), old.waitSince(), newStatus, old.agentId()
                 );
                 publishEvent(new SessionEvent(SessionEventType.CLOSED, closed));
                 redis.opsForHash().delete(QUEUE_KEY, sessionId);
             } else {
                 // Redis 已无数据（重启/驱逐）：仅广播最小事件，Redis HDEL 幂等无害
                 log.warn("[SessionQueue] close 时 Redis 无数据（可能已重启），仍执行 DB 关闭 sessionId={}", sessionId);
-                SessionQueueItem minimal = new SessionQueueItem(sessionId, "", "", "", 0L, SessionStatus.CLOSED);
+                SessionQueueItem minimal = new SessionQueueItem(sessionId, "", "", "", 0L, SessionStatus.CLOSED, null);
                 publishEvent(new SessionEvent(SessionEventType.CLOSED, minimal));
                 redis.opsForHash().delete(QUEUE_KEY, sessionId); // 幂等，无数据时 no-op
             }
@@ -302,14 +301,111 @@ public class SessionQueueService {
         return dbActive;
     }
 
+    /**
+     * 转交会话给指定座席（当前座席 → 目标座席，状态保持 ACTIVE）。
+     *
+     * @param sessionId     会话唯一标识
+     * @param targetAgentId 目标座席 ID
+     */
+    public void transfer(String sessionId, String targetAgentId) {
+        try {
+            Object raw = redis.opsForHash().get(QUEUE_KEY, sessionId);
+            if (raw == null) {
+                throw new IllegalArgumentException("会话不存在: " + sessionId);
+            }
+            SessionQueueItem old = objectMapper.readValue((String) raw, SessionQueueItem.class);
+            if (old.status() != SessionStatus.ACTIVE) {
+                throw new IllegalStateException("只有 ACTIVE 状态的会话才能转交，当前状态: " + old.status());
+            }
+            SessionQueueItem transferred = new SessionQueueItem(
+                    old.sessionId(), old.userName(), old.transferReason(),
+                    old.tag(), old.waitSince(), SessionStatus.ACTIVE, targetAgentId
+            );
+            redis.opsForHash().put(QUEUE_KEY, sessionId, objectMapper.writeValueAsString(transferred));
+            // 广播 TRANSFER 事件，前端收到后：原座席移除该会话，目标座席自动接入
+            publishEvent(new SessionEvent(SessionEventType.TRANSFER, transferred, targetAgentId));
+            log.info("[SessionQueue] 会话转交 sessionId={} → agentId={}", sessionId, targetAgentId);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[SessionQueue] transfer error sessionId={}", sessionId, e);
+            throw new RuntimeException(e);
+        }
+    }
+
+    // ---- 在线座席注册表 ----
+
+    /**
+     * 注册座席上线（SSE 连接建立时调用）。
+     *
+     * @param agentId     座席 ID
+     * @param displayName 座席显示名称
+     */
+    public void registerAgent(String agentId, String displayName) {
+        try {
+            String value = objectMapper.writeValueAsString(
+                    Map.of("name", displayName, "connectedAt", Instant.now().getEpochSecond()));
+            redis.opsForHash().put(ONLINE_AGENTS_KEY, agentId, value);
+            log.debug("[SessionQueue] 座席上线 agentId={} name={}", agentId, displayName);
+        } catch (Exception e) {
+            log.warn("[SessionQueue] 注册座席失败 agentId={}", agentId, e);
+        }
+    }
+
+    /**
+     * 注销座席下线（SSE 连接断开时调用）。
+     *
+     * @param agentId 座席 ID
+     */
+    public void deregisterAgent(String agentId) {
+        redis.opsForHash().delete(ONLINE_AGENTS_KEY, agentId);
+        log.debug("[SessionQueue] 座席下线 agentId={}", agentId);
+    }
+
+    /**
+     * 获取在线座席列表，统计每个座席当前的 ACTIVE 会话数。
+     *
+     * @return 在线座席 VO 列表
+     */
+    public List<OnlineAgentVO> getOnlineAgents() {
+        Map<Object, Object> agentMap = redis.opsForHash().entries(ONLINE_AGENTS_KEY);
+        if (agentMap.isEmpty()) return Collections.emptyList();
+
+        // 统计每个 agentId 的 ACTIVE 会话数
+        Map<String, Long> activeCount = new HashMap<>();
+        redis.opsForHash().entries(QUEUE_KEY).forEach((k, v) -> {
+            try {
+                SessionQueueItem item = objectMapper.readValue((String) v, SessionQueueItem.class);
+                if (item.status() == SessionStatus.ACTIVE && item.agentId() != null) {
+                    activeCount.merge(item.agentId(), 1L, Long::sum);
+                }
+            } catch (Exception ignored) {}
+        });
+
+        List<OnlineAgentVO> result = new ArrayList<>();
+        agentMap.forEach((agentId, agentJson) -> {
+            try {
+                Map<?, ?> info = objectMapper.readValue((String) agentJson, Map.class);
+                String name = (String) info.get("name");
+                long sessions = activeCount.getOrDefault((String) agentId, 0L);
+                result.add(new OnlineAgentVO((String) agentId, name, sessions));
+            } catch (Exception e) {
+                log.warn("[SessionQueue] 解析在线座席失败 agentId={}", agentId, e);
+            }
+        });
+        result.sort(Comparator.comparing(OnlineAgentVO::sessions));
+        return result;
+    }
+
+    // ---- VO ----
+
+    /** 在线座席信息 VO */
+    public record OnlineAgentVO(String id, String name, long sessions) {}
+
     // ---- 内部：事件广播 ----
 
     /**
      * 向 {@code cs.conversation.events} Fanout Exchange 发布队列状态变更事件。
-     * 由 {@link com.aidevplatform.conversation.infrastructure.mq.SessionEventSubscriber}
-     * 消费后广播给所有活跃 SSE 连接。
-     *
-     * @param event 队列事件
      */
     private void publishEvent(SessionEvent event) {
         try {
@@ -358,14 +454,24 @@ public class SessionQueueService {
 
     // ---- VO ----
 
+    /**
+     * 会话队列项。
+     * agentId：接入座席 ID，WAITING 状态时为 null，ACTIVE 时填入接入座席 ID。
+     */
     public record SessionQueueItem(
             String sessionId,
             String userName,
             String transferReason,
             String tag,
             long waitSince,
-            SessionStatus status
+            SessionStatus status,
+            String agentId
     ) {}
 
-    public record SessionEvent(SessionEventType type, SessionQueueItem item) {}
+    public record SessionEvent(SessionEventType type, SessionQueueItem item) {
+        /** 转交事件附加字段：目标座席 ID */
+        public SessionEvent(SessionEventType type, SessionQueueItem item, String toAgentId) {
+            this(type, item);
+        }
+    }
 }

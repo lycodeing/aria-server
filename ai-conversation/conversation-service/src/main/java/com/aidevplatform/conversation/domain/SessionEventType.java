@@ -17,7 +17,12 @@ public enum SessionEventType {
     ACCEPTED,
 
     /**
-     * 会话结束或转交
+     * 会话结束（座席主动关闭或断线）
      */
-    CLOSED
+    CLOSED,
+
+    /**
+     * 会话转交给其他座席
+     */
+    TRANSFER
 }
