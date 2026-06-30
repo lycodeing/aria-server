@@ -82,10 +82,25 @@ public class ChatController {
     }
 
     /**
-     * 获取对话历史（座席接入时加载上下文）。
+     * 获取对话历史。
+     *
+     * <p>支持两种模式：
+     * <ul>
+     *   <li>全量模式（sinceSeq 缺省或 ≤ 0）：返回最近 20 轮历史，供座席接入时加载上下文</li>
+     *   <li>增量模式（sinceSeq &gt; 0）：仅返回 seq 严格大于 sinceSeq 的消息，
+     *       客户端断线重连后用此模式补齐空窗消息，避免每次全量重拉</li>
+     * </ul>
+     *
+     * @param sessionId 会话唯一标识
+     * @param sinceSeq  起始 seq（不含），缺省 0 表示全量
      */
     @GetMapping("/history")
-    public R<List<Map<String, String>>> history(@RequestParam String sessionId) {
+    public R<List<Map<String, Object>>> history(
+            @RequestParam String sessionId,
+            @RequestParam(required = false, defaultValue = "0") long sinceSeq) {
+        if (sinceSeq > 0L) {
+            return R.ok(chatService.getHistorySince(sessionId, sinceSeq));
+        }
         return R.ok(chatService.getHistory(sessionId));
     }
 

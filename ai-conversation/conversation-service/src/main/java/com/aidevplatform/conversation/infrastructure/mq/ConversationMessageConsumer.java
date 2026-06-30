@@ -137,6 +137,15 @@ public class ConversationMessageConsumer {
         entity.setSessionId(sessionId);
         entity.setRole(role);
         entity.setContent(str(payload, ConversationStreamEvent.FIELD_CONTENT));
+        // seq 由 ConversationHistoryRepository.nextSeq 生成，缺失（旧版本兼容）则置 null
+        Object rawSeq = payload.get(ConversationStreamEvent.FIELD_SEQ);
+        if (rawSeq != null) {
+            try {
+                entity.setSeq(Long.parseLong(rawSeq.toString()));
+            } catch (NumberFormatException e) {
+                log.warn("[MQ Consumer] 非法 seq={} sessionId={}", rawSeq, sessionId);
+            }
+        }
         entity.setCreatedAt(toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)));
         persistRepository.saveMessages(List.of(entity));
     }

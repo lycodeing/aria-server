@@ -5,6 +5,8 @@ import com.aidevplatform.conversation.infrastructure.repository.ConversationHist
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -22,8 +24,11 @@ public class ChatAppService {
             如果涉及订单、退款等敏感操作，引导用户验证身份。
             回答要简明扼要，避免冗长说明。
             """;
-    private static final String ROLE_USER = "user";
+    private static final String ROLE_USER      = "user";
     private static final String ROLE_ASSISTANT = "assistant";
+    private static final String FIELD_ROLE     = "role";
+    private static final String FIELD_CONTENT  = "content";
+    private static final String FIELD_SEQ      = "seq";
 
     private final CtyunAiClient aiClient;
     private final ConversationHistoryRepository historyRepository;
@@ -38,12 +43,15 @@ public class ChatAppService {
      * 自动维护 Redis 中的多轮历史（通过 ConversationHistoryRepository）。
      */
     public Flux<String> streamChat(String sessionId, String userMessage) {
-        List<Map<String, String>> history = historyRepository.findAll(sessionId);
-        history.add(Map.of("role", ROLE_USER, "content", userMessage));
+        // history 含 seq 字段，供前端通过 sinceSeq 增量同步；AI 调用前剥离 seq 转 String map
+        List<Map<String, Object>> history = historyRepository.findAll(sessionId);
+        // 用户消息暂入内存（seq 由后续 saveAll/append 重新生成）
+        history.add(buildUserOrAssistant(ROLE_USER, userMessage, null));
 
         StringBuilder assistantReply = new StringBuilder();
+        List<Map<String, String>> aiPrompt = toAiPrompt(history);
 
-        return aiClient.streamChat(history, SYSTEM_PROMPT)
+        return aiClient.streamChat(aiPrompt, SYSTEM_PROMPT)
                 .map(chunk -> {
                     String content = aiClient.extractDeltaContent(chunk);
                     if (!content.isEmpty()) {
@@ -54,9 +62,8 @@ public class ChatAppService {
                 .filter(content -> !content.isEmpty())
                 .doOnComplete(() -> {
                     if (!assistantReply.isEmpty()) {
-                        history.add(Map.of("role", ROLE_ASSISTANT, "content", assistantReply.toString()));
-                        // 截断后全量保存（含 AI 回复）
-                        List<Map<String, String>> trimmed = history.size() > MAX_HISTORY
+                        history.add(buildUserOrAssistant(ROLE_ASSISTANT, assistantReply.toString(), null));
+                        List<Map<String, Object>> trimmed = history.size() > MAX_HISTORY
                                 ? history.subList(history.size() - MAX_HISTORY, history.size())
                                 : history;
                         historyRepository.saveAll(sessionId, trimmed);
@@ -69,31 +76,41 @@ public class ChatAppService {
      * 非流式对话（用于单次问答场景）。
      */
     public String chat(String sessionId, String userMessage) {
-        List<Map<String, String>> history = historyRepository.findAll(sessionId);
-        history.add(Map.of("role", ROLE_USER, "content", userMessage));
+        List<Map<String, Object>> history = historyRepository.findAll(sessionId);
+        history.add(buildUserOrAssistant(ROLE_USER, userMessage, null));
 
-        String reply = aiClient.chat(history, SYSTEM_PROMPT);
+        String reply = aiClient.chat(toAiPrompt(history), SYSTEM_PROMPT);
 
-        history.add(Map.of("role", ROLE_ASSISTANT, "content", reply));
-        List<Map<String, String>> trimmed = history.size() > MAX_HISTORY
+        history.add(buildUserOrAssistant(ROLE_ASSISTANT, reply, null));
+        List<Map<String, Object>> trimmed = history.size() > MAX_HISTORY
                 ? history.subList(history.size() - MAX_HISTORY, history.size())
                 : history;
         historyRepository.saveAll(sessionId, trimmed);
         return reply;
     }
 
-    /**
-     * 清除会话历史。
-     */
+    /** 清除会话历史 */
     public void clearHistory(String sessionId) {
         historyRepository.delete(sessionId);
     }
 
     /**
-     * 获取会话历史消息列表（用于前端展示）。
+     * 获取会话历史消息列表（用于前端展示，含 seq 字段）。
      */
-    public List<Map<String, String>> getHistory(String sessionId) {
+    public List<Map<String, Object>> getHistory(String sessionId) {
         return historyRepository.findAll(sessionId);
+    }
+
+    /**
+     * 增量获取会话历史：返回 seq 严格大于 sinceSeq 的所有消息（按 seq 升序）。
+     * 客户端断线重连后调用，避免每次重连全量拉取历史。
+     *
+     * @param sessionId 会话唯一标识
+     * @param sinceSeq  起始 seq（不含），客户端传入 lastSeq
+     * @return 增量消息列表，无新消息时返回空列表
+     */
+    public List<Map<String, Object>> getHistorySince(String sessionId, long sinceSeq) {
+        return historyRepository.findSince(sessionId, sinceSeq);
     }
 
     /**
@@ -101,5 +118,32 @@ public class ChatAppService {
      */
     public void saveVisitorMessage(String sessionId, String content) {
         historyRepository.append(sessionId, ROLE_USER, content);
+    }
+
+    // -------------------------------------------------------
+    // 内部工具
+    // -------------------------------------------------------
+
+    /** 构造内存中的历史消息项（seq 为 null 时不写入字段，由 Repository 写入时统一分配） */
+    private Map<String, Object> buildUserOrAssistant(String role, String content, Long seq) {
+        Map<String, Object> m = new LinkedHashMap<>(3);
+        m.put(FIELD_ROLE, role);
+        m.put(FIELD_CONTENT, content);
+        if (seq != null) {
+            m.put(FIELD_SEQ, seq);
+        }
+        return m;
+    }
+
+    /** 将完整历史（含 seq）剥离为 AI 接口所需的 [role, content] String map 列表 */
+    private List<Map<String, String>> toAiPrompt(List<Map<String, Object>> history) {
+        List<Map<String, String>> prompt = new ArrayList<>(history.size());
+        for (Map<String, Object> msg : history) {
+            prompt.add(Map.of(
+                    FIELD_ROLE,    String.valueOf(msg.get(FIELD_ROLE)),
+                    FIELD_CONTENT, String.valueOf(msg.get(FIELD_CONTENT))
+            ));
+        }
+        return prompt;
     }
 }

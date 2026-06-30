@@ -46,6 +46,8 @@ public final class ConversationStreamEvent {
     public static final String FIELD_TAG             = "tag";
     public static final String FIELD_TRANSFER_REASON = "transferReason";
     public static final String FIELD_TIMESTAMP       = "timestamp";
+    /** session 内单调递增序号，仅 MESSAGE 类型有效，支持客户端 sinceSeq 增量同步 */
+    public static final String FIELD_SEQ             = "seq";
     /** 座席接入或转交事件的座席 ID，对应 cs_conversation.agent_id 字段 */
     public static final String FIELD_AGENT_ID        = "agentId";
     /** 转交事件的源座席 ID（仅 SESSION_TRANSFER 有效） */

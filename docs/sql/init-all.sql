@@ -198,16 +198,21 @@ CREATE OR REPLACE TRIGGER trg_cs_conv_updated BEFORE UPDATE ON cs_conversation.c
     FOR EACH ROW EXECUTE FUNCTION cs_conversation.set_updated_at();
 
 -- 12. 消息明细表（由 RabbitMQ 异步写入）
+-- seq: session 内单调递增序号（Redis INCR chat:seq:{sessionId} 生成），
+--      支持客户端断线重连时按 sinceSeq 增量拉取，避免每次重连全量历史
 CREATE TABLE IF NOT EXISTS cs_conversation.cs_conversation_message (
     id          BIGSERIAL    PRIMARY KEY,
     session_id  VARCHAR(100) NOT NULL,
     role        VARCHAR(20)  NOT NULL,
     content     TEXT         NOT NULL,
+    seq         BIGINT,
     created_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_cs_msg_session_time ON cs_conversation.cs_conversation_message(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_cs_msg_session_seq  ON cs_conversation.cs_conversation_message(session_id, seq);
 COMMENT ON TABLE  cs_conversation.cs_conversation_message IS '对话消息明细表，由 RabbitMQ 异步写入';
 COMMENT ON COLUMN cs_conversation.cs_conversation_message.role IS 'user=访客, assistant=AI, agent=人工座席';
+COMMENT ON COLUMN cs_conversation.cs_conversation_message.seq  IS 'session 内单调递增序号，支持断线重连后的增量同步';
 
 -- ::ANCHOR_KNOWLEDGE_SCHEMA::
 

@@ -41,6 +41,13 @@ public class ConversationMessageEntity {
     /** 消息内容 */
     private String content;
 
+    /**
+     * session 内单调递增序号（由 ConversationHistoryRepository.nextSeq 生成）。
+     * 支持客户端断线重连后通过 sinceSeq 增量拉取历史，避免每次重连全量。
+     * 历史遗留消息允许为 null（迁移前未生成）。
+     */
+    private Long seq;
+
     /** 消息时间（从 MQ/Stream 事件的 timestamp 恢复，单位 epoch seconds） */
     private OffsetDateTime createdAt;
 }

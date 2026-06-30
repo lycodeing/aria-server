@@ -135,25 +135,29 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         long ts = Instant.now().getEpochSecond();
 
         if (PATH_SEGMENT_CHAT.equals(role)) {
-            // 访客 → 存历史 → 转发给座席
-            historyRepository.append(sessionId, MessageRole.USER.getValue(), content);
+            // 访客 → 存历史 → 转发给座席（payload 携带 seq 支持客户端断线重连后的 sinceSeq 增量同步）
+            long seq = historyRepository.append(sessionId, MessageRole.USER.getValue(), content);
             Map<String, Object> msg = Map.of(
                     "type", MSG_TYPE_MESSAGE, "sessionId", sessionId,
                     "role", MessageRole.USER.getValue(),
-                    "content", content, "timestamp", ts
+                    "content", content,
+                    "seq", seq,
+                    "timestamp", ts
             );
             notifyAgent(sessionId, msg);
-            log.debug("[WS] user→agent sessionId={}", sessionId);
+            log.debug("[WS] user→agent sessionId={} seq={}", sessionId, seq);
         } else {
             // 座席 → appendAgentMessage（Redis List 写 assistant，DB 写 agent，便于质检分析）→ 转发给访客
-            historyRepository.appendAgentMessage(sessionId, content);
+            long seq = historyRepository.appendAgentMessage(sessionId, content);
             Map<String, Object> msg = Map.of(
                     "type", MSG_TYPE_MESSAGE, "sessionId", sessionId,
                     "role", MessageRole.AGENT.getValue(),
-                    "content", content, "timestamp", ts
+                    "content", content,
+                    "seq", seq,
+                    "timestamp", ts
             );
             notifyVisitor(sessionId, msg);
-            log.debug("[WS] agent→user sessionId={}", sessionId);
+            log.debug("[WS] agent→user sessionId={} seq={}", sessionId, seq);
         }
     }
 
@@ -226,14 +230,34 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     // 内部工具
     // ----------------------------------------------------------------
 
+    /**
+     * 向 WebSocket 发送 JSON 消息。
+     *
+     * <p>失败处理：
+     * <ul>
+     *   <li>序列化失败（编码异常）→ ERROR 日志，session 状态不变</li>
+     *   <li>IOException（TCP 半关闭/瞬时网络异常）→ 主动关闭 session（SERVER_ERROR），
+     *       触发客户端 onclose 钩子走指数退避重连，重连后用 lastSeq 调 history 拉增量；
+     *       消息本身已通过 historyRepository.append 写入 DB（MQ 异步持久化），不会丢失</li>
+     * </ul>
+     */
     private void sendJson(WebSocketSession session, Object payload) {
         if (!session.isOpen()) {
             return;
         }
+        Object sessionId = session.getAttributes().get(ATTR_SESSION_ID);
         try {
             session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            log.error("[WS] payload 序列化失败 sessionId={}", sessionId, e);
         } catch (IOException e) {
-            log.warn("[WS] send failed sessionId={}", session.getAttributes().get(ATTR_SESSION_ID), e);
+            // 主动关闭以触发客户端重连，重连后凭 lastSeq 拉增量补齐空窗消息（消息已在 DB）
+            log.warn("[WS] send failed, closing session for client reconnect sessionId={}", sessionId, e);
+            try {
+                session.close(CloseStatus.SERVER_ERROR);
+            } catch (IOException ignored) {
+                // session 已不可用，afterConnectionClosed/handleTransportError 会清理 map
+            }
         }
     }
 

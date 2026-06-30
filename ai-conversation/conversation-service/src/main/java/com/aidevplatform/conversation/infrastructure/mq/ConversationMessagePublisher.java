@@ -51,18 +51,20 @@ public class ConversationMessagePublisher {
      * @param sessionId 会话 ID
      * @param role      DB 角色标识（{@link MessageRole} 的 value）
      * @param content   消息内容
+     * @param seq       session 内单调递增序号（由 ConversationHistoryRepository.nextSeq 生成）
      */
     @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 1000, multiplier = 2))
-    public void publishMessage(String sessionId, String role, String content) {
+    public void publishMessage(String sessionId, String role, String content, long seq) {
         Map<String, Object> payload = Map.of(
             ConversationStreamEvent.FIELD_TYPE,       ConversationStreamEvent.Type.MESSAGE.name(),
             ConversationStreamEvent.FIELD_SESSION_ID, sessionId,
             ConversationStreamEvent.FIELD_ROLE,       role,
             ConversationStreamEvent.FIELD_CONTENT,    content,
+            ConversationStreamEvent.FIELD_SEQ,        seq,
             ConversationStreamEvent.FIELD_TIMESTAMP,  Instant.now().getEpochSecond()
         );
         rabbitTemplate.convertAndSend(exchange, routingKey, payload);
-        log.debug("[MQ] MESSAGE published sessionId={} role={}", sessionId, role);
+        log.debug("[MQ] MESSAGE published sessionId={} role={} seq={}", sessionId, role, seq);
     }
 
     /**
