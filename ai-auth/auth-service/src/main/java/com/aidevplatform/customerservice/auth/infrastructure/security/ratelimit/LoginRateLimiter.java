@@ -1,66 +1,61 @@
 package com.aidevplatform.customerservice.auth.infrastructure.security.ratelimit;
 
-import org.springframework.data.redis.core.StringRedisTemplate;
+import com.aidevplatform.common.web.redis.RedisCounterHelper;
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 
 /**
  * 登录 IP 频率限制器。
- * <p>基于 Redis 滑动窗口：同一 IP 每分钟最多 N 次登录尝试。
- * 超过阈值后临时封禁 IP。
+ *
+ * <p>基于 {@link RedisCounterHelper}：同一 IP 每分钟最多 {@value #MAX_PER_MINUTE} 次登录尝试，
+ * 失败累计达到 {@value #IP_BAN_THRESHOLD} 次时封禁 IP {@code BAN_DURATION} 时长。
  */
 @Component
+@RequiredArgsConstructor
 public class LoginRateLimiter {
 
-    private final StringRedisTemplate redis;
-    private static final int MAX_PER_MINUTE = 10;
-    private static final int IP_BAN_THRESHOLD = 20;
-    private static final Duration BAN_DURATION = Duration.ofMinutes(5);
+    private static final int      MAX_PER_MINUTE    = 10;
+    private static final int      IP_BAN_THRESHOLD  = 20;
+    private static final Duration BAN_DURATION      = Duration.ofMinutes(5);
+    private static final Duration RATE_WINDOW       = Duration.ofSeconds(60);
+    private static final Duration FAIL_WINDOW       = Duration.ofMinutes(10);
 
-    public LoginRateLimiter(StringRedisTemplate redis) {
-        this.redis = redis;
-    }
+    private static final String KEY_BAN_PREFIX  = "auth:ban:";
+    private static final String KEY_RATE_PREFIX = "auth:rl:";
+    private static final String KEY_FAIL_PREFIX = "auth:fail:";
+
+    private final RedisCounterHelper counter;
 
     /**
-     * 尝试获取许可。
+     * 尝试获取访问许可。
      *
-     * @return true 允许，false 被限流
+     * @param ip 客户端 IP
+     * @return true=允许；false=已封禁或超频
      */
     public boolean tryAcquire(String ip) {
-        // 检查是否已被封禁
-        String banKey = "auth:ban:" + ip;
-        if (Boolean.TRUE.equals(redis.hasKey(banKey))) {
+        String banKey = KEY_BAN_PREFIX + ip;
+        if (counter.isBanned(banKey)) {
             return false;
         }
-
-        // 滑动窗口计数
-        String rateKey = "auth:rl:" + ip;
-        Long count = redis.opsForValue().increment(rateKey);
-        if (count != null && count == 1) {
-            redis.expire(rateKey, Duration.ofSeconds(60));
-        }
-
-        if (count != null && count > MAX_PER_MINUTE) {
-            // 触发 IP 封禁
-            redis.opsForValue().set(banKey, "1", BAN_DURATION);
+        long count = counter.increment(KEY_RATE_PREFIX + ip, RATE_WINDOW);
+        if (count > MAX_PER_MINUTE) {
+            counter.ban(banKey, BAN_DURATION);
             return false;
         }
-
         return true;
     }
 
     /**
-     * 记录失败（用于触发 IP 封禁阈值）。
+     * 记录登录失败，累计达阈值后触发 IP 封禁。
+     *
+     * @param ip 客户端 IP
      */
     public void recordFailure(String ip) {
-        String failKey = "auth:fail:" + ip;
-        Long count = redis.opsForValue().increment(failKey);
-        if (count != null && count == 1) {
-            redis.expire(failKey, Duration.ofMinutes(10));
-        }
-        if (count != null && count >= IP_BAN_THRESHOLD) {
-            redis.opsForValue().set("auth:ban:" + ip, "1", BAN_DURATION);
+        long fails = counter.increment(KEY_FAIL_PREFIX + ip, FAIL_WINDOW);
+        if (fails >= IP_BAN_THRESHOLD) {
+            counter.ban(KEY_BAN_PREFIX + ip, BAN_DURATION);
         }
     }
 }

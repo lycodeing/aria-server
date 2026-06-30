@@ -1,10 +1,9 @@
 package com.aidevplatform.conversation.infrastructure.repository;
 
+import com.aidevplatform.common.web.redis.RedisCacheHelper;
 import com.aidevplatform.conversation.infrastructure.mq.ConversationMessagePublisher;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.connection.RedisConnection;
 import org.springframework.data.redis.core.RedisCallback;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Repository;
 
 import java.nio.charset.StandardCharsets;
@@ -34,7 +33,7 @@ import java.util.Map;
  *   <li>Stream → DB：user / assistant（AI）/ agent（人工座席，便于质检分析）</li>
  * </ul>
  *
- * <p>Stream 写入失败时仅打印警告，不影响 Redis List 的写入（实时功能优先）。
+ * <p>Redis 操作统一通过 {@link RedisCacheHelper} 进行，不再直接使用 RedisTemplate。
  */
 @Slf4j
 @Repository
@@ -52,26 +51,17 @@ public class ConversationHistoryRepository {
     /** DB 持久化时人工座席角色标识（DB 专用，区分 AI 和人工） */
     private static final String ROLE_AGENT     = "agent";
 
-    private final StringRedisTemplate redis;
+    private final RedisCacheHelper             cache;
     private final ConversationMessagePublisher publisher;
 
-    /**
-     * Redis Stream key，从 yml {@code conversation.persist.stream-key} 注入。
-     * 与 ConversationStreamWorker 消费端保持同一配置来源，消除硬编码分歧风险。
-     */
-
-    public ConversationHistoryRepository(
-            StringRedisTemplate redis,
-            ConversationMessagePublisher publisher) {
-        this.redis        = redis;
+    public ConversationHistoryRepository(RedisCacheHelper cache,
+                                          ConversationMessagePublisher publisher) {
+        this.cache     = cache;
         this.publisher = publisher;
     }
 
     /**
-     * 追加访客或 AI 消息（role=user / assistant），并发布到 Redis Stream 持久化。
-     *
-     * <p>人工座席消息请使用 {@link #appendAgentMessage(String, String)}，
-     * 两者在 DB 中的 role 字段不同。
+     * 追加访客或 AI 消息（role=user / assistant），并发布到 MQ 持久化。
      *
      * @param sessionId 会话 ID
      * @param role      消息角色（user / assistant）
@@ -84,16 +74,7 @@ public class ConversationHistoryRepository {
 
     /**
      * 追加人工座席消息。
-     *
-     * <p>与 {@link #append} 的区别：
-     * <ul>
-     *   <li>Redis List 写入 {@code "assistant"}（保持 AI 历史格式兼容，
-     *       万一会话回落 AI 时不含非标角色）</li>
-     *   <li>Stream → DB 写入 {@code "agent"}（区分 AI 和人工，支持质检分析）</li>
-     * </ul>
-     *
-     * @param sessionId 会话 ID
-     * @param content   座席回复内容
+     * Redis List 仍写 assistant 角色（保持 AI 历史格式兼容），DB 中标记为 agent。
      */
     public void appendAgentMessage(String sessionId, String content) {
         writeToListWithTrim(sessionId, ROLE_ASSISTANT, content);
@@ -103,13 +84,10 @@ public class ConversationHistoryRepository {
     /**
      * 获取全量历史消息列表（已截断至 MAX_HISTORY_TURNS）。
      * 供 AI 对话（ChatAppService）和座席接入时加载上下文使用。
-     *
-     * @param sessionId 会话 ID
-     * @return 消息列表，格式：[{"role":"user","content":"..."}, ...]
      */
     public List<Map<String, String>> findAll(String sessionId) {
         String       key = KEY_PREFIX + sessionId;
-        List<String> raw = redis.opsForList().range(key, 0, -1);
+        List<String> raw = cache.lRange(key, 0, -1);
         if (raw == null || raw.isEmpty()) {
             return new ArrayList<>();
         }
@@ -118,7 +96,6 @@ public class ConversationHistoryRepository {
         for (int i = 0; i < raw.size() - 1; i += 2) {
             messages.add(Map.of("role", raw.get(i), "content", raw.get(i + 1)));
         }
-
         if (messages.size() > MAX_HISTORY_TURNS) {
             messages = messages.subList(messages.size() - MAX_HISTORY_TURNS, messages.size());
         }
@@ -128,20 +105,15 @@ public class ConversationHistoryRepository {
     /**
      * 全量覆盖保存历史（AI 流式回复完成后调用）。
      *
-     * <p>使用 Redis Pipeline 将 DEL 和所有 RPUSH 包在同一批次，
+     * <p>使用 RedisCacheHelper 提供的 Pipeline 将 DEL + RPUSH + EXPIRE 批量执行，
      * 避免并发场景下 delete 与 rightPush 之间产生竞态导致历史丢失或顺序错乱。
-     * 仅将最后一条 assistant 消息发布到 MQ，避免重复发布 user 消息。
-     *
-     * @param sessionId 会话 ID
-     * @param messages  消息列表（已截断至 MAX_HISTORY_TURNS）
      */
     public void saveAll(String sessionId, List<Map<String, String>> messages) {
-        String key = KEY_PREFIX + sessionId;
-        byte[] rawKey = key.getBytes(StandardCharsets.UTF_8);
-        long ttlSeconds = Duration.ofHours(TTL_HOURS).getSeconds();
+        String key       = KEY_PREFIX + sessionId;
+        byte[] rawKey    = key.getBytes(StandardCharsets.UTF_8);
+        long   ttlSecond = Duration.ofHours(TTL_HOURS).getSeconds();
 
-        // Pipeline：DEL + 所有 RPUSH + EXPIRE 在同一批次执行，消除并发写入竞态
-        redis.executePipelined((RedisCallback<Object>) connection -> {
+        cache.executePipeline((RedisCallback<Object>) connection -> {
             connection.keyCommands().del(rawKey);
             for (Map<String, String> msg : messages) {
                 byte[] roleBytes    = msg.get("role").getBytes(StandardCharsets.UTF_8);
@@ -149,7 +121,7 @@ public class ConversationHistoryRepository {
                 connection.listCommands().rPush(rawKey, roleBytes);
                 connection.listCommands().rPush(rawKey, contentBytes);
             }
-            connection.keyCommands().expire(rawKey, ttlSeconds);
+            connection.keyCommands().expire(rawKey, ttlSecond);
             return null;
         });
 
@@ -162,13 +134,9 @@ public class ConversationHistoryRepository {
         }
     }
 
-    /**
-     * 清除会话历史（会话结束或新建对话时调用）。
-     *
-     * @param sessionId 会话 ID
-     */
+    /** 清除会话历史（会话结束或新建对话时调用） */
     public void delete(String sessionId) {
-        redis.delete(KEY_PREFIX + sessionId);
+        cache.delete(KEY_PREFIX + sessionId);
     }
 
     // -------------------------------------------------------
@@ -178,19 +146,15 @@ public class ConversationHistoryRepository {
     /** 写入 Redis List 并 LTRIM 保留最新 MAX_HISTORY_TURNS 轮 */
     private void writeToListWithTrim(String sessionId, String role, String content) {
         String key = KEY_PREFIX + sessionId;
-        redis.opsForList().rightPush(key, role);
-        redis.opsForList().rightPush(key, content);
-        redis.opsForList().trim(key, -(MAX_HISTORY_TURNS * 2L), -1);
-        redis.expire(key, Duration.ofHours(TTL_HOURS));
+        cache.lRightPush(key, role);
+        cache.lRightPush(key, content);
+        cache.lTrim(key, -(MAX_HISTORY_TURNS * 2L), -1);
+        cache.expire(key, Duration.ofHours(TTL_HOURS));
     }
 
     /**
      * 通过 RabbitMQ Publisher 发布消息事件（异步持久化）。
      * Publisher 内置 @Retryable（3次），三次失败后异常向上传播，打印 WARN 日志。
-     *
-     * @param sessionId 会话 ID
-     * @param role      存入 DB 的角色标识（user / assistant / agent）
-     * @param content   消息内容
      */
     private void publishMessageEvent(String sessionId, String role, String content) {
         try {
