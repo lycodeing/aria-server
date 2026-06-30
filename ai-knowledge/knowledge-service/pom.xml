@@ -70,6 +70,13 @@
             <artifactId>resilience4j-spring-boot3</artifactId>
         </dependency>
 
+        <!-- 文档存储（MinIO S3 兼容对象存储） -->
+        <dependency>
+            <groupId>io.minio</groupId>
+            <artifactId>minio</artifactId>
+            <version>8.5.11</version>
+        </dependency>
+
         <!-- 工具 -->
         <dependency>
             <groupId>org.projectlombok</groupId>

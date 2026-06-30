@@ -10,6 +10,7 @@ import com.aidevplatform.knowledge.domain.model.KnowledgeDoc;
 import com.aidevplatform.knowledge.domain.repository.KnowledgeDocRepository;
 import com.aidevplatform.knowledge.application.query.DocPageQuery;
 import com.aidevplatform.knowledge.infrastructure.mq.DocIngestEvent;
+import com.aidevplatform.knowledge.infrastructure.storage.MinioStorageService;
 import com.aidevplatform.knowledge.interfaces.rest.vo.DocStatusVO;
 import com.aidevplatform.knowledge.interfaces.rest.vo.DocUploadVO;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +19,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.util.List;
 
 /**
@@ -31,6 +33,7 @@ public class DocIngestAppService {
 
     private final KnowledgeDocRepository docRepository;
     private final RedisStreamHelper       streamHelper;
+    private final MinioStorageService     minioStorageService;
 
     @Value("${knowledge.ingest.stream-key}")
     private String streamKey;
@@ -51,27 +54,37 @@ public class DocIngestAppService {
         String docId    = String.valueOf(IdGenerator.nextId());
         String fileType = resolveFileType(file.getOriginalFilename());
 
+        // Step 1：上传文件到 MinIO，获得真实存储路径
+        String storagePath;
+        try {
+            storagePath = minioStorageService.upload(docId, file.getOriginalFilename(), file.getBytes());
+        } catch (IOException e) {
+            throw new BusinessException(500, "文件读取失败: " + e.getMessage());
+        }
+
+        // Step 2：发布摄取事件到 Redis Streams
         DocIngestEvent event = DocIngestEvent.builder()
             .docId(docId)
             .kbId(kbId)
             .fileType(fileType)
-            .storagePath("pending://" + docId)
+            .storagePath(storagePath)
             .build();
         streamHelper.publish(streamKey, event.toPayload());
 
+        // Step 3：写入数据库（使用真实 storagePath）
         KnowledgeDoc doc = KnowledgeDoc.builder()
             .id(docId)
             .kbId(kbId)
             .fileName(file.getOriginalFilename())
             .fileType(fileType)
-            .storagePath("pending://" + docId)
+            .storagePath(storagePath)
             .contentHash("pending")
             .status(DocStatus.DRAFT)
             .uploaderId(safeLoginId())
             .build();
         docRepository.save(doc);
 
-        log.info("文档上传接收成功，docId={}，fileType={}", docId, fileType);
+        log.info("文档上传接收成功，docId={}，fileType={}，storagePath={}", docId, fileType, storagePath);
         return DocUploadVO.builder()
             .docId(docId)
             .status("PENDING")

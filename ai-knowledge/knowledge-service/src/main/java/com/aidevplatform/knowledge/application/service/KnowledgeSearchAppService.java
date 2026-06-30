@@ -4,8 +4,10 @@ import com.aidevplatform.common.core.util.RrfUtils;
 import com.aidevplatform.knowledge.domain.model.ChunkHit;
 import com.aidevplatform.knowledge.domain.repository.KnowledgeChunkRepository;
 import com.aidevplatform.knowledge.infrastructure.embedding.EmbeddingService;
+import com.aidevplatform.knowledge.infrastructure.reranker.RerankService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -25,6 +27,10 @@ public class KnowledgeSearchAppService {
 
     private final KnowledgeChunkRepository chunkRepository;
     private final EmbeddingService         embeddingService;
+
+    /** Reranker 服务可选注入，仅在 knowledge.reranker.enabled=true 时存在 */
+    @Autowired(required = false)
+    private RerankService rerankService;
 
     /**
      * 混合检索入口：BM25 + 向量双路并行召回，RRF 融合后返回 topK 条。
@@ -65,15 +71,20 @@ public class KnowledgeSearchAppService {
     }
 
     /**
-     * BGE-Reranker 精排（当前返回原始列表，实现阶段对接 Reranker API）。
+     * BGE-Reranker 精排。
+     *
+     * <p>若 {@code knowledge.reranker.enabled=true} 且 Reranker 服务正常，
+     * 则通过 cross-encoder 重新打分排序；否则原样返回 RRF 融合结果。
      *
      * @param query      用户查询文本
      * @param candidates 混合检索召回的候选列表
-     * @return 精排后的列表
+     * @return 精排后的列表（Reranker 不可用时返回原始列表）
      */
     public List<ChunkHit> rerank(String query, List<ChunkHit> candidates) {
-        // TODO：实现阶段对接 BGE-Reranker API（cross-encoder 精排）
-        log.debug("Reranker 尚未接入，直接返回原始候选列表，候选数={}", candidates.size());
-        return candidates;
+        if (rerankService == null) {
+            log.debug("[Search] Reranker 未启用，返回 RRF 融合结果，候选数={}", candidates.size());
+            return candidates;
+        }
+        return rerankService.rerank(query, candidates);
     }
 }

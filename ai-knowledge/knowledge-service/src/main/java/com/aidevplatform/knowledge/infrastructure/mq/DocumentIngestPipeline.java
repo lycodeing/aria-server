@@ -10,6 +10,7 @@ import com.aidevplatform.knowledge.domain.service.ChunkQualityDomainService;
 import com.aidevplatform.knowledge.infrastructure.embedding.EmbeddingService;
 import com.aidevplatform.knowledge.infrastructure.parser.MultiFormatParser;
 import com.aidevplatform.knowledge.infrastructure.splitter.RecursiveChunkSplitter;
+import com.aidevplatform.knowledge.infrastructure.storage.MinioStorageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -46,6 +47,7 @@ public class DocumentIngestPipeline {
     private final EmbeddingService         embeddingService;
     private final KnowledgeChunkRepository chunkRepository;
     private final KnowledgeDocRepository   docRepository;
+    private final MinioStorageService      minioStorageService;
 
     /**
      * 执行完整摄取管道，事务保证摄取成功或全部回滚。
@@ -113,15 +115,14 @@ public class DocumentIngestPipeline {
     }
 
     /**
-     * 从存储服务下载文件内容。
-     * 当前实现为占位，实现阶段对接 OSS/MinIO SDK。
-     * 测试时通过 Mock 此方法注入测试内容。
+     * 从 MinIO 下载文件内容。
+     * storagePath 格式：{@code oss://{bucket}/docs/{docId}/{filename}}
+     *
+     * @param storagePath MinIO 存储路径
+     * @return 文件字节内容
      */
     protected byte[] loadContent(String storagePath) {
-        // TODO：实现阶段对接对象存储（OSS/MinIO）
-        // 格式示例：oss://ai-knowledge-bucket/docs/doc_abc123.pdf
-        throw new UnsupportedOperationException(
-            "存储服务未接入，storagePath=" + storagePath
-            + "。实现阶段请注入 OssStorageService 并覆盖此方法。");
+        log.debug("[Pipeline] 从 MinIO 下载文件: {}", storagePath);
+        return minioStorageService.download(storagePath);
     }
 }

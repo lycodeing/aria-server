@@ -53,6 +53,19 @@ knowledge:
   embedding:
     model: bge-m3
     base-url: ${EMBEDDING_BASE_URL:http://localhost:8000}
+  reranker:
+    # 默认关闭，启用需设置 RERANKER_ENABLED=true 及对应服务地址
+    enabled: ${RERANKER_ENABLED:false}
+    base-url: ${RERANKER_BASE_URL:http://localhost:8001}
+    model-name: ${RERANKER_MODEL:bge-reranker-v2-m3}
+    timeout-seconds: 10
+
+# -------- MinIO 对象存储配置 --------
+minio:
+  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+  access-key: ${MINIO_ACCESS_KEY:minioadmin}
+  secret-key: ${MINIO_SECRET_KEY:minioadmin}
+  bucket: ${MINIO_BUCKET:ai-knowledge}
 
 springdoc:
   api-docs:
