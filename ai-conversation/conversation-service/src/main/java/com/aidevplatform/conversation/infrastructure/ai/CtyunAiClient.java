@@ -45,7 +45,7 @@ public class CtyunAiClient {
      * 流式对话：返回 Flux<String>，每个元素为 SSE data 行（原始 JSON 字符串）。
      * 前端通过 EventSource 消费。
      *
-     * @param messages 对话消息列表，格式：[{"role":"user","content":"..."}]
+     * @param messages     对话消息列表，格式：[{"role":"user","content":"..."}]
      * @param systemPrompt 系统提示词（可为 null）
      */
     public Flux<String> streamChat(List<Map<String, String>> messages, String systemPrompt) {

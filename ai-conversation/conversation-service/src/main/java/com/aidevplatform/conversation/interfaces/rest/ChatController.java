@@ -1,6 +1,11 @@
 package com.aidevplatform.conversation.interfaces.rest;
 
+import com.aidevplatform.common.web.response.R;
 import com.aidevplatform.conversation.application.service.ChatAppService;
+import com.aidevplatform.conversation.application.service.SessionQueueService;
+import com.aidevplatform.conversation.application.service.SessionQueueService.SessionQueueItem;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
@@ -11,79 +16,133 @@ import java.util.Map;
 
 /**
  * 对话接口。
- * POST /api/v1/chat/stream  → SSE 流式回复（前端 EventSource 消费）
- * POST /api/v1/chat         → 非流式回复
- * GET  /api/v1/chat/history → 历史消息列表
- * DELETE /api/v1/chat/history → 清除历史
+ * POST /api/v1/chat/stream    → SSE 流式回复（ACTIVE 时不走 AI）
+ * POST /api/v1/chat           → 非流式回复
+ * GET  /api/v1/chat/history   → 历史消息列表（R<> 包装）
+ * DELETE /api/v1/chat/history → 清除历史（R<> 包装）
+ * POST /api/v1/chat/transfer  → 用户请求转人工（R<> 包装）
+ *
+ * <p>CORS 说明：chat 接口为访客公开接口，允许任意源访问（访客页面可内嵌至任意站点）。
+ * 座席管理接口（/api/v1/sessions）则限制为配置的前端域名。
  */
 @RestController
 @RequestMapping("/api/v1/chat")
 @CrossOrigin(origins = "*")
+@RequiredArgsConstructor
 public class ChatController {
 
-    private final ChatAppService chatService;
+    // ---- 常量定义 ----
+    private static final String GUEST_SESSION_PREFIX = "guest-";
+    private static final String DEFAULT_TRANSFER_REASON = "用户主动请求转人工";
+    private static final String DEFAULT_TAG = "咨询";
+    private static final String AGENT_HINT_MSG = "（消息已发送给人工客服）";
 
-    public ChatController(ChatAppService chatService) {
-        this.chatService = chatService;
-    }
+    private final ChatAppService chatService;
+    private final SessionQueueService sessionQueueService;
 
     /**
      * SSE 流式对话接口。
-     * 前端 fetch with ReadableStream 或 EventSource 消费。
-     * 每个 chunk 为纯文本（delta content）。
+     * - 会话已接入人工（ACTIVE）：存历史，提示已转人工，不调 AI
+     * - 会话未接入（WAITING/无）：走 AI SSE 流式回复
+     * 前端用 native fetch + ReadableStream 消费，不经过 axios，无需 R<> 包装。
      */
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> streamChat(@RequestBody ChatRequest req) {
-        String sessionId = req.getSessionId() != null ? req.getSessionId() : "guest-" + System.currentTimeMillis();
+        String sessionId = req.getSessionId() != null
+                ? req.getSessionId()
+                : GUEST_SESSION_PREFIX + System.currentTimeMillis();
+
+        // 已接入人工 → 存消息到 history + 返回提示，不走 AI
+        if (sessionQueueService.isActive(sessionId)) {
+            chatService.saveVisitorMessage(sessionId, req.getMessage());
+            return Flux.just(
+                    ServerSentEvent.<String>builder().data(AGENT_HINT_MSG).build(),
+                    ServerSentEvent.<String>builder().event("done").data("[DONE]").build()
+            );
+        }
+
+        // 未接入人工 → 走 AI 流式回复
         return chatService.streamChat(sessionId, req.getMessage())
-                .map(chunk -> ServerSentEvent.<String>builder()
-                        .data(chunk)
-                        .build())
+                .map(chunk -> ServerSentEvent.<String>builder().data(chunk).build())
                 .concatWith(Flux.just(
-                        ServerSentEvent.<String>builder()
-                                .event("done")
-                                .data("[DONE]")
-                                .build()));
+                        ServerSentEvent.<String>builder().event("done").data("[DONE]").build()));
     }
 
     /**
-     * 非流式对话接口（用于简单场景）。
+     * 非流式对话接口。
      */
     @PostMapping
-    public Map<String, String> chat(@RequestBody ChatRequest req) {
-        String sessionId = req.getSessionId() != null ? req.getSessionId() : "guest-" + System.currentTimeMillis();
+    public R<Map<String, String>> chat(@RequestBody ChatRequest req) {
+        String sessionId = req.getSessionId() != null
+                ? req.getSessionId()
+                : GUEST_SESSION_PREFIX + System.currentTimeMillis();
         String reply = chatService.chat(sessionId, req.getMessage());
-        return Map.of("reply", reply, "sessionId", sessionId);
+        return R.ok(Map.of("reply", reply, "sessionId", sessionId));
     }
 
     /**
-     * 获取对话历史。
+     * 获取对话历史（座席接入时加载上下文）。
      */
     @GetMapping("/history")
-    public List<Map<String, String>> history(@RequestParam String sessionId) {
-        return chatService.getHistory(sessionId);
+    public R<List<Map<String, String>>> history(@RequestParam String sessionId) {
+        return R.ok(chatService.getHistory(sessionId));
     }
 
     /**
-     * 清除对话历史（新建对话/退出时调用）。
+     * 清除对话历史。
      */
     @DeleteMapping("/history")
-    public Map<String, String> clearHistory(@RequestParam String sessionId) {
+    public R<Map<String, String>> clearHistory(@RequestParam String sessionId) {
         chatService.clearHistory(sessionId);
-        return Map.of("message", "会话历史已清除", "sessionId", sessionId);
+        return R.ok(Map.of("message", "会话历史已清除", "sessionId", sessionId));
     }
 
-    // ---- Request 内部类 ----
+    /**
+     * 用户请求转人工。
+     * 将当前会话加入座席等待队列，并通过 Redis Pub/Sub 实时通知座席。
+     * POST /api/v1/chat/transfer
+     */
+    @PostMapping("/transfer")
+    public R<SessionQueueItem> transfer(@RequestBody TransferRequest req) {
+        String reason = req.getTransferReason() != null ? req.getTransferReason() : DEFAULT_TRANSFER_REASON;
+        String tag = req.getTag() != null ? req.getTag() : DEFAULT_TAG;
+        return R.ok(sessionQueueService.enqueue(req.getSessionId(), req.getUserName(), reason, tag));
+    }
 
+    // ---- Request 内部类（【强制】必须有 toString，使用 @Data 统一处理） ----
+
+    @Data
     public static class ChatRequest {
-        /** 会话 ID，访客可传 null 由后端生成 */
+        /**
+         * 会话 ID，访客可传 null 由后端生成
+         */
         private String sessionId;
-        /** 用户消息内容 */
+        /**
+         * 用户消息内容
+         */
         private String message;
+    }
 
-        public String getSessionId() { return sessionId; }
-        public void setSessionId(String v) { this.sessionId = v; }
-        public String getMessage() { return message; }
-        public void setMessage(String v) { this.message = v; }
+    @Data
+    public static class TransferRequest {
+        /**
+         * 会话 ID
+         */
+        private String sessionId;
+
+        /**
+         * 用户名称
+         */
+        private String userName;
+
+        /**
+         * 转人工原因
+         */
+        private String transferReason;
+
+        /**
+         * 标签
+         */
+        private String tag;
     }
 }
