@@ -237,7 +237,7 @@ public class SessionQueueService {
                     sessionId, "\"status\":\"WAITING\"", updatedJson
             );
 
-            if (result == null || result == 0L) {
+            if (result == 0L) {
                 // CAS 失败：已被其他座席抢先接入
                 throw new SessionAlreadyAcceptedException(sessionId);
             }

@@ -1,45 +1,34 @@
 package com.aidevplatform.knowledge.infrastructure.mq;
 
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
-import org.springframework.data.redis.connection.stream.MapRecord;
-
-import java.util.Map;
+import lombok.NoArgsConstructor;
 
 /**
- * 文档摄取事件（Redis Streams 消息的业务封装）。
- * 上传 API 发布此消息到 Redis Streams，IngestWorker 消费并触发摄取管道。
+ * 文档摄取事件 DTO（RabbitMQ 消息体）。
+ *
+ * <p>上传 API 发布此消息到 {@code knowledge.doc.ingest} Exchange，
+ * {@code DocIngestConsumer} 消费并触发摄取管道。
+ *
+ * <p>Jackson 反序列化需要无参构造器 + setter，因此保留：
+ * {@code @Data + @NoArgsConstructor + @AllArgsConstructor + @Builder}。
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
 public class DocIngestEvent {
 
+    /** 文档 ID（与 knowledge_doc.id 对应） */
     private String docId;
+
+    /** 知识库 ID */
     private String kbId;
+
     /** 文件类型：MARKDOWN / PDF / HTML / DOCX / TICKET */
     private String fileType;
-    /** 文件存储路径（OSS/MinIO），格式：oss://bucket/path/file.pdf */
+
+    /** 文件存储路径，MinIO 格式：oss://bucket/docs/{docId}/{filename} */
     private String storagePath;
-
-    /** 转换为 Redis Streams 消息 payload */
-    public Map<String, String> toPayload() {
-        return Map.of(
-            "docId",       docId,
-            "kbId",        kbId,
-            "fileType",    fileType,
-            "storagePath", storagePath
-        );
-    }
-
-    /** 从 Redis Streams 消息 payload 反序列化 */
-    @SuppressWarnings("unchecked")
-    public static DocIngestEvent fromRecord(MapRecord<String, Object, Object> record) {
-        Map<Object, Object> body = record.getValue();
-        return DocIngestEvent.builder()
-            .docId(String.valueOf(body.get("docId")))
-            .kbId(String.valueOf(body.get("kbId")))
-            .fileType(String.valueOf(body.get("fileType")))
-            .storagePath(String.valueOf(body.get("storagePath")))
-            .build();
-    }
 }

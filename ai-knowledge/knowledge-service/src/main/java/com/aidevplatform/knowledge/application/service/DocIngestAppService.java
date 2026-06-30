@@ -4,18 +4,17 @@ import cn.dev33.satoken.stp.StpUtil;
 import com.aidevplatform.common.core.exception.BusinessException;
 import com.aidevplatform.common.core.page.PageResult;
 import com.aidevplatform.common.core.util.IdGenerator;
-import com.aidevplatform.common.web.redis.RedisStreamHelper;
 import com.aidevplatform.knowledge.domain.model.DocStatus;
 import com.aidevplatform.knowledge.domain.model.KnowledgeDoc;
 import com.aidevplatform.knowledge.domain.repository.KnowledgeDocRepository;
 import com.aidevplatform.knowledge.application.query.DocPageQuery;
 import com.aidevplatform.knowledge.infrastructure.mq.DocIngestEvent;
+import com.aidevplatform.knowledge.infrastructure.mq.DocIngestPublisher;
 import com.aidevplatform.knowledge.infrastructure.storage.MinioStorageService;
 import com.aidevplatform.knowledge.interfaces.rest.vo.DocStatusVO;
 import com.aidevplatform.knowledge.interfaces.rest.vo.DocUploadVO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -32,11 +31,8 @@ import java.util.List;
 public class DocIngestAppService {
 
     private final KnowledgeDocRepository docRepository;
-    private final RedisStreamHelper       streamHelper;
-    private final MinioStorageService     minioStorageService;
-
-    @Value("${knowledge.ingest.stream-key}")
-    private String streamKey;
+    private final DocIngestPublisher     publisher;
+    private final MinioStorageService    minioStorageService;
 
     // -------------------------------------------------------
     // 上传
@@ -62,14 +58,14 @@ public class DocIngestAppService {
             throw new BusinessException(500, "文件读取失败: " + e.getMessage());
         }
 
-        // Step 2：发布摄取事件到 Redis Streams
+        // Step 2：发布摄取事件到 RabbitMQ
         DocIngestEvent event = DocIngestEvent.builder()
             .docId(docId)
             .kbId(kbId)
             .fileType(fileType)
             .storagePath(storagePath)
             .build();
-        streamHelper.publish(streamKey, event.toPayload());
+        publisher.publish(event);
 
         // Step 3：写入数据库（使用真实 storagePath）
         KnowledgeDoc doc = KnowledgeDoc.builder()

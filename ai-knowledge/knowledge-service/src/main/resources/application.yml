@@ -20,6 +20,25 @@ spring:
           max-active: 8
           max-idle: 4
 
+  # -------- RabbitMQ（文档摄取队列，替换原 Redis Streams） --------
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:guest}
+    password: ${RABBITMQ_PASSWORD:guest}
+    # Publisher Confirms — Broker 持久化确认后才返回，保障发布端可靠性
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    listener:
+      simple:
+        # 消费端重试 3 次失败后 nack(requeue=false) → DLX → DLQ
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 1000
+          multiplier: 2.0
+          max-interval: 10000
+
 mybatis-plus:
   mapper-locations: classpath:mapper/*.xml
   type-aliases-package: com.aidevplatform.knowledge.infrastructure.persistence
@@ -36,13 +55,12 @@ server:
   port: 8081
 
 knowledge:
+  # 文档摄取 MQ 配置（RabbitMQ，替换原 Redis Streams）
   ingest:
-    stream-key: knowledge:doc:ingest
-    group-name: ingest-group
-    dlq-key: knowledge:doc:ingest:dlq
-    batch-size: 10
-    max-retries: 3
-    claim-idle-seconds: 60
+    exchange: knowledge.doc.ingest
+    queue: knowledge.doc.ingest.queue
+    dlq: knowledge.doc.ingest.dlq
+    routing-key: ingest
   chunk:
     max-tokens: 512
     overlap-tokens: 50

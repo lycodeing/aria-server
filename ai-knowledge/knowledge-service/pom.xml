@@ -62,6 +62,18 @@
             <artifactId>resilience4j-spring-boot3</artifactId>
         </dependency>
 
+        <!-- RabbitMQ 可靠消息（替换原 Redis Streams 摄取队列） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
+        <!-- Spring Retry（@Retryable 发布端重试支持） -->
+        <dependency>
+            <groupId>org.springframework.retry</groupId>
+            <artifactId>spring-retry</artifactId>
+        </dependency>
+
         <!-- 文档存储（MinIO S3 兼容对象存储） -->
         <dependency>
             <groupId>io.minio</groupId>

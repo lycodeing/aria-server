@@ -1,5 +1,7 @@
 package com.aidevplatform.conversation.application.exception;
 
+import lombok.Getter;
+
 /**
  * 会话入队失败时抛出的应用层异常。
  *
@@ -7,6 +9,7 @@ package com.aidevplatform.conversation.application.exception;
  * MQ 发布失败属于可降级场景，不抛此异常。
  * Controller 捕获后返回 HTTP 503 Service Unavailable。
  */
+@Getter
 public class SessionEnqueueException extends RuntimeException {
 
     private final String sessionId;
@@ -21,7 +24,4 @@ public class SessionEnqueueException extends RuntimeException {
         this.sessionId = sessionId;
     }
 
-    public String getSessionId() {
-        return sessionId;
-    }
 }
