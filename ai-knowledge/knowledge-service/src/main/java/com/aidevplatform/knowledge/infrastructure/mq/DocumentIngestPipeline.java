@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.stream.IntStream;
 
 /**
- * 文档摄取管道（异步处理，由 IngestWorker 触发）。
+ * 文档摄取管道（异步处理，由 DocIngestConsumer 触发）。
  * 职责：解析 → 拆分 → 质量过滤 → Embedding → 写向量库 → 更新文档状态。
  *
  * <p>完整流程：
@@ -52,11 +52,30 @@ public class DocumentIngestPipeline {
     /**
      * 执行完整摄取管道，事务保证摄取成功或全部回滚。
      *
-     * @param event 文档摄取事件（来自 Redis Streams）
+     * <p>幂等性保障（阿里规约：消息处理必须幂等）：
+     * <ol>
+     *   <li>入口判断 DB 文档状态：已 PUBLISHED 或 FAILED 直接返回，避免重复执行</li>
+     *   <li>写 chunk 前先 deleteByDocId，避免 MQ 重试导致脏数据残留</li>
+     * </ol>
+     *
+     * @param event 文档摄取事件（来自 RabbitMQ knowledge.doc.ingest.queue）
      */
     @Transactional(rollbackFor = Exception.class)
     public void process(DocIngestEvent event) {
         log.info("开始摄取文档，docId={}，fileType={}", event.getDocId(), event.getFileType());
+
+        // Step 0：幂等校验 - 已是 PUBLISHED 或 FAILED 状态不再处理
+        var docOpt = docRepository.findById(event.getDocId());
+        if (docOpt.isEmpty()) {
+            log.warn("文档不存在，可能 DB 写入尚未提交，跳过摄取等待重试 docId={}", event.getDocId());
+            throw new IllegalStateException("文档记录不存在: " + event.getDocId());
+        }
+        DocStatus currentStatus = docOpt.get().getStatus();
+        if (currentStatus == DocStatus.PUBLISHED || currentStatus == DocStatus.FAILED
+                || currentStatus == DocStatus.DEPRECATED) {
+            log.info("文档已为终态 status={}，跳过重复摄取 docId={}", currentStatus, event.getDocId());
+            return;
+        }
 
         // Step 1：下载文件内容
         byte[] content = loadContent(event.getStoragePath());
@@ -86,6 +105,8 @@ public class DocumentIngestPipeline {
         embeddingService.embed(chunks);
 
         // Step 7：写入 pgvector
+        // 幂等保障：MQ 重试场景下先删旧 chunk，再写新 chunk，避免重复
+        chunkRepository.deleteByDocId(event.getDocId());
         chunkRepository.saveAll(chunks);
 
         // Step 8：更新文档状态为 PUBLISHED

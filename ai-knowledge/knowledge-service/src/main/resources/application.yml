@@ -61,6 +61,10 @@ knowledge:
     queue: knowledge.doc.ingest.queue
     dlq: knowledge.doc.ingest.dlq
     routing-key: ingest
+    # 主队列消费线程数（同实例并发）
+    consumer-concurrency: 2
+    # DLQ 消费线程数，DLQ 量级低，单线程足够
+    dlq-concurrency: 1
   chunk:
     max-tokens: 512
     overlap-tokens: 50

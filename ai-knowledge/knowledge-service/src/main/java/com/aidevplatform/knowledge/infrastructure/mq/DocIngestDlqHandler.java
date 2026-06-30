@@ -2,10 +2,15 @@ package com.aidevplatform.knowledge.infrastructure.mq;
 
 import com.aidevplatform.knowledge.domain.model.DocStatus;
 import com.aidevplatform.knowledge.domain.repository.KnowledgeDocRepository;
+import com.aidevplatform.knowledge.infrastructure.config.RabbitMQConfig;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.AmqpRejectAndDontRequeueException;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.dao.DataAccessException;
 import org.springframework.stereotype.Component;
+import org.springframework.validation.annotation.Validated;
 
 import java.util.List;
 
@@ -19,10 +24,20 @@ import java.util.List;
  *   <li>打印 ERROR 日志供运维人员排查</li>
  * </ol>
  *
- * <p>DLQ 消费失败不再重试（避免无限循环），仅记录日志。
+ * <p>容器工厂 {@link RabbitMQConfig#DLQ_CONTAINER_FACTORY} 禁用 retry，
+ * 失败时通过 {@link AmqpRejectAndDontRequeueException} 显式丢弃消息，
+ * 避免与主队列的 retry 策略叠加导致无限循环。
+ *
+ * <p>异常处理策略（阿里规范：分类处理）：
+ * <ul>
+ *   <li>DB 异常 → ERROR 日志 + 抛 {@link AmqpRejectAndDontRequeueException}，消息丢弃，
+ *       需运维通过日志告警人工补偿（生产环境建议写 parking-lot 表）</li>
+ *   <li>非预期异常 → 同样丢弃避免阻塞 DLQ，但 ERROR 级日志可触发监控告警</li>
+ * </ul>
  */
 @Slf4j
 @Component
+@Validated
 @RequiredArgsConstructor
 public class DocIngestDlqHandler {
 
@@ -30,15 +45,24 @@ public class DocIngestDlqHandler {
 
     /**
      * 消费 DLQ 中的失败摄取事件，标记文档为 FAILED。
+     *
+     * @param event 失败的摄取事件
+     * @throws AmqpRejectAndDontRequeueException DB 操作失败时抛出，告知 Spring AMQP 直接丢弃不重入队
      */
-    @RabbitListener(queues = "${knowledge.ingest.dlq}", concurrency = "1")
-    public void handleDlq(DocIngestEvent event) {
+    @RabbitListener(
+            queues = "${knowledge.ingest.dlq}",
+            concurrency = "${knowledge.ingest.dlq-concurrency:1}",
+            containerFactory = RabbitMQConfig.DLQ_CONTAINER_FACTORY)
+    public void handleDlq(@Valid DocIngestEvent event) {
+        log.error("[MQ:DLQ] 文档摄取最终失败 docId={} kbId={} storagePath={}",
+                event.getDocId(), event.getKbId(), event.getStoragePath());
         try {
-            log.error("[DLQ] 文档摄取最终失败 docId={} kbId={} storagePath={}",
-                    event.getDocId(), event.getKbId(), event.getStoragePath());
             docRepository.updateStatusBatch(List.of(event.getDocId()), DocStatus.FAILED);
-        } catch (Exception e) {
-            log.error("[DLQ] 标记文档 FAILED 失败 docId={}", event.getDocId(), e);
+        } catch (DataAccessException e) {
+            // DB 不可用：日志告警 + 丢弃消息，避免在 DLQ 循环占用资源；运维需介入
+            log.error("[MQ:DLQ] DB 标记 FAILED 失败，请人工补偿 docId={}", event.getDocId(), e);
+            throw new AmqpRejectAndDontRequeueException(
+                    "DLQ Handler DB 操作失败 docId=" + event.getDocId(), e);
         }
     }
 }
