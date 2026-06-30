@@ -65,10 +65,11 @@ public class ConversationMessageConsumer {
 
         // 【强制】用枚举比较，消除字符串魔法值
         switch (eventType) {
-            case SESSION_START  -> handleSessionStart(payload, sessionId);
-            case SESSION_ACCEPT -> handleSessionAccept(payload, sessionId);
-            case SESSION_END    -> handleSessionEnd(payload, sessionId);
-            case MESSAGE        -> handleMessage(payload, sessionId);
+            case SESSION_START    -> handleSessionStart(payload, sessionId);
+            case SESSION_ACCEPT   -> handleSessionAccept(payload, sessionId);
+            case SESSION_TRANSFER -> handleSessionTransfer(payload, sessionId);
+            case SESSION_END      -> handleSessionEnd(payload, sessionId);
+            case MESSAGE          -> handleMessage(payload, sessionId);
         }
     }
 
@@ -90,13 +91,25 @@ public class ConversationMessageConsumer {
     }
 
     /**
-     * 处理 SESSION_ACCEPT：将 DB 中的会话状态从 WAITING 更新为 ACTIVE。
+     * 处理 SESSION_ACCEPT：将 DB 中的会话状态从 WAITING 更新为 ACTIVE，
+     * 同时写入接入座席 ID（agent_id 字段）。
      * 幂等：重复消费时 DB 行已是 ACTIVE，UPDATE 影响行数为 0，静默忽略。
      */
     private void handleSessionAccept(Map<String, Object> payload, String sessionId) {
         persistRepository.activateConversation(
             sessionId,
+            str(payload, ConversationStreamEvent.FIELD_AGENT_ID),
             toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)));
+    }
+
+    /**
+     * 处理 SESSION_TRANSFER：更新 DB 中的 agent_id 为目标座席。
+     * 状态保持 ACTIVE，仅所有权变更。
+     */
+    private void handleSessionTransfer(Map<String, Object> payload, String sessionId) {
+        persistRepository.transferConversation(
+            sessionId,
+            str(payload, ConversationStreamEvent.FIELD_TO_AGENT_ID));
     }
 
     /**

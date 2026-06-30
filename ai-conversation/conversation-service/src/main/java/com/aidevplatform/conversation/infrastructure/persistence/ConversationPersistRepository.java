@@ -76,12 +76,28 @@ public class ConversationPersistRepository {
      * @param sessionId  会话唯一标识
      * @param acceptedAt 接入时间
      */
-    public void activateConversation(String sessionId, OffsetDateTime acceptedAt) {
-        int affected = conversationMapper.activateBySessionId(sessionId, acceptedAt);
+    public void activateConversation(String sessionId, String agentId, OffsetDateTime acceptedAt) {
+        int affected = conversationMapper.activateBySessionId(sessionId, agentId, acceptedAt);
         if (affected == 0) {
             log.debug("[Persist] 会话不存在或已非 WAITING，忽略激活 sessionId={}", sessionId);
         } else {
-            log.debug("[Persist] 会话激活 ACTIVE sessionId={}", sessionId);
+            log.debug("[Persist] 会话激活 ACTIVE sessionId={} agentId={}", sessionId, agentId);
+        }
+    }
+
+    /**
+     * 转交会话：将 ACTIVE 会话的 agent_id 更新为目标座席。
+     * 状态保持 ACTIVE，仅所有权变更。
+     *
+     * @param sessionId     会话唯一标识
+     * @param targetAgentId 目标座席 ID
+     */
+    public void transferConversation(String sessionId, String targetAgentId) {
+        int affected = conversationMapper.transferBySessionId(sessionId, targetAgentId);
+        if (affected == 0) {
+            log.debug("[Persist] 会话不存在或非 ACTIVE，忽略转交 sessionId={}", sessionId);
+        } else {
+            log.debug("[Persist] 会话转交 sessionId={} → agentId={}", sessionId, targetAgentId);
         }
     }
 

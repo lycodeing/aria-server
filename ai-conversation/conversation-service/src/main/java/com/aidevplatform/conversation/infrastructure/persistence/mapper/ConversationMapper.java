@@ -34,21 +34,40 @@ import java.util.List;
 public interface ConversationMapper extends BaseMapper<ConversationEntity> {
 
     /**
-     * 将会话状态从 WAITING 更新为 ACTIVE（座席接入时触发）。
-     * 使用 LambdaUpdateWrapper，避免 @Update 中的魔法字符串。
+     * 将会话状态从 WAITING 更新为 ACTIVE，并写入接入座席 ID。
      * 仅当状态为 WAITING 时才更新，防止重复接入（幂等）。
      *
      * @param sessionId  会话唯一标识
+     * @param agentId    接入座席 ID
      * @param acceptedAt 接入时间
      * @return 受影响行数（0 表示不存在或已非 WAITING）
      */
     default int activateBySessionId(@Param("sessionId") String sessionId,
+                                    @Param("agentId") String agentId,
                                     @Param("acceptedAt") OffsetDateTime acceptedAt) {
         return update(Wrappers.lambdaUpdate(ConversationEntity.class)
                 .set(ConversationEntity::getStatus,    SessionStatus.ACTIVE.getValue())
+                .set(ConversationEntity::getAgentId,   agentId)
                 .set(ConversationEntity::getUpdatedAt, acceptedAt)
                 .eq(ConversationEntity::getSessionId,  sessionId)
                 .eq(ConversationEntity::getStatus,     SessionStatus.WAITING.getValue())
+        );
+    }
+
+    /**
+     * 将 ACTIVE 会话的 agent_id 更新为目标座席（转交）。
+     * 仅当会话仍为 ACTIVE 时才更新，避免覆盖已关闭会话。
+     *
+     * @param sessionId     会话唯一标识
+     * @param targetAgentId 目标座席 ID
+     * @return 受影响行数（0 表示不存在或已非 ACTIVE）
+     */
+    default int transferBySessionId(@Param("sessionId") String sessionId,
+                                    @Param("targetAgentId") String targetAgentId) {
+        return update(Wrappers.lambdaUpdate(ConversationEntity.class)
+                .set(ConversationEntity::getAgentId,  targetAgentId)
+                .eq(ConversationEntity::getSessionId, sessionId)
+                .eq(ConversationEntity::getStatus,    SessionStatus.ACTIVE.getValue())
         );
     }
 

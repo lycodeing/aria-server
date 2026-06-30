@@ -47,6 +47,9 @@ public class SessionQueueController {
     private static final long SSE_TIMEOUT_MS         = 30 * 60 * 1000L;
     /** 匿名座席 ID（token 未传或解析失败时使用） */
     private static final String ANONYMOUS_AGENT      = "anonymous";
+    /** 座席 ID 合法字符集（与 sessionId 一致），用于防注入和 JSON 转义风险 */
+    private static final java.util.regex.Pattern AGENT_ID_PATTERN =
+            java.util.regex.Pattern.compile("^[a-zA-Z0-9_\\-]{1,64}$");
 
     private final SessionQueueService  queueService;
     private final SessionEventSubscriber eventSubscriber;
@@ -93,7 +96,7 @@ public class SessionQueueController {
             String sessionId,
             @RequestParam(required = false) String token,
             @RequestHeader(value = "Authorization", required = false) String authorization) {
-        String agentId = resolveAgentId(token, authorization);
+        String agentId = requireAuthenticatedAgent(token, authorization);
         return R.ok(queueService.accept(sessionId, agentId));
     }
 
@@ -121,7 +124,11 @@ public class SessionQueueController {
             @RequestBody @Valid TransferRequest req,
             @RequestParam(required = false) String token,
             @RequestHeader(value = "Authorization", required = false) String authorization) {
-        String fromAgentId = resolveAgentId(token, authorization);
+        String fromAgentId = requireAuthenticatedAgent(token, authorization);
+        if (!AGENT_ID_PATTERN.matcher(req.getTargetAgentId()).matches()) {
+            throw new com.aidevplatform.common.core.exception.BusinessException(
+                    400, "targetAgentId 格式非法");
+        }
         queueService.transfer(sessionId, fromAgentId, req.getTargetAgentId());
         return R.ok();
     }
@@ -193,6 +200,7 @@ public class SessionQueueController {
      * 从 token query param 或 Authorization header 中解析座席 ID。
      * Phase-1：直接使用 token 值作为 agentId；
      * Phase-2（TODO）：接入 Sa-Token，通过 StpUtil.getLoginIdByToken(token) 获取真实 userId。
+     * SSE 等无 token 的访问返回 {@link #ANONYMOUS_AGENT}。
      */
     private String resolveAgentId(String token, String authorization) {
         if (token != null && !token.isBlank()) {
@@ -203,6 +211,27 @@ public class SessionQueueController {
             if (!bearer.isBlank()) return bearer;
         }
         return ANONYMOUS_AGENT;
+    }
+
+    /**
+     * 要求请求必须携带合法 token，对需要写操作的接口（accept/transfer）使用。
+     * <ul>
+     *   <li>无 token → 401</li>
+     *   <li>token 格式非法 → 400</li>
+     *   <li>合法 → 返回 agentId</li>
+     * </ul>
+     */
+    private String requireAuthenticatedAgent(String token, String authorization) {
+        String agentId = resolveAgentId(token, authorization);
+        if (ANONYMOUS_AGENT.equals(agentId)) {
+            throw new com.aidevplatform.common.core.exception.BusinessException(
+                    401, "未登录或登录已过期");
+        }
+        if (!AGENT_ID_PATTERN.matcher(agentId).matches()) {
+            throw new com.aidevplatform.common.core.exception.BusinessException(
+                    400, "agentId 格式非法");
+        }
+        return agentId;
     }
 
     // ---- 请求体 DTO ----

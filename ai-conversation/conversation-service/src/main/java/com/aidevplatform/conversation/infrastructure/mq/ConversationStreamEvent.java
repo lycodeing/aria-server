@@ -46,6 +46,12 @@ public final class ConversationStreamEvent {
     public static final String FIELD_TAG             = "tag";
     public static final String FIELD_TRANSFER_REASON = "transferReason";
     public static final String FIELD_TIMESTAMP       = "timestamp";
+    /** 座席接入或转交事件的座席 ID，对应 cs_conversation.agent_id 字段 */
+    public static final String FIELD_AGENT_ID        = "agentId";
+    /** 转交事件的源座席 ID（仅 SESSION_TRANSFER 有效） */
+    public static final String FIELD_FROM_AGENT_ID   = "fromAgentId";
+    /** 转交事件的目标座席 ID（仅 SESSION_TRANSFER 有效） */
+    public static final String FIELD_TO_AGENT_ID     = "toAgentId";
 
     /**
      * 消息类型枚举
@@ -58,6 +64,8 @@ public final class ConversationStreamEvent {
         /** 座席接入会话（WAITING → ACTIVE） */
         SESSION_ACCEPT,
         /** 会话结束（座席主动关闭或断线） */
-        SESSION_END
+        SESSION_END,
+        /** 会话转交（A 座席 → B 座席，状态仍为 ACTIVE） */
+        SESSION_TRANSFER
     }
 }

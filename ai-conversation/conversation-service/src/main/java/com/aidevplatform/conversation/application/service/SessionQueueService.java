@@ -67,7 +67,8 @@ public class SessionQueueService {
     private static final String ACCEPT_CAS_LUA =
             "local val = redis.call('HGET', KEYS[1], ARGV[1])\n" +
             "if val == false then return 0 end\n" +
-            "if string.find(val, ARGV[2]) == nil then return 0 end\n" +
+            // plain=true（第4个参数）关闭 Lua 模式匹配，与 TRANSFER_CAS_LUA 保持一致
+            "if string.find(val, ARGV[2], 1, true) == nil then return 0 end\n" +
             "redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])\n" +
             "return 1";
 
@@ -243,7 +244,7 @@ public class SessionQueueService {
 
             // CAS 成功后广播事件和持久化
             publishEvent(new SessionEvent(SessionEventType.ACCEPTED, updated));
-            publishSessionAccept(sessionId, Instant.now().getEpochSecond());
+            publishSessionAccept(sessionId, agentId, Instant.now().getEpochSecond());
             log.info("[SessionQueue] accept 成功 sessionId={}", sessionId);
             return updated;
         } catch (SessionAlreadyAcceptedException | IllegalArgumentException e) {
@@ -365,9 +366,12 @@ public class SessionQueueService {
                 throw new IllegalStateException("会话归属已变更，无法转交: " + sessionId);
             }
 
-            // 广播 TRANSFER 事件，前端：发起方移除会话，目标方自动接入
+            // 广播 TRANSFER 事件（前端：发起方移除会话，目标方自动接入）
             publishEvent(new SessionEvent(
                     SessionEventType.TRANSFER, transferred, fromAgentId, targetAgentId));
+            // 持久化：DB 中 agent_id 更新为 toAgentId（source of truth）
+            publishSessionTransfer(sessionId, fromAgentId, targetAgentId,
+                    Instant.now().getEpochSecond());
             log.info("[SessionQueue] 会话转交 sessionId={} {} → {}",
                     sessionId, fromAgentId, targetAgentId);
         } catch (IllegalArgumentException | IllegalStateException e) {
@@ -476,13 +480,26 @@ public class SessionQueueService {
 
     /**
      * 发布座席接入事件到持久化 RabbitMQ Direct Exchange。
-     * Consumer 消费后将 DB 状态从 WAITING 更新为 ACTIVE。
+     * Consumer 消费后将 DB 状态从 WAITING 更新为 ACTIVE，并写入 agentId。
      */
-    private void publishSessionAccept(String sessionId, long timestamp) {
+    private void publishSessionAccept(String sessionId, String agentId, long timestamp) {
         try {
-            publisher.publishSessionAccept(sessionId, timestamp);
+            publisher.publishSessionAccept(sessionId, agentId, timestamp);
         } catch (Exception e) {
             log.warn("[SessionQueue] SESSION_ACCEPT MQ 发布失败 sessionId={}", sessionId, e);
+        }
+    }
+
+    /**
+     * 发布会话转交事件到持久化 RabbitMQ Direct Exchange。
+     * Consumer 消费后将 DB 中的 agent_id 更新为目标座席。
+     */
+    private void publishSessionTransfer(String sessionId, String fromAgentId,
+                                        String toAgentId, long timestamp) {
+        try {
+            publisher.publishSessionTransfer(sessionId, fromAgentId, toAgentId, timestamp);
+        } catch (Exception e) {
+            log.warn("[SessionQueue] SESSION_TRANSFER MQ 发布失败 sessionId={}", sessionId, e);
         }
     }
 
