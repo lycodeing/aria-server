@@ -17,16 +17,6 @@ spring:
       maximum-pool-size: 5
       minimum-idle: 1
 
-  # -------- Flyway（自动建表） --------
-  flyway:
-    schemas: cs_conversation
-    locations: classpath:db/migration
-    default-schema: cs_conversation
-    create-schemas: true
-    baseline-on-migrate: true
-    baseline-version: 0
-    validate-on-migrate: true
-
   # -------- Redis --------
   data:
     redis:

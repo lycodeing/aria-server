@@ -38,6 +38,12 @@ public class ConversationEntity {
     private String tag;
 
     /**
+     * 接入座席 ID（WAITING 时为 null，ACTIVE 后填入座席 ID）。
+     * 转交会话时更新为新座席 ID。
+     */
+    private String agentId;
+
+    /**
      * 会话状态枚举（WAITING / ACTIVE / CLOSED）。
      * MyBatis-Plus 自动将枚举的 {@code @EnumValue} 字段值映射到 DB VARCHAR 列。
      */

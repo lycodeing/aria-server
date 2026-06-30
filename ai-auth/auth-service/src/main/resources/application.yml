@@ -12,15 +12,6 @@ spring:
     hikari:
       maximum-pool-size: 10
       minimum-idle: 2
-  flyway:
-    schemas: cs_auth
-    locations: classpath:db/migration
-    default-schema: cs_auth
-    create-schemas: true
-    baseline-on-migrate: true
-    baseline-version: 0
-    validate-on-migrate: false
-    out-of-order: false
   data:
     redis:
       host: ${REDIS_HOST:localhost}
