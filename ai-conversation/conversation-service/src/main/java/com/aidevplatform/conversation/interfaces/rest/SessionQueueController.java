@@ -36,6 +36,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 @RestController
 @RequestMapping("/api/v1/sessions")
 @RequiredArgsConstructor
+@CrossOrigin(origins = "${app.cors.allowed-origins}")
 public class SessionQueueController {
 
     private static final long HEARTBEAT_INTERVAL_SEC = 20L;

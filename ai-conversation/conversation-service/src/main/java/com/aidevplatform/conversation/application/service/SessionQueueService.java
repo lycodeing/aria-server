@@ -230,6 +230,9 @@ public class SessionQueueService {
             return updated;
         } catch (SessionAlreadyAcceptedException | IllegalArgumentException e) {
             throw e;
+        } catch (IllegalStateException e) {
+            // 非 WAITING 状态时 transitionTo 抛出 IllegalStateException，统一翻译为 409
+            throw new SessionAlreadyAcceptedException(sessionId);
         } catch (Exception e) {
             log.error("[SessionQueue] accept error sessionId={}", sessionId, e);
             throw new RuntimeException(e);
