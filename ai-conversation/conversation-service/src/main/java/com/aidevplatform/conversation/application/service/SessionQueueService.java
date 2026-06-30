@@ -22,6 +22,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * 会话队列服务。
@@ -62,8 +63,8 @@ public class SessionQueueService {
     /** CAS 期望源座席标记模板：transfer 时校验当前 agentId 匹配（plain-mode 字符串拼接） */
     private static final String MARKER_AGENT_ID_TPL   = "\"agentId\":\"%s\"";
     /** agentId 合法字符集：与 SessionQueueController 校验一致，防止 JSON 注入破坏 CAS 标记 */
-    private static final java.util.regex.Pattern AGENT_ID_PATTERN =
-            java.util.regex.Pattern.compile("^[a-zA-Z0-9_\\-]{1,64}$");
+    private static final Pattern AGENT_ID_PATTERN =
+            Pattern.compile("^[a-zA-Z0-9_\\-]{1,64}$");
 
     private final RedisCacheHelper             cache;
     private final RedisLockHelper              lockHelper;
@@ -151,7 +152,7 @@ public class SessionQueueService {
                 if (status == item.status()) {
                     result.add(item);
                 }
-            } catch (Exception e) {
+            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
                 log.warn("[SessionQueue] deserialize failed, val={}", val, e);
             }
         }
@@ -196,9 +197,9 @@ public class SessionQueueService {
         } catch (IllegalStateException e) {
             // 非 WAITING 状态时 transitionTo 抛出 IllegalStateException，统一翻译为 409
             throw new SessionAlreadyAcceptedException(sessionId);
-        } catch (Exception e) {
-            log.error("[SessionQueue] accept error sessionId={}", sessionId, e);
-            throw new RuntimeException(e);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            log.error("[SessionQueue] accept 序列化失败 sessionId={}", sessionId, e);
+            throw new RuntimeException("会话数据损坏: " + sessionId, e);
         }
     }
 
@@ -226,8 +227,11 @@ public class SessionQueueService {
                 cache.hDelete(QUEUE_KEY, sessionId); // 幂等，无数据时 no-op
             }
             publishSessionEnd(sessionId);
-        } catch (Exception e) {
-            log.error("[SessionQueue] close error sessionId={}", sessionId, e);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            log.error("[SessionQueue] close 序列化失败 sessionId={}", sessionId, e);
+        } catch (IllegalStateException e) {
+            // transitionTo 检测到非法状态转换（如 CLOSED→CLOSED），属预期失败
+            log.warn("[SessionQueue] close 状态机校验失败 sessionId={} msg={}", sessionId, e.getMessage());
         }
     }
 
@@ -242,7 +246,7 @@ public class SessionQueueService {
             try {
                 SessionQueueItem item = objectMapper.readValue(rawJson, SessionQueueItem.class);
                 return SessionStatus.ACTIVE == item.status();
-            } catch (Exception e) {
+            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
                 log.warn("[SessionQueue] isActive deserialize error sessionId={}", sessionId, e);
             }
         }
@@ -303,9 +307,9 @@ public class SessionQueueService {
                     sessionId, fromAgentId, targetAgentId);
         } catch (IllegalArgumentException | IllegalStateException e) {
             throw e;
-        } catch (Exception e) {
-            log.error("[SessionQueue] transfer error sessionId={}", sessionId, e);
-            throw new RuntimeException(e);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            log.error("[SessionQueue] transfer 序列化失败 sessionId={}", sessionId, e);
+            throw new RuntimeException("会话数据损坏: " + sessionId, e);
         }
     }
 
@@ -347,7 +351,7 @@ public class SessionQueueService {
                 if (item.status() == SessionStatus.ACTIVE && item.agentId() != null) {
                     activeCount.merge(item.agentId(), 1L, Long::sum);
                 }
-            } catch (Exception ignored) {
+            } catch (com.fasterxml.jackson.core.JsonProcessingException ignored) {
                 // 忽略坏数据，详细日志已在 getByStatus 中输出
             }
         });
@@ -359,7 +363,7 @@ public class SessionQueueService {
                 String name = (String) info.get("name");
                 long sessions = activeCount.getOrDefault((String) agentId, 0L);
                 result.add(new OnlineAgentVO((String) agentId, name, sessions));
-            } catch (Exception e) {
+            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
                 log.warn("[SessionQueue] 解析在线座席失败 agentId={}", agentId, e);
             }
         });
@@ -373,7 +377,7 @@ public class SessionQueueService {
     private void publishEvent(SessionEvent event) {
         try {
             rabbitTemplate.convertAndSend(eventsExchange, "", event);
-        } catch (Exception e) {
+        } catch (org.springframework.amqp.AmqpException e) {
             log.error("[SessionQueue] Fanout 事件发布失败", e);
         }
     }
@@ -382,7 +386,7 @@ public class SessionQueueService {
                                      String transferReason, String tag, long timestamp) {
         try {
             publisher.publishSessionStart(sessionId, visitorName, transferReason, tag, timestamp);
-        } catch (Exception e) {
+        } catch (org.springframework.amqp.AmqpException e) {
             log.warn("[SessionQueue] SESSION_START MQ 发布失败 sessionId={}", sessionId, e);
         }
     }
@@ -390,7 +394,7 @@ public class SessionQueueService {
     private void publishSessionAccept(String sessionId, String agentId, long timestamp) {
         try {
             publisher.publishSessionAccept(sessionId, agentId, timestamp);
-        } catch (Exception e) {
+        } catch (org.springframework.amqp.AmqpException e) {
             log.warn("[SessionQueue] SESSION_ACCEPT MQ 发布失败 sessionId={}", sessionId, e);
         }
     }
@@ -399,7 +403,7 @@ public class SessionQueueService {
                                         String toAgentId, long timestamp) {
         try {
             publisher.publishSessionTransfer(sessionId, fromAgentId, toAgentId, timestamp);
-        } catch (Exception e) {
+        } catch (org.springframework.amqp.AmqpException e) {
             log.warn("[SessionQueue] SESSION_TRANSFER MQ 发布失败 sessionId={}", sessionId, e);
         }
     }
@@ -407,7 +411,7 @@ public class SessionQueueService {
     private void publishSessionEnd(String sessionId) {
         try {
             publisher.publishSessionEnd(sessionId);
-        } catch (Exception e) {
+        } catch (org.springframework.amqp.AmqpException e) {
             log.warn("[SessionQueue] SESSION_END MQ 发布失败 sessionId={}", sessionId, e);
         }
     }

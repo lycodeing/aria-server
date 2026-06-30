@@ -213,13 +213,19 @@ public class RedisCacheHelper {
      */
     public void replaceListAtomically(String key, List<String> elements, Duration ttl) {
         validateTtl(key, ttl);
+        // 工具层不兜底 null 元素：写入空串会污染读端配对解析（如 [role,content] 序列），
+        // 调用方必须保证传入完整数据
+        for (int i = 0; i < elements.size(); i++) {
+            if (elements.get(i) == null) {
+                throw new IllegalArgumentException("elements 不允许包含 null，index=" + i + " key=" + key);
+            }
+        }
         byte[] rawKey = key.getBytes(StandardCharsets.UTF_8);
         long   ttlSec = ttl.getSeconds();
         redis.executePipelined((RedisCallback<Object>) connection -> {
             connection.keyCommands().del(rawKey);
             for (String element : elements) {
-                connection.listCommands().rPush(rawKey,
-                        element != null ? element.getBytes(StandardCharsets.UTF_8) : new byte[0]);
+                connection.listCommands().rPush(rawKey, element.getBytes(StandardCharsets.UTF_8));
             }
             connection.keyCommands().expire(rawKey, ttlSec);
             return null;

@@ -61,9 +61,14 @@ public class RedisCounterHelper {
      *       保证窗口语义（滑动窗口/封禁累计）</li>
      * </ul>
      *
+     * <p><b>失败语义：</b>Lua 执行返回 null（Redis 连接异常等）时抛出
+     * {@link IllegalStateException}，由调用方决定降级策略（fail-open 放行 vs fail-close 拒绝）。
+     * 工具层不擅自将 null 转为 0，否则限流场景会被错误绕过。
+     *
      * @param key 计数器 key
      * @param ttl 首次写入时的过期时间
-     * @return 累计后的计数值，Lua 异常时返回 0
+     * @return 累计后的计数值（保证非 null）
+     * @throws IllegalStateException Redis 执行异常（业务侧需做降级处理）
      */
     public long increment(String key, Duration ttl) {
         validateDuration(key, ttl, "TTL");
@@ -72,7 +77,11 @@ public class RedisCounterHelper {
                 Collections.singletonList(key),
                 String.valueOf(ttl.getSeconds())
         );
-        return count != null ? count : 0L;
+        if (count == null) {
+            // 不擅自降级为 0：限流/封禁场景下 fail-open 等于关闭防护，由调用方决策
+            throw new IllegalStateException("Redis INCR 返回 null，key=" + key);
+        }
+        return count;
     }
 
     /**

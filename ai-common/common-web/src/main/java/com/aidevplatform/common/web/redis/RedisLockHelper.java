@@ -121,7 +121,8 @@ public class RedisLockHelper {
                 Collections.singletonList(hashKey),
                 field, expectedMarker, newValue
         );
-        return result == 1L;
+        // 显式 null 守卫，避免自动拆箱 NPE（与 unlock 保持一致风格）
+        return result != null && result == 1L;
     }
 
     // ----------------------------------------------------------------

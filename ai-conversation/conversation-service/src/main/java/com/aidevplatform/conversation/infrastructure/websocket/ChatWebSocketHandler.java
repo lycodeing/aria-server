@@ -126,7 +126,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             @SuppressWarnings("unchecked")
             Map<String, Object> body = objectMapper.readValue(message.getPayload(), Map.class);
             content = (String) body.getOrDefault("content", message.getPayload());
-        } catch (Exception e) {
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            // 客户端可能直接发送纯文本而非 JSON，降级处理
             log.debug("[WS] message payload is not JSON, treat as plain text sessionId={}", sessionId);
             content = message.getPayload();
         }
@@ -138,7 +139,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             historyRepository.append(sessionId, MessageRole.USER.getValue(), content);
             Map<String, Object> msg = Map.of(
                     "type", MSG_TYPE_MESSAGE, "sessionId", sessionId,
-                    "role", MessageRole.USER.getValue(), "content", content, "timestamp", ts
+                    "role", MessageRole.USER.getValue(),
+                    "content", content, "timestamp", ts
             );
             notifyAgent(sessionId, msg);
             log.debug("[WS] user→agent sessionId={}", sessionId);
@@ -147,7 +149,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             historyRepository.appendAgentMessage(sessionId, content);
             Map<String, Object> msg = Map.of(
                     "type", MSG_TYPE_MESSAGE, "sessionId", sessionId,
-                    "role", MessageRole.AGENT.getValue(), "content", content, "timestamp", ts
+                    "role", MessageRole.AGENT.getValue(),
+                    "content", content, "timestamp", ts
             );
             notifyVisitor(sessionId, msg);
             log.debug("[WS] agent→user sessionId={}", sessionId);
@@ -167,12 +170,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             log.info("[WS] visitor disconnected sessionId={}", sessionId);
         } else {
             agentSessions.remove(sessionId);
-            // 座席断开时关闭 Redis 中的会话，避免访客消息永远进入死会话
-            try {
-                sessionQueueService.close(sessionId);
-            } catch (Exception e) {
-                log.warn("[WS] close session on agent disconnect failed sessionId={}", sessionId, e);
-            }
+            // 座席断开时关闭 Redis 中的会话，避免访客消息永远进入死会话。
+            // SessionQueueService.close 内部已统一处理异常（JsonProcessingException / IllegalStateException），
+            // 此处不再额外包 try-catch 以免掩盖编程错误。
+            sessionQueueService.close(sessionId);
             log.info("[WS] agent disconnected sessionId={}", sessionId);
         }
     }
@@ -192,12 +193,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             visitorSessions.remove(sessionId);
         } else {
             agentSessions.remove(sessionId);
-            // 座席端断线时同步关闭会话状态
-            try {
-                sessionQueueService.close(sessionId);
-            } catch (Exception closeEx) {
-                log.warn("座席传输错误后关闭会话失败，sessionId={}", sessionId, closeEx);
-            }
+            // 座席端断线时同步关闭会话状态。SessionQueueService.close 已统一处理异常，不再外包 try-catch。
+            sessionQueueService.close(sessionId);
         }
     }
 
