@@ -15,6 +15,7 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -51,10 +52,18 @@ public class SessionQueueService {
     /** 在线座席注册表，Hash：{agentId → JSON{name,connectedAt}} */
     private static final String ONLINE_AGENTS_KEY = "agent:online";
 
+    /** 会话队列 Hash 的 TTL（每次写入刷新，避免脏数据永久驻留） */
+    private static final Duration QUEUE_HASH_TTL  = Duration.ofDays(1);
+    /** 在线座席 Hash 的 TTL（每次注册/续期刷新） */
+    private static final Duration ONLINE_HASH_TTL = Duration.ofHours(12);
+
     /** CAS 期望状态标记：accept 时校验当前为 WAITING */
     private static final String MARKER_STATUS_WAITING = "\"status\":\"WAITING\"";
     /** CAS 期望源座席标记模板：transfer 时校验当前 agentId 匹配（plain-mode 字符串拼接） */
     private static final String MARKER_AGENT_ID_TPL   = "\"agentId\":\"%s\"";
+    /** agentId 合法字符集：与 SessionQueueController 校验一致，防止 JSON 注入破坏 CAS 标记 */
+    private static final java.util.regex.Pattern AGENT_ID_PATTERN =
+            java.util.regex.Pattern.compile("^[a-zA-Z0-9_\\-]{1,64}$");
 
     private final RedisCacheHelper             cache;
     private final RedisLockHelper              lockHelper;
@@ -99,9 +108,10 @@ public class SessionQueueService {
                 Instant.now().getEpochSecond(), SessionStatus.WAITING, null
         );
         try {
-            cache.hPut(QUEUE_KEY, sessionId, objectMapper.writeValueAsString(item));
-        } catch (Exception e) {
-            log.error("[SessionQueue] enqueue Redis 写入失败 sessionId={}", sessionId, e);
+            // 使用带 TTL 的 hPut，防止 Hash 永不过期（会话异常未 close 时由 TTL 兜底清理）
+            cache.hPut(QUEUE_KEY, sessionId, objectMapper.writeValueAsString(item), QUEUE_HASH_TTL);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            log.error("[SessionQueue] enqueue 序列化失败 sessionId={}", sessionId, e);
             throw new SessionEnqueueException("会话入队失败，请稍后重试", sessionId, e);
         }
         publishEvent(new SessionEvent(SessionEventType.ENQUEUE, item));
@@ -174,6 +184,8 @@ public class SessionQueueService {
             if (!ok) {
                 throw new SessionAlreadyAcceptedException(sessionId);
             }
+            // CAS 成功后刷新 Hash 整体 TTL，避免长会话过期被驱逐
+            cache.expire(QUEUE_KEY, QUEUE_HASH_TTL);
 
             publishEvent(new SessionEvent(SessionEventType.ACCEPTED, updated));
             publishSessionAccept(sessionId, agentId, Instant.now().getEpochSecond());
@@ -247,6 +259,15 @@ public class SessionQueueService {
      * <p>使用 {@link RedisLockHelper#compareAndSetHashField} 校验当前 agentId 后原子更新。
      */
     public void transfer(String sessionId, String fromAgentId, String targetAgentId) {
+        // 二次防护：fromAgentId 即将拼入 CAS 标记字符串，若含特殊字符（"、\、控制字符）
+        // 会破坏 Jackson 输出的 JSON 转义形式，导致 CAS 永远失败（DoS）或匹配错误字段值。
+        // Controller 层已校验，此处再做兜底防御。
+        if (fromAgentId == null || !AGENT_ID_PATTERN.matcher(fromAgentId).matches()) {
+            throw new IllegalArgumentException("fromAgentId 格式非法: " + fromAgentId);
+        }
+        if (targetAgentId == null || !AGENT_ID_PATTERN.matcher(targetAgentId).matches()) {
+            throw new IllegalArgumentException("targetAgentId 格式非法: " + targetAgentId);
+        }
         if (!cache.hHasKey(ONLINE_AGENTS_KEY, targetAgentId)) {
             throw new IllegalArgumentException("目标座席不在线: " + targetAgentId);
         }
@@ -271,6 +292,8 @@ public class SessionQueueService {
             if (!ok) {
                 throw new IllegalStateException("会话归属已变更，无法转交: " + sessionId);
             }
+            // CAS 成功后刷新 Hash 整体 TTL
+            cache.expire(QUEUE_KEY, QUEUE_HASH_TTL);
 
             publishEvent(new SessionEvent(
                     SessionEventType.TRANSFER, transferred, fromAgentId, targetAgentId));
@@ -288,15 +311,18 @@ public class SessionQueueService {
 
     // ---- 在线座席注册表 ----
 
-    /** 注册座席上线（SSE 连接建立时调用） */
+    /**
+     * 注册座席上线（SSE 连接建立时调用）。
+     * 使用带 TTL 的 hPut，座席异常断连不再调用 deregister 时由 TTL 兜底清理。
+     */
     public void registerAgent(String agentId, String displayName) {
         try {
             String value = objectMapper.writeValueAsString(
                     Map.of("name", displayName, "connectedAt", Instant.now().getEpochSecond()));
-            cache.hPut(ONLINE_AGENTS_KEY, agentId, value);
+            cache.hPut(ONLINE_AGENTS_KEY, agentId, value, ONLINE_HASH_TTL);
             log.debug("[SessionQueue] 座席上线 agentId={} name={}", agentId, displayName);
-        } catch (Exception e) {
-            log.warn("[SessionQueue] 注册座席失败 agentId={}", agentId, e);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            log.warn("[SessionQueue] 注册座席序列化失败 agentId={}", agentId, e);
         }
     }
 
@@ -313,8 +339,8 @@ public class SessionQueueService {
             return List.of();
         }
 
-        // 统计每个 agentId 的 ACTIVE 会话数
-        Map<String, Long> activeCount = new HashMap<>();
+        // 统计每个 agentId 的 ACTIVE 会话数（容量按 agentMap 估算，避免扩容）
+        Map<String, Long> activeCount = new HashMap<>((int) (agentMap.size() / 0.75f) + 1);
         cache.hEntries(QUEUE_KEY).forEach((k, v) -> {
             try {
                 SessionQueueItem item = objectMapper.readValue((String) v, SessionQueueItem.class);

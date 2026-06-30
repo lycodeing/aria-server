@@ -3,9 +3,12 @@ package com.aidevplatform.common.web.redis;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.Collections;
 
 /**
  * Redis 计数器与频率限制封装（职责：计数）。
@@ -25,27 +28,48 @@ import java.time.Duration;
 @RequiredArgsConstructor
 public class RedisCounterHelper {
 
+    /**
+     * 原子 INCR + 首次 EXPIRE 的 Lua 脚本。
+     *
+     * <p>当返回值 == 1 时（即首次写入）才设置 TTL，保证滑动窗口/计数语义正确，
+     * 同时避免 Java 端 INCR-EXPIRE 两次 RTT 之间崩溃导致的 key 永久驻留。
+     */
+    private static final String INCR_WITH_TTL_LUA =
+            "local v = redis.call('INCR', KEYS[1])\n" +
+            "if v == 1 then\n" +
+            "    redis.call('EXPIRE', KEYS[1], ARGV[1])\n" +
+            "end\n" +
+            "return v";
+
+    private static final RedisScript<Long> INCR_WITH_TTL_SCRIPT =
+            new DefaultRedisScript<>(INCR_WITH_TTL_LUA, Long.class);
+
     private final StringRedisTemplate redis;
 
     /**
-     * 原子 INCR 并在首次写入时设置 TTL。
+     * 原子 INCR 并在首次写入时设置 TTL（Lua 脚本保证原子性）。
      *
-     * <p>当 key 不存在时 INCR 返回 1，此时再设置 TTL，避免 key 永不过期。
-     * 后续调用仅 INCR，不刷新 TTL（保证窗口语义）。
+     * <p>实现要点（避免双 RTT 竞态）：
+     * <ul>
+     *   <li>整个 INCR + EXPIRE 在 Redis 服务端单线程内完成，不会出现
+     *       "INCR 已写入但 EXPIRE 未执行导致 key 永久驻留" 的故障窗口</li>
+     *   <li>当 INCR 返回 1 时（即首次写入）才设置 TTL，后续 INCR 不刷新 TTL，
+     *       保证窗口语义（滑动窗口/封禁累计）</li>
+     * </ul>
      *
      * @param key 计数器 key
      * @param ttl 首次写入时的过期时间
-     * @return 累计后的计数值
+     * @return 累计后的计数值，Lua 异常时返回 0
      */
     public long increment(String key, Duration ttl) {
         if (ttl == null || ttl.isZero() || ttl.isNegative()) {
             throw new IllegalArgumentException("TTL 必须大于零 key=" + key);
         }
-        Long count = redis.opsForValue().increment(key);
-        if (count != null && count == 1L) {
-            // 首次写入：设置 TTL，避免永不过期
-            redis.expire(key, ttl);
-        }
+        Long count = redis.execute(
+                INCR_WITH_TTL_SCRIPT,
+                Collections.singletonList(key),
+                String.valueOf(ttl.getSeconds())
+        );
         return count != null ? count : 0L;
     }
 

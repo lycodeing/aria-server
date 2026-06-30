@@ -22,6 +22,13 @@ import java.util.List;
  *   <li>通用 Lua：{@link #executeLua} 暴露底层执行，业务可注入自定义脚本</li>
  * </ol>
  *
+ * <p>能力边界（轻量实现，不支持以下高级特性，需更高保障请引入 Redisson）：
+ * <ul>
+ *   <li><b>非可重入</b>：同一线程二次 tryLock 同一 key 会立即失败</li>
+ *   <li><b>不自动续期</b>：业务持锁时间不得超过 TTL，否则锁过期被他人抢占</li>
+ *   <li><b>非公平锁</b>：竞争失败后调用方自己决定退避/重试策略</li>
+ * </ul>
+ *
  * <p>所有锁必须设置 TTL，避免死锁；释放锁通过比对 owner 防止误删他人持有的锁。
  */
 @Slf4j
@@ -112,7 +119,7 @@ public class RedisLockHelper {
                 Collections.singletonList(hashKey),
                 field, expectedMarker, newValue
         );
-        return result != null && result == 1L;
+        return result == 1L;
     }
 
     // ----------------------------------------------------------------

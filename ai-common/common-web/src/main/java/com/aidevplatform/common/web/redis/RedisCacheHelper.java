@@ -8,7 +8,9 @@ import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,7 +45,15 @@ public class RedisCacheHelper {
         return redis.opsForValue().get(key);
     }
 
-    /** 获取并反序列化为指定类型对象 */
+    /**
+     * 获取并反序列化为指定类型对象。
+     *
+     * @param key   缓存 key
+     * @param clazz 目标类型
+     * @return 反序列化后的对象；key 不存在返回 null
+     * @throws CacheDeserializeException 缓存值无法反序列化为目标类型（数据腐化），
+     *         由调用方决定是删除重建还是降级，避免被静默当作"未命中"重复回源
+     */
     public <T> T get(String key, Class<T> clazz) {
         String raw = redis.opsForValue().get(key);
         if (raw == null) {
@@ -52,8 +62,9 @@ public class RedisCacheHelper {
         try {
             return clazz == String.class ? clazz.cast(raw) : objectMapper.readValue(raw, clazz);
         } catch (JsonProcessingException e) {
-            log.warn("[RedisCache] 反序列化失败 key={} class={}", key, clazz.getName(), e);
-            return null;
+            log.error("[RedisCache] 反序列化失败 key={} class={}", key, clazz.getName(), e);
+            throw new CacheDeserializeException(key,
+                    "缓存值无法反序列化为 " + clazz.getName() + " key=" + key, e);
         }
     }
 
@@ -105,9 +116,35 @@ public class RedisCacheHelper {
         return raw != null ? raw.toString() : null;
     }
 
-    /** Hash PUT，业务侧自行序列化为 String */
+    /**
+     * Hash PUT（不主动设置 TTL），业务侧自行序列化为 String。
+     *
+     * <p>注意：Redis Hash 的 TTL 是 key 级别而非 field 级别。
+     * 若 Hash 中 field 可能长期累积（如会话队列、在线注册表），调用方应：
+     * <ol>
+     *   <li>使用 {@link #hPut(String, String, String, Duration)} 重载，每次写入刷新 TTL</li>
+     *   <li>或在适当时机手动调用 {@link #expire} 续期</li>
+     *   <li>或在 field 不再使用时主动调用 {@link #hDelete} 清理</li>
+     * </ol>
+     */
     public void hPut(String key, String field, String value) {
         redis.opsForHash().put(key, field, value);
+    }
+
+    /**
+     * Hash PUT 并刷新 key 级 TTL（避免 Hash 永不过期）。
+     *
+     * <p>典型用法：会话队列等动态 Hash，每次写入 field 同时延长整体过期时间。
+     *
+     * @param key   Hash key
+     * @param field 字段名
+     * @param value 字段值
+     * @param ttl   key 的过期时间（每次写入都会刷新）
+     */
+    public void hPut(String key, String field, String value, Duration ttl) {
+        validateTtl(key, ttl);
+        redis.opsForHash().put(key, field, value);
+        redis.expire(key, ttl);
     }
 
     /** Hash DELETE 一个或多个 field */
@@ -127,8 +164,9 @@ public class RedisCacheHelper {
 
     /** 获取 Hash 多个 field 的值（按入参顺序，缺失为 null） */
     public Map<String, String> hMultiGet(String key, List<String> fields) {
-        List<Object> values = redis.opsForHash().multiGet(key, new java.util.ArrayList<>(fields));
-        Map<String, String> result = new HashMap<>(fields.size());
+        List<Object> values = redis.opsForHash().multiGet(key, new ArrayList<>(fields));
+        // 按负载因子修正初始容量，避免触发一次扩容
+        Map<String, String> result = new HashMap<>((int) (fields.size() / 0.75f) + 1);
         for (int i = 0; i < fields.size(); i++) {
             Object v = values.get(i);
             result.put(fields.get(i), v != null ? v.toString() : null);
@@ -156,20 +194,36 @@ public class RedisCacheHelper {
     }
 
     // ----------------------------------------------------------------
-    // Pipeline / RedisCallback
+    // List 高阶语义（封装常见 Pipeline 模式）
     // ----------------------------------------------------------------
 
     /**
-     * 通过 Pipeline 批量执行 Redis 命令，减少 RTT。
+     * 全量替换 List 内容（DEL + RPUSH 序列 + EXPIRE 通过 Pipeline 批量执行）。
      *
-     * <p>注意：Pipeline 不是事务，多个命令独立执行，业务侧若需原子性请使用 Lua 脚本
-     * （见 {@link RedisLockHelper#executeLua}）。
+     * <p>典型用法：AI 流式回复完成后用最新历史覆盖会话记录，
+     * 通过 Pipeline 将多条命令合并到单次 RTT，并发场景下也优于"先 delete 再循环 rPush"。
      *
-     * @param callback Redis 命令回调（直接操作底层 connection）
-     * @return 每条命令的返回值列表
+     * <p>注意：Pipeline 不是事务，命令在 Redis 服务端独立执行；
+     * 若另一客户端在 Pipeline 命令间插入操作，仍可能读到中间状态，
+     * 但本方法的批量发送已显著降低竞态窗口。
+     *
+     * @param key      List key
+     * @param elements 替换后的完整元素序列（顺序写入）
+     * @param ttl      列表 TTL
      */
-    public List<Object> executePipeline(RedisCallback<Object> callback) {
-        return redis.executePipelined(callback);
+    public void replaceListAtomically(String key, List<String> elements, Duration ttl) {
+        validateTtl(key, ttl);
+        byte[] rawKey = key.getBytes(StandardCharsets.UTF_8);
+        long   ttlSec = ttl.getSeconds();
+        redis.executePipelined((RedisCallback<Object>) connection -> {
+            connection.keyCommands().del(rawKey);
+            for (String element : elements) {
+                connection.listCommands().rPush(rawKey,
+                        element != null ? element.getBytes(StandardCharsets.UTF_8) : new byte[0]);
+            }
+            connection.keyCommands().expire(rawKey, ttlSec);
+            return null;
+        });
     }
 
     // ----------------------------------------------------------------

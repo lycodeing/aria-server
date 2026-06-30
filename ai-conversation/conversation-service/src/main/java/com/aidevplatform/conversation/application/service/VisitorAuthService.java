@@ -46,8 +46,9 @@ public class VisitorAuthService {
     /** 访客 token TTL */
     private static final Duration TOKEN_TTL       = Duration.ofHours(2);
 
-    /** 密码学安全的随机数生成器，防止验证码被预测 */
-    private final SecureRandom       random = new SecureRandom();
+    /** 密码学安全的随机数生成器，全局共享（线程安全），节约熵源 */
+    private static final SecureRandom RANDOM = new SecureRandom();
+
     private final RedisCacheHelper   cache;
     private final RedisCounterHelper counter;
 
@@ -78,7 +79,8 @@ public class VisitorAuthService {
         }
 
         // 生成 6 位数字验证码并写入缓存
-        String code = String.format("%06d", random.nextInt(1_000_000));
+        // 6 位数字验证码，nextInt(1_000_000) 范围为 0~999999，String.format("%06d") 补足前导零
+        String code = String.format("%06d", RANDOM.nextInt(1_000_000));
         cache.set(KEY_CODE + phone, code, Duration.ofMinutes(codeTtlMinutes));
 
         // 清除上次的错误次数计数

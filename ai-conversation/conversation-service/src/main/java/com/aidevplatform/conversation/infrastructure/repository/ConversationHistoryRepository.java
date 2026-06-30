@@ -3,10 +3,8 @@ package com.aidevplatform.conversation.infrastructure.repository;
 import com.aidevplatform.common.web.redis.RedisCacheHelper;
 import com.aidevplatform.conversation.infrastructure.mq.ConversationMessagePublisher;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.stereotype.Repository;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -105,25 +103,17 @@ public class ConversationHistoryRepository {
     /**
      * 全量覆盖保存历史（AI 流式回复完成后调用）。
      *
-     * <p>使用 RedisCacheHelper 提供的 Pipeline 将 DEL + RPUSH + EXPIRE 批量执行，
-     * 避免并发场景下 delete 与 rightPush 之间产生竞态导致历史丢失或顺序错乱。
+     * <p>通过 {@link RedisCacheHelper#replaceListAtomically} 在 Pipeline 中完成
+     * DEL + RPUSH + EXPIRE，避免并发场景下 delete 与 rightPush 之间产生竞态。
      */
     public void saveAll(String sessionId, List<Map<String, String>> messages) {
-        String key       = KEY_PREFIX + sessionId;
-        byte[] rawKey    = key.getBytes(StandardCharsets.UTF_8);
-        long   ttlSecond = Duration.ofHours(TTL_HOURS).getSeconds();
-
-        cache.executePipeline((RedisCallback<Object>) connection -> {
-            connection.keyCommands().del(rawKey);
-            for (Map<String, String> msg : messages) {
-                byte[] roleBytes    = msg.get("role").getBytes(StandardCharsets.UTF_8);
-                byte[] contentBytes = msg.get("content").getBytes(StandardCharsets.UTF_8);
-                connection.listCommands().rPush(rawKey, roleBytes);
-                connection.listCommands().rPush(rawKey, contentBytes);
-            }
-            connection.keyCommands().expire(rawKey, ttlSecond);
-            return null;
-        });
+        // 将每条 message 展开为 [role, content, role, content, ...] 序列写入 List
+        List<String> elements = new ArrayList<>(messages.size() * 2);
+        for (Map<String, String> msg : messages) {
+            elements.add(msg.get("role"));
+            elements.add(msg.get("content"));
+        }
+        cache.replaceListAtomically(KEY_PREFIX + sessionId, elements, Duration.ofHours(TTL_HOURS));
 
         // Pipeline 完成后再发布 MQ 事件（最后一条 assistant 消息）
         if (!messages.isEmpty()) {
