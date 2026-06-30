@@ -5,9 +5,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Map;
-import java.util.Random;
 import java.util.UUID;
 
 /**
@@ -34,7 +34,8 @@ public class VisitorAuthService {
     private static final String KEY_TOKEN    = "visitor:token:";
 
     private final StringRedisTemplate redis;
-    private final Random              random = new Random();
+    /** 密码学安全的随机数生成器，防止验证码被预测 */
+    private final SecureRandom        random = new SecureRandom();
 
     @Value("${visitor.auth.code-ttl-minutes:5}")
     private long codeTtlMinutes;

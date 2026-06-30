@@ -118,8 +118,11 @@ public class SessionQueueController {
             @PathVariable
             @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "sessionId 格式非法")
             String sessionId,
-            @RequestBody @Valid TransferRequest req) {
-        queueService.transfer(sessionId, req.getTargetAgentId());
+            @RequestBody @Valid TransferRequest req,
+            @RequestParam(required = false) String token,
+            @RequestHeader(value = "Authorization", required = false) String authorization) {
+        String fromAgentId = resolveAgentId(token, authorization);
+        queueService.transfer(sessionId, fromAgentId, req.getTargetAgentId());
         return R.ok();
     }
 

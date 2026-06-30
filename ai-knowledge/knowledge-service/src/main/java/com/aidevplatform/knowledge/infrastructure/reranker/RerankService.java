@@ -5,9 +5,11 @@ import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClient;
 
+import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.*;
 
@@ -38,8 +40,15 @@ public class RerankService {
     public RerankService(
             @Value("${knowledge.reranker.base-url:http://localhost:8001}") String baseUrl,
             @Value("${knowledge.reranker.timeout-seconds:10}") int timeoutSeconds) {
+        // 使用 JDK HttpClient 设置连接和读取超时，避免慢服务拖死线程
+        HttpClient httpClient = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(timeoutSeconds))
+                .build();
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(httpClient);
+        factory.setReadTimeout(Duration.ofSeconds(timeoutSeconds));
         this.restClient = RestClient.builder()
                 .baseUrl(baseUrl)
+                .requestFactory(factory)
                 .build();
     }
 
@@ -54,14 +63,15 @@ public class RerankService {
     public List<ChunkHit> rerank(String query, List<ChunkHit> candidates) {
         if (candidates.isEmpty()) return candidates;
 
-        // 构造请求体
+        // 构造请求体（显式传 top_n 防止服务端默认截断）
         List<String> documents = candidates.stream()
                 .map(ChunkHit::getContent)
                 .toList();
         Map<String, Object> requestBody = Map.of(
                 "model", modelName,
                 "query", query,
-                "documents", documents
+                "documents", documents,
+                "top_n", documents.size()
         );
 
         // 调用 Reranker API

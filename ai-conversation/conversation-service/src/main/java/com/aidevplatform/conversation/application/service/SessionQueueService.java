@@ -75,6 +75,25 @@ public class SessionQueueService {
     private static final RedisScript<Long> ACCEPT_CAS_SCRIPT =
             new DefaultRedisScript<>(ACCEPT_CAS_LUA, Long.class);
 
+    /**
+     * 转交 CAS 脚本：原子地校验当前 agentId 后更新会话。
+     *
+     * <p>KEYS[1] = QUEUE_KEY；ARGV[1] = sessionId；
+     * <p>ARGV[2] = 期望的源座席 ID 关键词（如 "\"agentId\":\"alice\""），用于校验当前会话归属
+     * <p>ARGV[3] = 更新后的完整 JSON 字符串
+     *
+     * <p>返回 1=CAS 成功；0=会话不存在或源座席不匹配（已被他人转走）。
+     */
+    private static final String TRANSFER_CAS_LUA =
+            "local val = redis.call('HGET', KEYS[1], ARGV[1])\n" +
+            "if val == false then return 0 end\n" +
+            "if string.find(val, ARGV[2], 1, true) == nil then return 0 end\n" +
+            "redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])\n" +
+            "return 1";
+
+    private static final RedisScript<Long> TRANSFER_CAS_SCRIPT =
+            new DefaultRedisScript<>(TRANSFER_CAS_LUA, Long.class);
+
     private final StringRedisTemplate redis;
     /** 注入 Spring 管理的 ObjectMapper，确保继承 Boot 自动配置（record 支持、null 处理等） */
     private final ObjectMapper objectMapper;
@@ -304,10 +323,21 @@ public class SessionQueueService {
     /**
      * 转交会话给指定座席（当前座席 → 目标座席，状态保持 ACTIVE）。
      *
+     * <p>使用 Lua CAS 保证原子性，校验当前 agentId 匹配后才更新，
+     * 防止两名座席同时点击转交按钮产生丢失写。
+     *
      * @param sessionId     会话唯一标识
+     * @param fromAgentId   发起转交的源座席 ID（必须等于会话当前 agentId）
      * @param targetAgentId 目标座席 ID
+     * @throws IllegalArgumentException 会话不存在 / 目标座席不在线
+     * @throws IllegalStateException    状态不是 ACTIVE / 源座席不匹配（CAS 失败）
      */
-    public void transfer(String sessionId, String targetAgentId) {
+    public void transfer(String sessionId, String fromAgentId, String targetAgentId) {
+        // 校验目标座席在线
+        Boolean online = redis.opsForHash().hasKey(ONLINE_AGENTS_KEY, targetAgentId);
+        if (!Boolean.TRUE.equals(online)) {
+            throw new IllegalArgumentException("目标座席不在线: " + targetAgentId);
+        }
         try {
             Object raw = redis.opsForHash().get(QUEUE_KEY, sessionId);
             if (raw == null) {
@@ -321,10 +351,25 @@ public class SessionQueueService {
                     old.sessionId(), old.userName(), old.transferReason(),
                     old.tag(), old.waitSince(), SessionStatus.ACTIVE, targetAgentId
             );
-            redis.opsForHash().put(QUEUE_KEY, sessionId, objectMapper.writeValueAsString(transferred));
-            // 广播 TRANSFER 事件，前端收到后：原座席移除该会话，目标座席自动接入
-            publishEvent(new SessionEvent(SessionEventType.TRANSFER, transferred, targetAgentId));
-            log.info("[SessionQueue] 会话转交 sessionId={} → agentId={}", sessionId, targetAgentId);
+            String updatedJson = objectMapper.writeValueAsString(transferred);
+
+            // Lua CAS：JSON 中必须包含源 agentId 才能写入，防止并发转交丢失
+            String expectedAgentMarker = "\"agentId\":\"" + fromAgentId + "\"";
+            Long result = redis.execute(
+                    TRANSFER_CAS_SCRIPT,
+                    Collections.singletonList(QUEUE_KEY),
+                    sessionId, expectedAgentMarker, updatedJson
+            );
+
+            if (result == null || result == 0L) {
+                throw new IllegalStateException("会话归属已变更，无法转交: " + sessionId);
+            }
+
+            // 广播 TRANSFER 事件，前端：发起方移除会话，目标方自动接入
+            publishEvent(new SessionEvent(
+                    SessionEventType.TRANSFER, transferred, fromAgentId, targetAgentId));
+            log.info("[SessionQueue] 会话转交 sessionId={} {} → {}",
+                    sessionId, fromAgentId, targetAgentId);
         } catch (IllegalArgumentException | IllegalStateException e) {
             throw e;
         } catch (Exception e) {
@@ -468,10 +513,23 @@ public class SessionQueueService {
             String agentId
     ) {}
 
-    public record SessionEvent(SessionEventType type, SessionQueueItem item) {
-        /** 转交事件附加字段：目标座席 ID */
-        public SessionEvent(SessionEventType type, SessionQueueItem item, String toAgentId) {
-            this(type, item);
+    /**
+     * 会话队列事件，广播给所有座席 SSE 连接。
+     *
+     * @param type        事件类型
+     * @param item        会话项（含 agentId，转交后 agentId = 目标座席）
+     * @param fromAgentId 仅 TRANSFER 事件有值，源座席 ID
+     * @param toAgentId   仅 TRANSFER 事件有值，目标座席 ID
+     */
+    public record SessionEvent(
+            SessionEventType type,
+            SessionQueueItem item,
+            String fromAgentId,
+            String toAgentId
+    ) {
+        /** 普通事件（非转交）便捷构造器 */
+        public SessionEvent(SessionEventType type, SessionQueueItem item) {
+            this(type, item, null, null);
         }
     }
 }
