@@ -16,6 +16,7 @@ import java.io.IOException;
 import java.time.Instant;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Pattern;
 
 /**
  * 客服实时对话 WebSocket Handler。
@@ -36,17 +37,30 @@ import java.util.concurrent.ConcurrentHashMap;
 public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     // ---- 消息类型常量 ----
-    private static final String MSG_TYPE_CONNECTED   = "CONNECTED";
-    private static final String MSG_TYPE_MESSAGE     = "MESSAGE";
+    private static final String MSG_TYPE_CONNECTED    = "CONNECTED";
+    private static final String MSG_TYPE_MESSAGE      = "MESSAGE";
     private static final String MSG_TYPE_AGENT_JOINED = "AGENT_JOINED";
+    private static final String MSG_TYPE_ERROR        = "ERROR";
 
     // ---- 路径常量 ----
     private static final String PATH_SEGMENT_CHAT = "chat";
-    private static final String DEFAULT_SESSION_ID = "unknown";
+    private static final String DEFAULT_SESSION_ID = "";
 
     // ---- 属性 key ----
-    private static final String ATTR_ROLE = "role";
+    private static final String ATTR_ROLE       = "role";
     private static final String ATTR_SESSION_ID = "sessionId";
+
+    /**
+     * S2：sessionId 格式校验正则。
+     * 只允许字母、数字、下划线、连字符，长度 1~64。
+     */
+    private static final Pattern SESSION_ID_PATTERN = Pattern.compile("^[a-zA-Z0-9_\\-]{1,64}$");
+
+    /**
+     * S3：单条 WebSocket 文本消息最大字节数（64KB）。
+     * 超出时关闭连接并返回 NOT_ACCEPTABLE 状态。
+     */
+    private static final int MAX_MESSAGE_BYTES = 65536;
 
     /**
      * 访客 WS 会话注册表: sessionId → WebSocketSession
@@ -67,7 +81,11 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+        // S2：parsePath 已完成格式校验，非法 sessionId 时返回 null 并关闭连接
         String[] parts = parsePath(session);
+        if (parts == null) {
+            return;
+        }
         String role = parts[0];
         String sessionId = parts[1];
 
@@ -90,6 +108,15 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+        // S3：消息长度检查，超过 64KB 时拒绝并关闭连接
+        if (message.getPayloadLength() > MAX_MESSAGE_BYTES) {
+            String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
+            log.warn("[WS] 消息超过最大长度限制 sessionId={} size={}", sessionId, message.getPayloadLength());
+            sendJson(session, Map.of("type", MSG_TYPE_ERROR, "message", "消息长度超过限制（最大 64KB）"));
+            session.close(CloseStatus.NOT_ACCEPTABLE);
+            return;
+        }
+
         String role = (String) session.getAttributes().get(ATTR_ROLE);
         String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
 
@@ -158,6 +185,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             visitorSessions.remove(sessionId);
         } else {
             agentSessions.remove(sessionId);
+            // 座席端断线时同步关闭会话状态
+            try {
+                sessionQueueService.close(sessionId);
+            } catch (Exception closeEx) {
+                log.warn("座席传输错误后关闭会话失败，sessionId={}", sessionId, closeEx);
+            }
         }
     }
 
@@ -204,13 +237,27 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      * 从 URI 中解析 role 和 sessionId。
      * /ws/chat/{sessionId}  → ["chat", sessionId]
      * /ws/agent/{sessionId} → ["agent", sessionId]
+     * <p>
+     * S2：对解析出的 sessionId 做格式校验，不合法时向客户端发送错误消息并关闭连接，
+     * 返回 null 通知调用方终止后续处理。
+     *
+     * @return [role, sessionId] 数组；sessionId 格式非法时关闭连接并返回 null
      */
-    private String[] parsePath(WebSocketSession session) {
+    private String[] parsePath(WebSocketSession session) throws IOException {
         String path = session.getUri() != null ? session.getUri().getPath() : "/ws/chat/unknown";
         String[] segs = path.split("/");
         // segs: ["", "ws", "chat"|"agent", sessionId]
         String role = segs.length > 2 ? segs[2] : PATH_SEGMENT_CHAT;
         String sessionId = segs.length > 3 ? segs[3] : DEFAULT_SESSION_ID;
+
+        // S2：sessionId 格式校验，只允许字母、数字、下划线、连字符，长度 1~64
+        if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {
+            log.warn("[WS] 非法 sessionId 格式，拒绝连接 sessionId={}", sessionId);
+            sendJson(session, Map.of("type", MSG_TYPE_ERROR, "message", "非法的 sessionId 格式"));
+            session.close(CloseStatus.NOT_ACCEPTABLE);
+            return null;
+        }
+
         return new String[]{role, sessionId};
     }
 }

@@ -4,9 +4,11 @@ import com.aidevplatform.common.web.response.R;
 import com.aidevplatform.conversation.application.service.SessionQueueService;
 import com.aidevplatform.conversation.application.service.SessionQueueService.SessionQueueItem;
 import com.aidevplatform.conversation.infrastructure.mq.SessionEventSubscriber;
+import jakarta.validation.constraints.Pattern;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -25,11 +27,14 @@ import java.util.concurrent.atomic.AtomicInteger;
  * POST /api/v1/sessions/{id}/accept   → 接入会话
  * POST /api/v1/sessions/{id}/close    → 结束会话
  * GET  /api/v1/sessions/events        → SSE 实时事件流（SseEmitter，Servlet 原生）
+ * <p>
+ * S2：类级别 {@link Validated} 启用方法参数约束校验（ConstraintViolationException），
+ * 配合 {@link GlobalExceptionHandler} 统一返回 400。
  */
 @Slf4j
+@Validated
 @RestController
 @RequestMapping("/api/v1/sessions")
-@CrossOrigin(origins = "${app.cors.allowed-origins}")
 @RequiredArgsConstructor
 public class SessionQueueController {
 
@@ -83,18 +88,26 @@ public class SessionQueueController {
     }
 
     /**
-     * 座席接入会话
+     * 座席接入会话。
+     * S2：对 sessionId 做格式校验，非法格式返回 400。
      */
     @PostMapping("/{sessionId}/accept")
-    public R<SessionQueueItem> accept(@PathVariable String sessionId) {
+    public R<SessionQueueItem> accept(
+            @PathVariable
+            @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "sessionId 格式非法")
+            String sessionId) {
         return R.ok(queueService.accept(sessionId));
     }
 
     /**
-     * 结束/转交会话
+     * 结束/转交会话。
+     * S2：对 sessionId 做格式校验，非法格式返回 400。
      */
     @PostMapping("/{sessionId}/close")
-    public R<Void> close(@PathVariable String sessionId) {
+    public R<Void> close(
+            @PathVariable
+            @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "sessionId 格式非法")
+            String sessionId) {
         queueService.close(sessionId);
         return R.ok();
     }
