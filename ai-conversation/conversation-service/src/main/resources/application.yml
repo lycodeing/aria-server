@@ -100,6 +100,16 @@ app:
     # 开发环境默认允许本地前端，生产必须替换
     allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:5666,http://localhost:5667}
 
+# -------- 访客身份验证配置 --------
+visitor:
+  auth:
+    # 验证码有效期（分钟）
+    code-ttl-minutes: 5
+    # 同一手机号发送频率限制（秒）
+    rate-limit-seconds: 60
+    # 连续错误最大次数，超出后锁定 10 分钟
+    max-attempts: 5
+
 logging:
   level:
     # 生产环境通过环境变量 LOGGING_LEVEL_COM_AIDEVPLATFORM_CONVERSATION=DEBUG 开启详细日志
