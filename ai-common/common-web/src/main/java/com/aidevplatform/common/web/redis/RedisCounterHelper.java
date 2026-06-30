@@ -34,12 +34,13 @@ public class RedisCounterHelper {
      * <p>当返回值 == 1 时（即首次写入）才设置 TTL，保证滑动窗口/计数语义正确，
      * 同时避免 Java 端 INCR-EXPIRE 两次 RTT 之间崩溃导致的 key 永久驻留。
      */
-    private static final String INCR_WITH_TTL_LUA =
-            "local v = redis.call('INCR', KEYS[1])\n" +
-            "if v == 1 then\n" +
-            "    redis.call('EXPIRE', KEYS[1], ARGV[1])\n" +
-            "end\n" +
-            "return v";
+    private static final String INCR_WITH_TTL_LUA = """
+            local v = redis.call('INCR', KEYS[1])
+            if v == 1 then
+                redis.call('EXPIRE', KEYS[1], ARGV[1])
+            end
+            return v
+            """;
 
     private static final RedisScript<Long> INCR_WITH_TTL_SCRIPT =
             new DefaultRedisScript<>(INCR_WITH_TTL_LUA, Long.class);

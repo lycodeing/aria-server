@@ -37,20 +37,22 @@ import java.util.List;
 public class RedisLockHelper {
 
     /** 释放锁 Lua 脚本：比对 owner 后才删除，防止误删他人持有的锁 */
-    private static final String UNLOCK_LUA =
-            "if redis.call('GET', KEYS[1]) == ARGV[1] then\n" +
-            "    return redis.call('DEL', KEYS[1])\n" +
-            "else\n" +
-            "    return 0\n" +
-            "end";
+    private static final String UNLOCK_LUA = """
+            if redis.call('GET', KEYS[1]) == ARGV[1] then
+                return redis.call('DEL', KEYS[1])
+            else
+                return 0
+            end
+            """;
 
     /** Hash CAS Lua 脚本：plain mode 匹配 expected 标记后才更新（支持 agentId 等含特殊字符的字段） */
-    private static final String HASH_CAS_LUA =
-            "local val = redis.call('HGET', KEYS[1], ARGV[1])\n" +
-            "if val == false then return 0 end\n" +
-            "if string.find(val, ARGV[2], 1, true) == nil then return 0 end\n" +
-            "redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])\n" +
-            "return 1";
+    private static final String HASH_CAS_LUA = """
+            local val = redis.call('HGET', KEYS[1], ARGV[1])
+            if val == false then return 0 end
+            if string.find(val, ARGV[2], 1, true) == nil then return 0 end
+            redis.call('HSET', KEYS[1], ARGV[1], ARGV[3])
+            return 1
+            """;
 
     private static final RedisScript<Long> UNLOCK_SCRIPT   =
             new DefaultRedisScript<>(UNLOCK_LUA, Long.class);
