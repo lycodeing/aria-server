@@ -40,16 +40,20 @@ public class ChatAppService {
 
     /**
      * 流式对话：返回 SSE 文本 chunk Flux。
-     * 自动维护 Redis 中的多轮历史（通过 ConversationHistoryRepository）。
+     *
+     * <p>历史维护策略（每条消息独立调 append，避免 seq=0 脏数据 / MQ 漏发）：
+     * <ol>
+     *   <li>立即 append USER 消息（生成 seq + 发 MQ + 写 Redis List）</li>
+     *   <li>读取 history 作为 AI prompt（含刚写入的 USER）</li>
+     *   <li>流完成后 append ASSISTANT 消息（生成 seq + 发 MQ）</li>
+     * </ol>
      */
     public Flux<String> streamChat(String sessionId, String userMessage) {
-        // history 含 seq 字段，供前端通过 sinceSeq 增量同步；AI 调用前剥离 seq 转 String map
-        List<Map<String, Object>> history = historyRepository.findAll(sessionId);
-        // 用户消息暂入内存（seq 由后续 saveAll/append 重新生成）
-        history.add(buildUserOrAssistant(ROLE_USER, userMessage, null));
+        // 用户消息立即落库（含 seq），保证后续 AI 失败也不丢
+        historyRepository.append(sessionId, ROLE_USER, userMessage);
 
+        List<Map<String, String>> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
         StringBuilder assistantReply = new StringBuilder();
-        List<Map<String, String>> aiPrompt = toAiPrompt(history);
 
         return aiClient.streamChat(aiPrompt, SYSTEM_PROMPT)
                 .map(chunk -> {
@@ -62,11 +66,7 @@ public class ChatAppService {
                 .filter(content -> !content.isEmpty())
                 .doOnComplete(() -> {
                     if (!assistantReply.isEmpty()) {
-                        history.add(buildUserOrAssistant(ROLE_ASSISTANT, assistantReply.toString(), null));
-                        List<Map<String, Object>> trimmed = history.size() > MAX_HISTORY
-                                ? history.subList(history.size() - MAX_HISTORY, history.size())
-                                : history;
-                        historyRepository.saveAll(sessionId, trimmed);
+                        historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
                     }
                 })
                 .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"));
@@ -74,18 +74,13 @@ public class ChatAppService {
 
     /**
      * 非流式对话（用于单次问答场景）。
+     *
+     * <p>采用与 {@link #streamChat} 一致的"逐条 append"策略，每条消息独立 seq + MQ。
      */
     public String chat(String sessionId, String userMessage) {
-        List<Map<String, Object>> history = historyRepository.findAll(sessionId);
-        history.add(buildUserOrAssistant(ROLE_USER, userMessage, null));
-
-        String reply = aiClient.chat(toAiPrompt(history), SYSTEM_PROMPT);
-
-        history.add(buildUserOrAssistant(ROLE_ASSISTANT, reply, null));
-        List<Map<String, Object>> trimmed = history.size() > MAX_HISTORY
-                ? history.subList(history.size() - MAX_HISTORY, history.size())
-                : history;
-        historyRepository.saveAll(sessionId, trimmed);
+        historyRepository.append(sessionId, ROLE_USER, userMessage);
+        String reply = aiClient.chat(toAiPrompt(historyRepository.findAll(sessionId)), SYSTEM_PROMPT);
+        historyRepository.append(sessionId, ROLE_ASSISTANT, reply);
         return reply;
     }
 

@@ -188,6 +188,25 @@ public class RedisCacheHelper {
         return redis.opsForList().rightPush(key, value);
     }
 
+    /**
+     * List 一次性右推入多个元素（原子操作）。
+     *
+     * <p>等价于 {@code RPUSH key v1 v2 v3 ...}，Redis 服务端单条命令完成，
+     * 杜绝并发场景下多个客户端 push 命令交错导致的元素错位。
+     *
+     * @param key    List key
+     * @param values 待推入的元素序列（不允许为 null）
+     * @return push 后的列表长度
+     */
+    public Long lRightPushAll(String key, String... values) {
+        for (int i = 0; i < values.length; i++) {
+            if (values[i] == null) {
+                throw new IllegalArgumentException("values 不允许包含 null，index=" + i + " key=" + key);
+            }
+        }
+        return redis.opsForList().rightPushAll(key, values);
+    }
+
     /** List 截断保留指定范围（含 start、end） */
     public void lTrim(String key, long start, long end) {
         redis.opsForList().trim(key, start, end);
