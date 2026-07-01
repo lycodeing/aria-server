@@ -102,9 +102,15 @@ public class SessionEventSubscriber {
         for (SseEmitter emitter : emitters) {
             try {
                 emitter.send(SseEmitter.event().data(json));
-            } catch (IOException e) {
+            } catch (IOException | IllegalStateException e) {
+                // IOException：底层 socket 已关闭；IllegalStateException：emitter 已 complete/error
                 dead.add(emitter);
-                emitter.completeWithError(e);
+                try { emitter.completeWithError(e); } catch (Exception ignore) { /* 已 complete */ }
+            } catch (RuntimeException e) {
+                // Spring 6 在 servlet 输出失败时会抛 AsyncRequestNotUsableException（RuntimeException），
+                // 该异常非业务错误，仅表示客户端断开，必须吞掉避免冒泡到 GlobalExceptionHandler 污染日志
+                dead.add(emitter);
+                try { emitter.completeWithError(e); } catch (Exception ignore) { /* 已 complete */ }
             }
         }
         if (!dead.isEmpty()) {

@@ -65,6 +65,7 @@ public class RabbitMQConfig {
      * 否则 ConfirmCallback 不会被触发。
      */
     @Bean
+    @org.springframework.context.annotation.Primary
     public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory,
                                           MessageConverter jsonMessageConverter) {
         RabbitTemplate template = new RabbitTemplate(connectionFactory);

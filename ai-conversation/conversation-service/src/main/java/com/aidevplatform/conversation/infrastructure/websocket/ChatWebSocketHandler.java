@@ -71,6 +71,18 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      */
     private final ConcurrentHashMap<String, WebSocketSession> agentSessions = new ConcurrentHashMap<>();
 
+    /**
+     * S-02 线程安全：每个 sessionId 对应一把发送锁，串行化 sendMessage 调用。
+     * {@link org.springframework.web.socket.WebSocketSession#sendMessage} 非线程安全；
+     * RabbitMQ 监听线程（notifyVisitor/notifyAgent）与 WS IO 线程（handleTextMessage）
+     * 可能并发写同一 session，若不加锁会导致帧损坏或 {@link IllegalStateException}。
+     * 连接关闭时在 {@link #afterConnectionClosed} / {@link #handleTransportError} 中一并清理。
+     */
+    private final ConcurrentHashMap<String, Object> sendLocks = new ConcurrentHashMap<>();
+
+    /** S-03 合法 role 白名单，仅允许 "chat"（访客）和 "agent"（座席） */
+    private static final java.util.Set<String> VALID_ROLES = java.util.Set.of("chat", "agent");
+
     private final ObjectMapper objectMapper;
     private final SessionQueueService sessionQueueService;
     private final ConversationHistoryRepository historyRepository;
@@ -169,14 +181,15 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         // 非法 sessionId 或握手阶段就被拒绝的连接，attributes 未写入，直接忽略
         if (role == null || sessionId == null) return;
 
+        // S-02：连接关闭时释放 sendLock，避免 lock map 无限增长
+        sendLocks.remove(session.getId());
+
         if (PATH_SEGMENT_CHAT.equals(role)) {
             visitorSessions.remove(sessionId);
             log.info("[WS] visitor disconnected sessionId={}", sessionId);
         } else {
             agentSessions.remove(sessionId);
             // 座席断开时关闭 Redis 中的会话，避免访客消息永远进入死会话。
-            // SessionQueueService.close 内部已统一处理异常（JsonProcessingException / IllegalStateException），
-            // 此处不再额外包 try-catch 以免掩盖编程错误。
             sessionQueueService.close(sessionId);
             log.info("[WS] agent disconnected sessionId={}", sessionId);
         }
@@ -191,13 +204,14 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         if (role == null || sessionId == null) return;
 
         log.warn("[WS] transport error sessionId={} role={}", sessionId, ex.getMessage());
+        // S-02：transport error 后同步释放 sendLock
+        sendLocks.remove(session.getId());
         // I4 修复：transport error 后 Spring 不保证一定触发 afterConnectionClosed，
         // 这里主动清理 map，防止僵尸 session 积累
         if (PATH_SEGMENT_CHAT.equals(role)) {
             visitorSessions.remove(sessionId);
         } else {
             agentSessions.remove(sessionId);
-            // 座席端断线时同步关闭会话状态。SessionQueueService.close 已统一处理异常，不再外包 try-catch。
             sessionQueueService.close(sessionId);
         }
     }
@@ -213,6 +227,24 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         WebSocketSession vs = visitorSessions.get(sessionId);
         if (vs != null && vs.isOpen()) {
             sendJson(vs, payload);
+        }
+    }
+
+    /**
+     * 主动以正常状态（code=1000 NORMAL）关闭访客端 WS。
+     * <p>用途：座席端点击「结束会话」时由 SessionQueueService.close 调用，
+     * 前端 chat-widget 监听到 code=1000 会显示"会话已结束"提示并清理 transferred 状态。
+     */
+    public void closeVisitorSessionNormal(String sessionId) {
+        WebSocketSession vs = visitorSessions.get(sessionId);
+        if (vs != null && vs.isOpen()) {
+            try {
+                vs.close(CloseStatus.NORMAL);
+            } catch (IOException e) {
+                log.warn("[WS] closeVisitorSessionNormal IO 异常 sessionId={} msg={}", sessionId, e.getMessage());
+            } finally {
+                visitorSessions.remove(sessionId);
+            }
         }
     }
 
@@ -240,23 +272,31 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      *       触发客户端 onclose 钩子走指数退避重连，重连后用 lastSeq 调 history 拉增量；
      *       消息本身已通过 historyRepository.append 写入 DB（MQ 异步持久化），不会丢失</li>
      * </ul>
+     *
+     * <p>S-02 线程安全：每个 session 对应一把锁（sendLocks），串行化 sendMessage 调用，
+     * 避免 MQ 监听线程和 WS IO 线程并发写同一 session 帧损坏 / IllegalStateException。
      */
     private void sendJson(WebSocketSession session, Object payload) {
         if (!session.isOpen()) {
             return;
         }
         Object sessionId = session.getAttributes().get(ATTR_SESSION_ID);
-        try {
-            session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
-        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-            log.error("[WS] payload 序列化失败 sessionId={}", sessionId, e);
-        } catch (IOException e) {
-            // 主动关闭以触发客户端重连，重连后凭 lastSeq 拉增量补齐空窗消息（消息已在 DB）
-            log.warn("[WS] send failed, closing session for client reconnect sessionId={}", sessionId, e);
+        // S-02：每个 session 独立锁，防止并发写帧损坏
+        Object lock = sendLocks.computeIfAbsent(session.getId(), k -> new Object());
+        synchronized (lock) {
+            if (!session.isOpen()) return; // double-check in critical section
             try {
-                session.close(CloseStatus.SERVER_ERROR);
-            } catch (IOException ignored) {
-                // session 已不可用，afterConnectionClosed/handleTransportError 会清理 map
+                session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
+            } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+                log.error("[WS] payload 序列化失败 sessionId={}", sessionId, e);
+            } catch (IOException e) {
+                // 主动关闭以触发客户端重连，重连后凭 lastSeq 拉增量补齐空窗消息（消息已在 DB）
+                log.warn("[WS] send failed, closing session for client reconnect sessionId={}", sessionId, e);
+                try {
+                    session.close(CloseStatus.SERVER_ERROR);
+                } catch (IOException ignored) {
+                    // session 已不可用，afterConnectionClosed/handleTransportError 会清理 map
+                }
             }
         }
     }
@@ -266,10 +306,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      * /ws/chat/{sessionId}  → ["chat", sessionId]
      * /ws/agent/{sessionId} → ["agent", sessionId]
      * <p>
-     * S2：对解析出的 sessionId 做格式校验，不合法时向客户端发送错误消息并关闭连接，
-     * 返回 null 通知调用方终止后续处理。
+     * S2：对解析出的 sessionId 做格式校验，不合法时向客户端发送错误消息并关闭连接。
+     * S3：对 role 做白名单校验，非 "chat"/"agent" 均拒绝，防止任意路径前缀绕过鉴权。
      *
-     * @return [role, sessionId] 数组；sessionId 格式非法时关闭连接并返回 null
+     * @return [role, sessionId] 数组；非法时关闭连接并返回 null
      */
     private String[] parsePath(WebSocketSession session) throws IOException {
         String path = session.getUri() != null ? session.getUri().getPath() : "/ws/chat/unknown";
@@ -277,6 +317,14 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         // segs: ["", "ws", "chat"|"agent", sessionId]
         String role = segs.length > 2 ? segs[2] : PATH_SEGMENT_CHAT;
         String sessionId = segs.length > 3 ? segs[3] : DEFAULT_SESSION_ID;
+
+        // S3：role 白名单校验，非法 role 拒绝连接
+        if (!VALID_ROLES.contains(role)) {
+            log.warn("[WS] 非法 role 路径，拒绝连接 role={} path={}", role, path);
+            sendJson(session, Map.of("type", MSG_TYPE_ERROR, "message", "非法的连接路径"));
+            session.close(CloseStatus.NOT_ACCEPTABLE);
+            return null;
+        }
 
         // S2：sessionId 格式校验，只允许字母、数字、下划线、连字符，长度 1~64
         if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {

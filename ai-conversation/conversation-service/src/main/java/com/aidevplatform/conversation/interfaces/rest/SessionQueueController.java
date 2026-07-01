@@ -53,6 +53,8 @@ public class SessionQueueController {
 
     private final SessionQueueService  queueService;
     private final SessionEventSubscriber eventSubscriber;
+    /** WS Handler，close 时主动以 NORMAL 状态关闭访客 WS（触发前端 code=1000 流程） */
+    private final com.aidevplatform.conversation.infrastructure.websocket.ChatWebSocketHandler chatWebSocketHandler;
 
     private final ScheduledExecutorService heartbeatScheduler = new ScheduledThreadPoolExecutor(
             Math.max(4, Runtime.getRuntime().availableProcessors()),
@@ -100,13 +102,18 @@ public class SessionQueueController {
         return R.ok(queueService.accept(sessionId, agentId));
     }
 
-    /** 结束会话 */
+    /**
+     * 结束会话。
+     * <p>除了执行 SessionQueueService.close（清 Redis + 发 SESSION_END + DB 状态转 CLOSED），
+     * 还主动以 NORMAL（code=1000）关闭访客端 WebSocket，触发前端显示"会话已结束"提示。
+     */
     @PostMapping("/{sessionId}/close")
     public R<Void> close(
             @PathVariable
             @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "sessionId 格式非法")
             String sessionId) {
         queueService.close(sessionId);
+        chatWebSocketHandler.closeVisitorSessionNormal(sessionId);
         return R.ok();
     }
 
