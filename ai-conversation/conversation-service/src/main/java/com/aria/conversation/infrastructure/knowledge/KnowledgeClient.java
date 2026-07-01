@@ -41,9 +41,9 @@ public class KnowledgeClient {
             WebClient.Builder builder,
             @Value("${knowledge.service.base-url:http://localhost:8081}") String baseUrl) {
         this.webClient = builder
+                .clone()
                 .baseUrl(baseUrl)
                 .codecs(c -> c.defaultCodecs().maxInMemorySize(2 * 1024 * 1024))
-                .clone()
                 .build();
     }
 

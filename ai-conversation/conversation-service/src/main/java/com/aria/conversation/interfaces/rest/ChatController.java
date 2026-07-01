@@ -98,6 +98,9 @@ public class ChatController {
      */
     @PostMapping
     public R<Map<String, String>> chat(@RequestBody ChatRequest req) {
+        if (req.getMessage() == null || req.getMessage().isBlank()) {
+            return R.fail(400, "消息内容不能为空");
+        }
         String sessionId = req.getSessionId() != null
                 ? req.getSessionId()
                 : GUEST_SESSION_PREFIX + UUID.randomUUID().toString().replace("-", "");

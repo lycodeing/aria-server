@@ -60,13 +60,6 @@ public class ConversationHistoryRepository {
     private static final org.springframework.data.redis.core.script.RedisScript<Long> INIT_AND_INCR_SCRIPT =
             new org.springframework.data.redis.core.script.DefaultRedisScript<>(INIT_AND_INCR_LUA, Long.class);
 
-    /**
-     * 已初始化标记，避免每次 nextSeq 都查询 DB max。
-     * Redis 过期或重启后通过 Lua 脚本自动重新初始化。
-     */
-    private final java.util.Set<String> initializedSessions =
-            java.util.concurrent.ConcurrentHashMap.newKeySet();
-
     private static final long TTL_HOURS         = 24L;
     private static final int  MAX_HISTORY_TURNS = 20;
     /** Redis List 中每条消息占用的元素数（role / content / seq / timestamp 四元组） */
@@ -105,9 +98,11 @@ public class ConversationHistoryRepository {
      */
     public long nextSeq(String sessionId) {
         String key = SEQ_KEY_PREFIX + sessionId;
-        long dbMaxBaseline = initializedSessions.contains(sessionId)
-                ? 0L
-                : messageMapper.selectMaxSeq(sessionId);
+        // 每次都查 DB max 作为基准值传入 Lua，由 Lua 原子判断：
+        // - Redis key 不存在（首次或 TTL 过期）：SET dbMax → INCR → 返回 dbMax+1
+        // - Redis key 已存在：跳过 SET，直接 INCR
+        // 消除内存 initializedSessions 与 Redis TTL 不同步的竞态问题
+        long dbMaxBaseline = messageMapper.selectMaxSeq(sessionId);
 
         Long seq = lockHelper.executeLua(
                 INIT_AND_INCR_SCRIPT,
@@ -118,7 +113,6 @@ public class ConversationHistoryRepository {
         if (seq == null) {
             throw new IllegalStateException("Redis seq INCR 返回 null, sessionId=" + sessionId);
         }
-        initializedSessions.add(sessionId);
         return seq;
     }
 
@@ -238,8 +232,6 @@ public class ConversationHistoryRepository {
     /** 清除会话历史（会话结束或重新开始时调用）。seq 计数器保留，靠 TTL 自动清理。 */
     public void delete(String sessionId) {
         cache.delete(KEY_PREFIX + sessionId);
-        // 同步清除初始化标记，防止该 set 随会话数量无限增长
-        initializedSessions.remove(sessionId);
     }
 
     // -------------------------------------------------------

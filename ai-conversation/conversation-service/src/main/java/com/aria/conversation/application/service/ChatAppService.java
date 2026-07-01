@@ -82,13 +82,14 @@ public class ChatAppService {
                     return content;
                 })
                 .filter(content -> !content.isEmpty())
-                .doOnComplete(() -> {
+                .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
+                .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"))
+                // doFinally 在完成和出错两种情况下都执行，保证 assistant 回复落库
+                .doFinally(signal -> {
                     if (!assistantReply.isEmpty()) {
                         historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
                     }
-                })
-                .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
-                .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"));
+                });
     }
 
     /**
