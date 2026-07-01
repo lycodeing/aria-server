@@ -9,6 +9,7 @@ import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import lombok.Data;
+import cn.dev33.satoken.annotation.SaIgnore;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
@@ -37,6 +38,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 @Slf4j
 @Validated
+@SaIgnore
 @RestController
 @RequestMapping("/api/v1/sessions")
 @RequiredArgsConstructor
@@ -90,6 +92,8 @@ public class SessionQueueController {
      * 座席接入会话。
      * 从请求 Header Authorization 或 query param token 中提取座席 ID，
      * 若无法解析则使用 "anonymous"（Phase-2 引入 Sa-Token 后可精确获取）。
+     *
+     * <p>兼容 body 直传 agentId 模式（开发阶段前端无 token 时使用，Phase-2 移除）。
      */
     @PostMapping("/{sessionId}/accept")
     public R<SessionQueueItem> accept(
@@ -97,8 +101,20 @@ public class SessionQueueController {
             @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "sessionId 格式非法")
             String sessionId,
             @RequestParam(required = false) String token,
-            @RequestHeader(value = "Authorization", required = false) String authorization) {
-        String agentId = requireAuthenticatedAgent(token, authorization);
+            @RequestHeader(value = "Authorization", required = false) String authorization,
+            @org.springframework.web.bind.annotation.RequestBody(required = false)
+                    java.util.Map<String, String> body) {
+        // 优先 token/header；无 token 时从 body.agentId 获取（开发阶段兜底）
+        String agentId = resolveAgentId(token, authorization);
+        if (ANONYMOUS_AGENT.equals(agentId) && body != null) {
+            String bodyAgentId = body.get("agentId");
+            if (bodyAgentId != null && AGENT_ID_PATTERN.matcher(bodyAgentId).matches()) {
+                agentId = bodyAgentId;
+            }
+        }
+        if (ANONYMOUS_AGENT.equals(agentId)) {
+            throw new com.aria.common.core.exception.BusinessException(401, "未登录或登录已过期");
+        }
         return R.ok(queueService.accept(sessionId, agentId));
     }
 

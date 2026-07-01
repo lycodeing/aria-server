@@ -6,6 +6,10 @@ server:
 spring:
   application:
     name: aria-conversation
+  # Sa-Token 全局鉴权在 conversation-service 暂不启用（Phase-2 TODO），直接排除自动配置
+  autoconfigure:
+    exclude:
+      - com.aria.common.web.auth.SaTokenWebConfig
 
   # -------- 数据库（对话历史持久化） --------
   datasource:
@@ -88,8 +92,8 @@ springdoc:
 app:
   cors:
     # 开发环境默认允许本地前端，生产必须替换
-    # 开发期 web-antd 端口可能为 5666/5667/5668/5669/5670，全部放行；生产必须替换为实际域名
-    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:5666,http://localhost:5667,http://localhost:5668,http://localhost:5669,http://localhost:5670,http://localhost:5671,http://localhost:5672}
+    # 开发期 web-antd 端口可能为 5666/5667/5668/5669/5670，全部放行；aria-web 开发端口 5173；生产必须替换为实际域名
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:5666,http://localhost:5667,http://localhost:5668,http://localhost:5669,http://localhost:5670,http://localhost:5671,http://localhost:5672}
 
 # -------- 访客身份验证配置 --------
 visitor:
