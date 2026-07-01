@@ -1,4 +1,4 @@
-package com.aria.auth.application.query;
+package com.aria.customerservice.auth.application.query;
 
 import com.aria.common.core.page.PageQuery;
 import lombok.Data;

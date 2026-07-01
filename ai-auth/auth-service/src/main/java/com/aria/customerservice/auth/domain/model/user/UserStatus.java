@@ -1,4 +1,4 @@
-package com.aria.auth.domain.model.user;
+package com.aria.customerservice.auth.domain.model.user;
 
 /**
  * 用户状态。

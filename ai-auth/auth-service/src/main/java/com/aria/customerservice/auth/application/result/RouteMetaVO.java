@@ -1,4 +1,4 @@
-package com.aria.auth.application.result;
+package com.aria.customerservice.auth.application.result;
 
 /**
  * Vben 路由 meta 信息 VO。

@@ -1,4 +1,4 @@
-package com.aria.auth.application.result;
+package com.aria.customerservice.auth.application.result;
 
 /**
  * Token 刷新结果（强类型，替代 Map&lt;String, Object&gt;）。

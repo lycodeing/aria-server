@@ -1,4 +1,4 @@
-package com.aria.auth.infrastructure.security.ratelimit;
+package com.aria.customerservice.auth.infrastructure.security.ratelimit;
 
 import com.aria.common.web.redis.RedisCounterHelper;
 import lombok.RequiredArgsConstructor;

@@ -1,4 +1,4 @@
-package com.aria.auth.interfaces.rest.vo;
+package com.aria.customerservice.auth.interfaces.rest.vo;
 
 /**
  * 邀请记录 VO。

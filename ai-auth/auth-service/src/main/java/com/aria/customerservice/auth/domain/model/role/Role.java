@@ -1,4 +1,4 @@
-package com.aria.auth.domain.model.role;
+package com.aria.customerservice.auth.domain.model.role;
 
 /**
  * 角色领域模型。

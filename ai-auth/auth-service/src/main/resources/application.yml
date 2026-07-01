@@ -55,5 +55,5 @@ cs:
 
 logging:
   level:
-    com.aria.auth: DEBUG
+    com.aria.customerservice.auth: DEBUG
     org.springframework.web: INFO

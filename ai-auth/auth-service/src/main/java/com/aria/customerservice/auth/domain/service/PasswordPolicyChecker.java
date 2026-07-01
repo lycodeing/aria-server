@@ -1,4 +1,4 @@
-package com.aria.auth.domain.service;
+package com.aria.customerservice.auth.domain.service;
 
 import com.aria.common.core.exception.BusinessException;
 

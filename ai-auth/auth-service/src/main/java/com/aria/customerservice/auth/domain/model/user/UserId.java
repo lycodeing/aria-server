@@ -1,4 +1,4 @@
-package com.aria.auth.domain.model.user;
+package com.aria.customerservice.auth.domain.model.user;
 
 import com.aria.common.core.domain.TypedId;
 

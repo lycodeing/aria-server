@@ -1,11 +1,11 @@
-package com.aria.auth.application.service;
+package com.aria.customerservice.auth.application.service;
 
-import com.aria.auth.application.result.UserInfoResult;
-import com.aria.auth.domain.model.role.Role;
-import com.aria.auth.domain.model.user.User;
-import com.aria.auth.domain.model.user.UserId;
-import com.aria.auth.domain.repository.IRoleRepository;
-import com.aria.auth.domain.repository.IUserRepository;
+import com.aria.customerservice.auth.application.result.UserInfoResult;
+import com.aria.customerservice.auth.domain.model.role.Role;
+import com.aria.customerservice.auth.domain.model.user.User;
+import com.aria.customerservice.auth.domain.model.user.UserId;
+import com.aria.customerservice.auth.domain.repository.IRoleRepository;
+import com.aria.customerservice.auth.domain.repository.IUserRepository;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.common.core.exception.CommonErrorCode;
 import lombok.RequiredArgsConstructor;

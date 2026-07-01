@@ -1,8 +1,8 @@
-package com.aria.auth.infrastructure.persistence.role;
+package com.aria.customerservice.auth.infrastructure.persistence.role;
 
-import com.aria.auth.application.query.RolePageQuery;
-import com.aria.auth.domain.model.role.Role;
-import com.aria.auth.domain.repository.IRoleRepository;
+import com.aria.customerservice.auth.application.query.RolePageQuery;
+import com.aria.customerservice.auth.domain.model.role.Role;
+import com.aria.customerservice.auth.domain.repository.IRoleRepository;
 import com.aria.common.core.page.PageResult;
 import com.aria.common.core.page.PageUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;

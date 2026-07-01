@@ -1,4 +1,4 @@
-package com.aria.auth.domain.model.user;
+package com.aria.customerservice.auth.domain.model.user;
 
 /**
  * 账号来源（认证方式）。

@@ -1,13 +1,13 @@
-package com.aria.auth.interfaces.rest;
+package com.aria.customerservice.auth.interfaces.rest;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
-import com.aria.auth.application.query.RolePageQuery;
-import com.aria.auth.application.service.MenuApplicationService;
-import com.aria.auth.application.service.RoleApplicationService;
-import com.aria.auth.domain.model.role.Permission;
-import com.aria.auth.domain.model.role.Role;
-import com.aria.auth.interfaces.assembler.RoleAssembler;
-import com.aria.auth.interfaces.rest.vo.*;
+import com.aria.customerservice.auth.application.query.RolePageQuery;
+import com.aria.customerservice.auth.application.service.MenuApplicationService;
+import com.aria.customerservice.auth.application.service.RoleApplicationService;
+import com.aria.customerservice.auth.domain.model.role.Permission;
+import com.aria.customerservice.auth.domain.model.role.Role;
+import com.aria.customerservice.auth.interfaces.assembler.RoleAssembler;
+import com.aria.customerservice.auth.interfaces.rest.vo.*;
 import com.aria.common.core.page.PageResult;
 import com.aria.common.web.response.R;
 import lombok.Data;

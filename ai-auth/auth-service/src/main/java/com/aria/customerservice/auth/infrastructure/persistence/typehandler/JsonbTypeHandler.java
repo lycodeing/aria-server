@@ -1,4 +1,4 @@
-package com.aria.auth.infrastructure.persistence.typehandler;
+package com.aria.customerservice.auth.infrastructure.persistence.typehandler;
 
 import org.apache.ibatis.type.BaseTypeHandler;
 import org.apache.ibatis.type.JdbcType;

@@ -1,7 +1,7 @@
-package com.aria.auth.infrastructure.persistence.role;
+package com.aria.customerservice.auth.infrastructure.persistence.role;
 
-import com.aria.auth.domain.model.role.Permission;
-import com.aria.auth.domain.repository.IPermissionRepository;
+import com.aria.customerservice.auth.domain.model.role.Permission;
+import com.aria.customerservice.auth.domain.repository.IPermissionRepository;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;

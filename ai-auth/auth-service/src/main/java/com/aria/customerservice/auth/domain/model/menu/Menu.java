@@ -1,4 +1,4 @@
-package com.aria.auth.domain.model.menu;
+package com.aria.customerservice.auth.domain.model.menu;
 
 /**
  * 菜单/按钮领域模型。

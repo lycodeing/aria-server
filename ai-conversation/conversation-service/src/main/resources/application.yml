@@ -105,6 +105,11 @@ visitor:
     # 连续错误最大次数，超出后锁定 10 分钟
     max-attempts: 5
 
+# aria-auth 服务地址（AiModelConfigProvider 从此拉取激活的 AI 模型配置）
+aria:
+  auth:
+    internal-url: ${ARIA_AUTH_INTERNAL_URL:http://localhost:8083}
+
 # -------- 知识库检索配置（RAG） --------
 knowledge:
   service:

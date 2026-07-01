@@ -1,10 +1,10 @@
-package com.aria.auth.infrastructure.aspect;
+package com.aria.customerservice.auth.infrastructure.aspect;
 
 import cn.dev33.satoken.stp.StpUtil;
-import com.aria.auth.domain.datascope.DataScope;
-import com.aria.auth.domain.datascope.DataScopeContext;
-import com.aria.auth.infrastructure.persistence.dept.DeptMapper;
-import com.aria.auth.infrastructure.persistence.role.RoleMapper;
+import com.aria.customerservice.auth.domain.datascope.DataScope;
+import com.aria.customerservice.auth.domain.datascope.DataScopeContext;
+import com.aria.customerservice.auth.infrastructure.persistence.dept.DeptMapper;
+import com.aria.customerservice.auth.infrastructure.persistence.role.RoleMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.aspectj.lang.ProceedingJoinPoint;

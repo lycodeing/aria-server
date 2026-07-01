@@ -1,7 +1,7 @@
-package com.aria.auth.domain.event;
+package com.aria.customerservice.auth.domain.event;
 
-import com.aria.auth.domain.model.user.AuthProvider;
-import com.aria.auth.domain.model.user.UserId;
+import com.aria.customerservice.auth.domain.model.user.AuthProvider;
+import com.aria.customerservice.auth.domain.model.user.UserId;
 import com.aria.common.core.domain.DomainEvent;
 
 import java.time.Instant;

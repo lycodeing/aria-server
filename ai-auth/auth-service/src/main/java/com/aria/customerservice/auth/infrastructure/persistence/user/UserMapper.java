@@ -1,4 +1,4 @@
-package com.aria.auth.infrastructure.persistence.user;
+package com.aria.customerservice.auth.infrastructure.persistence.user;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;

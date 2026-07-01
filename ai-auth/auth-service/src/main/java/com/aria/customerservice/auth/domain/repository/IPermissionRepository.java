@@ -1,6 +1,6 @@
-package com.aria.auth.domain.repository;
+package com.aria.customerservice.auth.domain.repository;
 
-import com.aria.auth.domain.model.role.Permission;
+import com.aria.customerservice.auth.domain.model.role.Permission;
 
 import java.util.List;
 

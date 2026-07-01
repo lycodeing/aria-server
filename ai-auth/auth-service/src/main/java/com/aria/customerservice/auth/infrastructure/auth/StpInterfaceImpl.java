@@ -1,7 +1,7 @@
-package com.aria.auth.infrastructure.auth;
+package com.aria.customerservice.auth.infrastructure.auth;
 
 import cn.dev33.satoken.stp.StpInterface;
-import com.aria.auth.domain.repository.IUserRepository;
+import com.aria.customerservice.auth.domain.repository.IUserRepository;
 import org.springframework.stereotype.Component;
 import java.util.List;
 

@@ -1,6 +1,6 @@
-package com.aria.auth.domain.event;
+package com.aria.customerservice.auth.domain.event;
 
-import com.aria.auth.domain.model.user.UserId;
+import com.aria.customerservice.auth.domain.model.user.UserId;
 import com.aria.common.core.domain.DomainEvent;
 
 public class UserDisabled extends DomainEvent {

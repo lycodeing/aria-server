@@ -1,9 +1,9 @@
-package com.aria.auth.interfaces.rest;
+package com.aria.customerservice.auth.interfaces.rest;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.stp.StpUtil;
-import com.aria.auth.application.result.UserInfoResult;
-import com.aria.auth.application.service.UserInfoApplicationService;
+import com.aria.customerservice.auth.application.result.UserInfoResult;
+import com.aria.customerservice.auth.application.service.UserInfoApplicationService;
 import com.aria.common.web.response.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.GetMapping;

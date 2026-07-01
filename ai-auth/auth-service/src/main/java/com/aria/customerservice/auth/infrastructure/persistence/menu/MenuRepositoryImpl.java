@@ -1,7 +1,7 @@
-package com.aria.auth.infrastructure.persistence.menu;
+package com.aria.customerservice.auth.infrastructure.persistence.menu;
 
-import com.aria.auth.domain.model.menu.Menu;
-import com.aria.auth.domain.repository.IMenuRepository;
+import com.aria.customerservice.auth.domain.model.menu.Menu;
+import com.aria.customerservice.auth.domain.repository.IMenuRepository;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import org.springframework.stereotype.Repository;
 

@@ -1,4 +1,4 @@
-package com.aria.auth.interfaces.dto;
+package com.aria.customerservice.auth.interfaces.dto;
 import jakarta.validation.constraints.*;
 import lombok.Data;
 

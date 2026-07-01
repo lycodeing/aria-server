@@ -1,12 +1,12 @@
-package com.aria.auth.application.service;
+package com.aria.customerservice.auth.application.service;
 
-import com.aria.auth.domain.model.role.Permission;
-import com.aria.auth.domain.model.role.Role;
-import com.aria.auth.domain.repository.IPermissionRepository;
-import com.aria.auth.domain.repository.IRoleRepository;
+import com.aria.customerservice.auth.domain.model.role.Permission;
+import com.aria.customerservice.auth.domain.model.role.Role;
+import com.aria.customerservice.auth.domain.repository.IPermissionRepository;
+import com.aria.customerservice.auth.domain.repository.IRoleRepository;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.common.core.exception.CommonErrorCode;
-import com.aria.auth.application.query.RolePageQuery;
+import com.aria.customerservice.auth.application.query.RolePageQuery;
 import com.aria.common.core.page.PageResult;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;

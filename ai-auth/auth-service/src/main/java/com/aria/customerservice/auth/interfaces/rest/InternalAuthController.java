@@ -1,4 +1,4 @@
-package com.aria.auth.interfaces.rest;
+package com.aria.customerservice.auth.interfaces.rest;
 
 import cn.dev33.satoken.stp.StpUtil;
 import com.aria.common.web.response.R;

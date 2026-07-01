@@ -1,6 +1,6 @@
-package com.aria.auth.infrastructure.persistence.user;
+package com.aria.customerservice.auth.infrastructure.persistence.user;
 
-import com.aria.auth.infrastructure.persistence.typehandler.JsonbTypeHandler;
+import com.aria.customerservice.auth.infrastructure.persistence.typehandler.JsonbTypeHandler;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.annotation.IdType;

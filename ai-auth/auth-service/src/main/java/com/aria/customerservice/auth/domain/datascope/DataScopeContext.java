@@ -1,4 +1,4 @@
-package com.aria.auth.domain.datascope;
+package com.aria.customerservice.auth.domain.datascope;
 
 import java.util.List;
 

@@ -1,7 +1,7 @@
-package com.aria.auth.domain.repository;
+package com.aria.customerservice.auth.domain.repository;
 
-import com.aria.auth.application.query.RolePageQuery;
-import com.aria.auth.domain.model.role.Role;
+import com.aria.customerservice.auth.application.query.RolePageQuery;
+import com.aria.customerservice.auth.domain.model.role.Role;
 import com.aria.common.core.page.PageResult;
 
 import java.util.List;

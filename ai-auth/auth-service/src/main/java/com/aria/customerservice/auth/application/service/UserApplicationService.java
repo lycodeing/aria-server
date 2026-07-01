@@ -1,11 +1,11 @@
-package com.aria.auth.application.service;
+package com.aria.customerservice.auth.application.service;
 
-import com.aria.auth.domain.model.user.*;
-import com.aria.auth.domain.repository.IUserRepository;
-import com.aria.auth.domain.service.PasswordPolicyChecker;
+import com.aria.customerservice.auth.domain.model.user.*;
+import com.aria.customerservice.auth.domain.repository.IUserRepository;
+import com.aria.customerservice.auth.domain.service.PasswordPolicyChecker;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.common.core.exception.CommonErrorCode;
-import com.aria.auth.application.query.UserPageQuery;
+import com.aria.customerservice.auth.application.query.UserPageQuery;
 import com.aria.common.core.page.PageResult;
 import com.aria.common.core.util.IdGenerator;
 import org.springframework.stereotype.Service;

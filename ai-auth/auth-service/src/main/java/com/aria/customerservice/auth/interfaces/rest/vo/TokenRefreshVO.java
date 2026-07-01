@@ -1,4 +1,4 @@
-package com.aria.auth.interfaces.rest.vo;
+package com.aria.customerservice.auth.interfaces.rest.vo;
 
 /**
  * Token 刷新结果 VO。

@@ -1,13 +1,13 @@
-package com.aria.auth.domain.model.user;
+package com.aria.customerservice.auth.domain.model.user;
 
 import com.aria.common.core.domain.AggregateRoot;
 import com.aria.common.core.exception.BusinessException;
-import com.aria.auth.domain.event.UserDisabled;
-import com.aria.auth.domain.event.UserLoginFailed;
-import com.aria.auth.domain.event.UserLoginSucceeded;
-import com.aria.auth.domain.event.UserPasswordChanged;
-import com.aria.auth.domain.event.UserRegistered;
-import com.aria.auth.domain.event.UserRoleChanged;
+import com.aria.customerservice.auth.domain.event.UserDisabled;
+import com.aria.customerservice.auth.domain.event.UserLoginFailed;
+import com.aria.customerservice.auth.domain.event.UserLoginSucceeded;
+import com.aria.customerservice.auth.domain.event.UserPasswordChanged;
+import com.aria.customerservice.auth.domain.event.UserRegistered;
+import com.aria.customerservice.auth.domain.event.UserRoleChanged;
 
 import java.time.Instant;
 import java.util.*;

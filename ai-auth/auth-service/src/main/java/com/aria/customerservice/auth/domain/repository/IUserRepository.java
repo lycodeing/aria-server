@@ -1,8 +1,8 @@
-package com.aria.auth.domain.repository;
+package com.aria.customerservice.auth.domain.repository;
 
-import com.aria.auth.application.query.UserPageQuery;
-import com.aria.auth.domain.model.user.User;
-import com.aria.auth.domain.model.user.UserId;
+import com.aria.customerservice.auth.application.query.UserPageQuery;
+import com.aria.customerservice.auth.domain.model.user.User;
+import com.aria.customerservice.auth.domain.model.user.UserId;
 import com.aria.common.core.page.PageResult;
 
 import java.util.List;

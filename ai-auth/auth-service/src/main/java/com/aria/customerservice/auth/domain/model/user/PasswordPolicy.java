@@ -1,4 +1,4 @@
-package com.aria.auth.domain.model.user;
+package com.aria.customerservice.auth.domain.model.user;
 
 public final class PasswordPolicy {
     private final int minLength; private final boolean requireUpper; private final boolean requireDigit;

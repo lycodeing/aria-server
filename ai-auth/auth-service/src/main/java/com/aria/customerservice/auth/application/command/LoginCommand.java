@@ -1,4 +1,4 @@
-package com.aria.auth.application.command;
+package com.aria.customerservice.auth.application.command;
 
 import jakarta.validation.constraints.NotBlank;
 import lombok.Getter;

@@ -2,7 +2,7 @@ package com.aria.conversation.application.service;
 
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
-import com.aria.conversation.infrastructure.ai.CtyunAiClient;
+import com.aria.conversation.infrastructure.ai.DynamicAiClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
@@ -31,11 +31,11 @@ public class ChatAppService {
             回答要简明扼要，避免冗长说明。
             """;
 
-    private final CtyunAiClient aiClient;
+    private final DynamicAiClient aiClient;
     private final ConversationHistoryRepository historyRepository;
     private final KnowledgeClient knowledgeClient;
 
-    public ChatAppService(CtyunAiClient aiClient,
+    public ChatAppService(DynamicAiClient aiClient,
                           ConversationHistoryRepository historyRepository,
                           KnowledgeClient knowledgeClient) {
         this.aiClient          = aiClient;

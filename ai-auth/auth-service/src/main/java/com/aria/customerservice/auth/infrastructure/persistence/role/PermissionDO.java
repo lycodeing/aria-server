@@ -1,4 +1,4 @@
-package com.aria.auth.infrastructure.persistence.role;
+package com.aria.customerservice.auth.infrastructure.persistence.role;
 
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Getter;

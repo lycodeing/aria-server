@@ -1,4 +1,4 @@
-package com.aria.auth.interfaces.rest.vo;
+package com.aria.customerservice.auth.interfaces.rest.vo;
 
 /**
  * 通知渠道配置 VO。

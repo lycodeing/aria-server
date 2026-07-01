@@ -4,3 +4,4 @@ com.aria.common.web.redis.RedisCacheHelper
 com.aria.common.web.redis.RedisCounterHelper
 com.aria.common.web.redis.RedisLockHelper
 com.aria.common.web.auth.SaTokenWebConfig
+com.aria.common.web.ai.RemoteAiModelConfigProvider

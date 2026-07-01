@@ -1,9 +1,9 @@
-package com.aria.auth.infrastructure.seed;
+package com.aria.customerservice.auth.infrastructure.seed;
 
-import com.aria.auth.infrastructure.persistence.role.PermissionDO;
-import com.aria.auth.infrastructure.persistence.role.PermissionMapper;
-import com.aria.auth.infrastructure.persistence.role.RoleDO;
-import com.aria.auth.infrastructure.persistence.role.RoleMapper;
+import com.aria.customerservice.auth.infrastructure.persistence.role.PermissionDO;
+import com.aria.customerservice.auth.infrastructure.persistence.role.PermissionMapper;
+import com.aria.customerservice.auth.infrastructure.persistence.role.RoleDO;
+import com.aria.customerservice.auth.infrastructure.persistence.role.RoleMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationRunner;

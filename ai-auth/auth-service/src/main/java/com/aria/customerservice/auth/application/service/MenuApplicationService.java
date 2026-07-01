@@ -1,12 +1,12 @@
-package com.aria.auth.application.service;
+package com.aria.customerservice.auth.application.service;
 
-import com.aria.auth.application.command.CreateMenuCommand;
-import com.aria.auth.application.command.UpdateMenuCommand;
-import com.aria.auth.application.result.MenuAdminVO;
-import com.aria.auth.application.result.RouteMetaVO;
-import com.aria.auth.application.result.RouteVO;
-import com.aria.auth.domain.model.menu.Menu;
-import com.aria.auth.domain.repository.IMenuRepository;
+import com.aria.customerservice.auth.application.command.CreateMenuCommand;
+import com.aria.customerservice.auth.application.command.UpdateMenuCommand;
+import com.aria.customerservice.auth.application.result.MenuAdminVO;
+import com.aria.customerservice.auth.application.result.RouteMetaVO;
+import com.aria.customerservice.auth.application.result.RouteVO;
+import com.aria.customerservice.auth.domain.model.menu.Menu;
+import com.aria.customerservice.auth.domain.repository.IMenuRepository;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.common.core.exception.CommonErrorCode;
 import org.springframework.stereotype.Service;

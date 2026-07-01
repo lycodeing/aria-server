@@ -1,14 +1,14 @@
-package com.aria.auth.interfaces.rest;
+package com.aria.customerservice.auth.interfaces.rest;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.stp.StpUtil;
-import com.aria.auth.application.command.LoginCommand;
-import com.aria.auth.application.result.LoginResult;
-import com.aria.auth.application.service.AuthApplicationService;
-import com.aria.auth.application.service.MenuApplicationService;
-import com.aria.auth.interfaces.rest.vo.LoginResultVO;
-import com.aria.auth.interfaces.rest.vo.MeVO;
-import com.aria.auth.application.result.TokenRefreshResult;
+import com.aria.customerservice.auth.application.command.LoginCommand;
+import com.aria.customerservice.auth.application.result.LoginResult;
+import com.aria.customerservice.auth.application.service.AuthApplicationService;
+import com.aria.customerservice.auth.application.service.MenuApplicationService;
+import com.aria.customerservice.auth.interfaces.rest.vo.LoginResultVO;
+import com.aria.customerservice.auth.interfaces.rest.vo.MeVO;
+import com.aria.customerservice.auth.application.result.TokenRefreshResult;
 import com.aria.common.web.response.R;
 import com.aria.common.web.util.ControllerUtils;
 import jakarta.servlet.http.HttpServletRequest;

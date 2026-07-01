@@ -1,11 +1,11 @@
-package com.aria.auth.infrastructure.persistence.user;
+package com.aria.customerservice.auth.infrastructure.persistence.user;
 
-import com.aria.auth.domain.model.user.*;
-import com.aria.auth.domain.repository.IUserRepository;
-import com.aria.auth.infrastructure.persistence.role.PermissionMapper;
-import com.aria.auth.infrastructure.persistence.role.RoleDO;
-import com.aria.auth.infrastructure.persistence.role.RoleMapper;
-import com.aria.auth.application.query.UserPageQuery;
+import com.aria.customerservice.auth.domain.model.user.*;
+import com.aria.customerservice.auth.domain.repository.IUserRepository;
+import com.aria.customerservice.auth.infrastructure.persistence.role.PermissionMapper;
+import com.aria.customerservice.auth.infrastructure.persistence.role.RoleDO;
+import com.aria.customerservice.auth.infrastructure.persistence.role.RoleMapper;
+import com.aria.customerservice.auth.application.query.UserPageQuery;
 import com.aria.common.core.page.PageResult;
 import com.aria.common.core.page.PageUtil;
 import org.springframework.util.StringUtils;

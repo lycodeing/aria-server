@@ -1,4 +1,4 @@
-package com.aria.auth.infrastructure.security.password;
+package com.aria.customerservice.auth.infrastructure.security.password;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;

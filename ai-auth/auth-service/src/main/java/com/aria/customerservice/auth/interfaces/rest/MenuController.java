@@ -1,12 +1,12 @@
-package com.aria.auth.interfaces.rest;
+package com.aria.customerservice.auth.interfaces.rest;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.stp.StpUtil;
-import com.aria.auth.application.command.CreateMenuCommand;
-import com.aria.auth.application.command.UpdateMenuCommand;
-import com.aria.auth.application.result.MenuAdminVO;
-import com.aria.auth.application.result.RouteVO;
-import com.aria.auth.application.service.MenuApplicationService;
+import com.aria.customerservice.auth.application.command.CreateMenuCommand;
+import com.aria.customerservice.auth.application.command.UpdateMenuCommand;
+import com.aria.customerservice.auth.application.result.MenuAdminVO;
+import com.aria.customerservice.auth.application.result.RouteVO;
+import com.aria.customerservice.auth.application.service.MenuApplicationService;
 import com.aria.common.web.response.R;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;

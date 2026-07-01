@@ -1,7 +1,7 @@
-package com.aria.auth;
+package com.aria.customerservice.auth;
 
-import com.aria.auth.domain.service.LoginAttemptPolicy;
-import com.aria.auth.domain.service.PasswordPolicyChecker;
+import com.aria.customerservice.auth.domain.service.LoginAttemptPolicy;
+import com.aria.customerservice.auth.domain.service.PasswordPolicyChecker;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

@@ -1,4 +1,4 @@
-package com.aria.auth.domain.model.role;
+package com.aria.customerservice.auth.domain.model.role;
 
 /**
  * 接口权限值对象（只读，无行为变更）。

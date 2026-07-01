@@ -1,15 +1,15 @@
-package com.aria.auth.application.service;
+package com.aria.customerservice.auth.application.service;
 
 import cn.dev33.satoken.stp.SaLoginModel;
 import cn.dev33.satoken.stp.StpUtil;
-import com.aria.auth.application.command.LoginCommand;
-import com.aria.auth.application.result.LoginResult;
-import com.aria.auth.application.result.TokenRefreshResult;
-import com.aria.auth.domain.model.user.*;
-import com.aria.auth.domain.repository.IUserRepository;
-import com.aria.auth.domain.service.LoginAttemptPolicy;
-import com.aria.auth.infrastructure.auth.SsoCookieWriter;
-import com.aria.auth.infrastructure.security.ratelimit.LoginRateLimiter;
+import com.aria.customerservice.auth.application.command.LoginCommand;
+import com.aria.customerservice.auth.application.result.LoginResult;
+import com.aria.customerservice.auth.application.result.TokenRefreshResult;
+import com.aria.customerservice.auth.domain.model.user.*;
+import com.aria.customerservice.auth.domain.repository.IUserRepository;
+import com.aria.customerservice.auth.domain.service.LoginAttemptPolicy;
+import com.aria.customerservice.auth.infrastructure.auth.SsoCookieWriter;
+import com.aria.customerservice.auth.infrastructure.security.ratelimit.LoginRateLimiter;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.common.core.exception.CommonErrorCode;
 import org.slf4j.Logger;

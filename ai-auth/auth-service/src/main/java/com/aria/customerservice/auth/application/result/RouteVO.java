@@ -1,4 +1,4 @@
-package com.aria.auth.application.result;
+package com.aria.customerservice.auth.application.result;
 
 import java.util.List;
 

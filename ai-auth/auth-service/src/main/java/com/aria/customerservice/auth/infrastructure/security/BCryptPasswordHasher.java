@@ -1,6 +1,6 @@
-package com.aria.auth.infrastructure.security;
+package com.aria.customerservice.auth.infrastructure.security;
 
-import com.aria.auth.domain.model.user.PasswordHasher;
+import com.aria.customerservice.auth.domain.model.user.PasswordHasher;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Component;
 

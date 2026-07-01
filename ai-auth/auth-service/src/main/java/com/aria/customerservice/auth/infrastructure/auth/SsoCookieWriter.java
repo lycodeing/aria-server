@@ -1,4 +1,4 @@
-package com.aria.auth.infrastructure.auth;
+package com.aria.customerservice.auth.infrastructure.auth;
 
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletResponse;

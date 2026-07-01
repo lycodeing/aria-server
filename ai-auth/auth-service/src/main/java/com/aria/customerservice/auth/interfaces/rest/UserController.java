@@ -1,12 +1,12 @@
-package com.aria.auth.interfaces.rest;
+package com.aria.customerservice.auth.interfaces.rest;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.stp.StpUtil;
-import com.aria.auth.application.query.UserPageQuery;
-import com.aria.auth.application.service.UserApplicationService;
-import com.aria.auth.domain.model.user.User;
-import com.aria.auth.interfaces.assembler.UserAssembler;
-import com.aria.auth.interfaces.rest.vo.*;
+import com.aria.customerservice.auth.application.query.UserPageQuery;
+import com.aria.customerservice.auth.application.service.UserApplicationService;
+import com.aria.customerservice.auth.domain.model.user.User;
+import com.aria.customerservice.auth.interfaces.assembler.UserAssembler;
+import com.aria.customerservice.auth.interfaces.rest.vo.*;
 import com.aria.common.core.page.PageResult;
 import com.aria.common.web.response.R;
 import org.springframework.web.bind.annotation.*;

@@ -1,7 +1,7 @@
-package com.aria.auth.interfaces.assembler;
+package com.aria.customerservice.auth.interfaces.assembler;
 
-import com.aria.auth.domain.model.role.Role;
-import com.aria.auth.interfaces.rest.vo.RoleVO;
+import com.aria.customerservice.auth.domain.model.role.Role;
+import com.aria.customerservice.auth.interfaces.rest.vo.RoleVO;
 
 /**
  * 角色领域对象 ↔ 接口层 VO 转换器。
