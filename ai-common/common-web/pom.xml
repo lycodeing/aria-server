@@ -4,18 +4,18 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>com.aidevplatform.customerservice</groupId>
+        <groupId>com.aria</groupId>
         <artifactId>ai-common</artifactId>
         <version>1.0.0-SNAPSHOT</version>
     </parent>
-    <artifactId>common-web</artifactId>
+    <artifactId>aria-common-web</artifactId>
     <name>CS Common Web</name>
     <description>Spring Web 层基础设施（统一响应、全局异常、Sa-Token、Swagger）</description>
 
     <dependencies>
         <dependency>
-            <groupId>com.aidevplatform.customerservice</groupId>
-            <artifactId>common-core</artifactId>
+            <groupId>com.aria</groupId>
+            <artifactId>aria-common-core</artifactId>
         </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>

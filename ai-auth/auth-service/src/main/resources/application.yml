@@ -3,7 +3,7 @@ server:
 
 spring:
   application:
-    name: cs-auth-service
+    name: aria-auth
   datasource:
     url: jdbc:postgresql://localhost:5432/ai_customerservice
     username: ${DB_USERNAME:postgres}
@@ -55,5 +55,5 @@ cs:
 
 logging:
   level:
-    com.aidevplatform.customerservice.auth: DEBUG
+    com.aria.auth: DEBUG
     org.springframework.web: INFO

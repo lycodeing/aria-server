@@ -4,8 +4,8 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>com.aidevplatform</groupId>
-    <artifactId>ai-customerservice-backend</artifactId>
+    <groupId>com.aria</groupId>
+    <artifactId>aria-server</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>AI CustomerService Backend</name>
@@ -56,18 +56,18 @@
 
             <!-- ===== 内部公共模块 ===== -->
             <dependency>
-                <groupId>com.aidevplatform.customerservice</groupId>
-                <artifactId>common-core</artifactId>
+                <groupId>com.aria</groupId>
+                <artifactId>aria-common-core</artifactId>
                 <version>${cs.common.version}</version>
             </dependency>
             <dependency>
-                <groupId>com.aidevplatform.customerservice</groupId>
-                <artifactId>common-web</artifactId>
+                <groupId>com.aria</groupId>
+                <artifactId>aria-common-web</artifactId>
                 <version>${cs.common.version}</version>
             </dependency>
             <dependency>
-                <groupId>com.aidevplatform.customerservice</groupId>
-                <artifactId>common-client</artifactId>
+                <groupId>com.aria</groupId>
+                <artifactId>aria-common-client</artifactId>
                 <version>${cs.common.version}</version>
             </dependency>
 
@@ -177,6 +177,8 @@
                     <configuration>
                         <release>17</release>
                         <encoding>UTF-8</encoding>
+                        <!-- Spring 6 @RequestParam / @PathVariable / @Value 等依赖参数名反射，必须保留 -->
+                        <parameters>true</parameters>
                     </configuration>
                 </plugin>
                 <!--

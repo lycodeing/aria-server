@@ -4,11 +4,11 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>com.aidevplatform</groupId>
+        <groupId>com.aria</groupId>
         <artifactId>ai-auth</artifactId>
         <version>1.0.0-SNAPSHOT</version>
     </parent>
-    <artifactId>auth-service</artifactId>
+    <artifactId>aria-auth</artifactId>
     <name>CS Auth Service - 客服认证服务</name>
     <description>端口 8083，独立认证授权：用户/角色/菜单/数据权限，schema cs_auth</description>
 
@@ -18,8 +18,8 @@
             此处只声明 common-web 未覆盖的额外依赖
         -->
         <dependency>
-            <groupId>com.aidevplatform.customerservice</groupId>
-            <artifactId>common-web</artifactId>
+            <groupId>com.aria</groupId>
+            <artifactId>aria-common-web</artifactId>
         </dependency>
 
         <!-- AOP（DataScopeAspect，common-web 未引入） -->

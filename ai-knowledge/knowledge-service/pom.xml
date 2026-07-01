@@ -4,11 +4,11 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>com.aidevplatform</groupId>
+        <groupId>com.aria</groupId>
         <artifactId>ai-knowledge</artifactId>
         <version>1.0.0-SNAPSHOT</version>
     </parent>
-    <artifactId>knowledge-service</artifactId>
+    <artifactId>aria-knowledge</artifactId>
     <name>Knowledge Service - 知识库服务</name>
     <description>文档摄取、向量化、混合检索、知识库管理 REST API，端口 8081</description>
 
@@ -18,8 +18,8 @@
             此处只声明 common-web 未覆盖的额外依赖
         -->
         <dependency>
-            <groupId>com.aidevplatform.customerservice</groupId>
-            <artifactId>common-web</artifactId>
+            <groupId>com.aria</groupId>
+            <artifactId>aria-common-web</artifactId>
         </dependency>
 
         <!-- AOP（DataScopeAspect，common-web 未引入） -->

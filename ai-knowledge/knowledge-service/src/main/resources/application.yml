@@ -1,6 +1,6 @@
 spring:
   application:
-    name: knowledge-service
+    name: aria-knowledge
   datasource:
     url: jdbc:postgresql://localhost:5432/ai_knowledge
     username: ${DB_USERNAME:postgres}
@@ -41,7 +41,7 @@ spring:
 
 mybatis-plus:
   mapper-locations: classpath:mapper/*.xml
-  type-aliases-package: com.aidevplatform.knowledge.infrastructure.persistence
+  type-aliases-package: com.aria.knowledge.infrastructure.persistence
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
@@ -96,5 +96,12 @@ springdoc:
 
 logging:
   level:
-    com.aidevplatform: DEBUG
+    com.aria: DEBUG
     org.springframework.data.redis: WARN
+
+# -------- 天翼云 AI 配置（用于翻译等管理功能）--------
+ctyun:
+  ai:
+    base-url: ${CTYUN_AI_BASE_URL:https://wishub-x6.ctyun.cn/v1}
+    api-key: ${AI_CTYUN_API_KEY:}
+    model: DeepSeek-V4-Flash

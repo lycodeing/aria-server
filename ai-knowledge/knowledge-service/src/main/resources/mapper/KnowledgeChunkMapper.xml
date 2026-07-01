@@ -2,19 +2,44 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
     "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 
-<mapper namespace="com.aidevplatform.knowledge.infrastructure.persistence.mapper.KnowledgeChunkMapper">
+<mapper namespace="com.aria.knowledge.infrastructure.persistence.mapper.KnowledgeChunkMapper">
+
+    <!--
+        I-02：批量插入 Chunk 列表（单条 SQL 多 VALUES），避免 N 次单行 INSERT 的性能瓶颈。
+        content_vector 列使用内联 typeHandler 强制类型转换，与 PgVectorTypeHandler 双重保障。
+    -->
+    <insert id="insertBatch" parameterType="java.util.List">
+        INSERT INTO knowledge_chunk
+            (id, doc_id, kb_id, doc_status, parent_chunk_id, breadcrumb,
+             content, content_vector, token_count, retrieval_weight,
+             feedback_downvotes, hypothetical_questions, metadata,
+             page_num, section_title, chunk_type, created_at)
+        VALUES
+        <foreach collection="list" item="c" separator=",">
+        (#{c.id}, #{c.docId}, #{c.kbId}, #{c.docStatus}, #{c.parentChunkId}, #{c.breadcrumb},
+         #{c.content},
+         #{c.contentVector,typeHandler=com.aria.knowledge.infrastructure.persistence.typehandler.PgVectorTypeHandler},
+         #{c.tokenCount}, #{c.retrievalWeight},
+         #{c.feedbackDownvotes}, #{c.hypotheticalQuestions}, #{c.metadata},
+         #{c.pageNum}, #{c.sectionTitle}, #{c.chunkType}, #{c.createdAt})
+        </foreach>
+    </insert>
 
     <!--
         ResultMap：将查询结果列别名映射到 ChunkHitDO 字段（下划线转驼峰）
     -->
     <resultMap id="ChunkHitResult"
-               type="com.aidevplatform.knowledge.infrastructure.persistence.do_.ChunkHitDO">
+               type="com.aria.knowledge.infrastructure.persistence.do_.ChunkHitDO">
         <id     property="chunkId"       column="chunk_id"/>
         <result property="docId"         column="doc_id"/>
+        <result property="kbId"          column="kb_id"/>
         <result property="content"       column="content"/>
         <result property="breadcrumb"    column="breadcrumb"/>
         <result property="parentChunkId" column="parent_chunk_id"/>
         <result property="score"         column="score"/>
+        <result property="pageNum"       column="page_num"/>
+        <result property="sectionTitle"  column="section_title"/>
+        <result property="chunkType"     column="chunk_type"/>
     </resultMap>
 
     <!--
@@ -27,9 +52,13 @@
         <![CDATA[
         SELECT id              AS chunk_id,
                doc_id,
+               kb_id,
                content,
                breadcrumb,
                parent_chunk_id,
+               page_num,
+               section_title,
+               chunk_type,
                1 - (content_vector <=> #{vec}::vector) AS score
         FROM knowledge_chunk
         WHERE kb_id          = #{kbId}
@@ -49,9 +78,13 @@
         <![CDATA[
         SELECT id              AS chunk_id,
                doc_id,
+               kb_id,
                content,
                breadcrumb,
                parent_chunk_id,
+               page_num,
+               section_title,
+               chunk_type,
                ts_rank_cd(to_tsvector('jieba', content),
                           plainto_tsquery('jieba', #{query})) AS score
         FROM knowledge_chunk
@@ -63,6 +96,15 @@
         ORDER BY score DESC
         LIMIT #{topK}
         ]]>
+    </select>
+
+    <!-- 汇总指定知识库所有已发布 chunk 的 token 总量 -->
+    <select id="selectTokenSumByKbId" resultType="java.lang.Long">
+        SELECT COALESCE(SUM(token_count), 0)
+        FROM knowledge_chunk
+        WHERE kb_id      = #{kbId}
+          AND doc_status = 'PUBLISHED'
+          AND retrieval_weight > 0
     </select>
 
 </mapper>

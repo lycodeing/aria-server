@@ -2,14 +2,14 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 
-<mapper namespace="com.aidevplatform.customerservice.auth.infrastructure.persistence.menu.MenuMapper">
+<mapper namespace="com.aria.auth.infrastructure.persistence.menu.MenuMapper">
 
     <!--
         查询用户拥有的菜单列表（通过角色-菜单关联）。
         仅返回 status=active 且 is_visible=true 的菜单，用于构建前端动态路由。
         BUTTON 类型 is_visible=false，不生成路由但会被权限码接口单独查询。
     -->
-    <select id="findMenusByUserId" resultType="com.aidevplatform.customerservice.auth.infrastructure.persistence.menu.MenuDO">
+    <select id="findMenusByUserId" resultType="com.aria.auth.infrastructure.persistence.menu.MenuDO">
         SELECT DISTINCT m.*
         FROM cs_auth.sys_menu m
                  INNER JOIN cs_auth.sys_role_menu rm ON rm.menu_id = m.id

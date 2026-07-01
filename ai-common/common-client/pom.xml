@@ -4,18 +4,18 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
     <parent>
-        <groupId>com.aidevplatform.customerservice</groupId>
+        <groupId>com.aria</groupId>
         <artifactId>ai-common</artifactId>
         <version>1.0.0-SNAPSHOT</version>
     </parent>
-    <artifactId>common-client</artifactId>
+    <artifactId>aria-common-client</artifactId>
     <name>CS Common Client</name>
     <description>OkHttp HTTP 客户端基础设施（BaseClient、AK/SK 签名拦截器、自动重试）</description>
 
     <dependencies>
         <dependency>
-            <groupId>com.aidevplatform.customerservice</groupId>
-            <artifactId>common-core</artifactId>
+            <groupId>com.aria</groupId>
+            <artifactId>aria-common-core</artifactId>
         </dependency>
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>
