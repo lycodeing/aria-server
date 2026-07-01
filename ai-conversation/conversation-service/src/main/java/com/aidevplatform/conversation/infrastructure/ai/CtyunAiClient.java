@@ -9,13 +9,13 @@ import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
 /**
  * 天翼云 AI API 客户端。
- * 封装 WebClient 调用 https://wishub-x6.ctyun.cn/v1/chat/completions。
- * 支持流式（stream=true）和非流式两种模式。
+ * 封装 WebClient 调用 {@code /v1/chat/completions}，支持流式和非流式两种模式。
  */
 @Component
 public class CtyunAiClient {
@@ -42,20 +42,20 @@ public class CtyunAiClient {
     }
 
     /**
-     * 流式对话：返回 Flux<String>，每个元素为 SSE data 行（原始 JSON 字符串）。
-     * 前端通过 EventSource 消费。
+     * 流式对话：返回 Flux，每个元素为原始 SSE JSON chunk 字符串。
+     * 前端通过 {@code fetch + ReadableStream} 消费，Controller 负责包装成 SSE 事件。
      *
-     * @param messages     对话消息列表，格式：[{"role":"user","content":"..."}]
-     * @param systemPrompt 系统提示词（可为 null）
+     * @param messages     对话消息列表（不含 system，由 systemPrompt 注入）
+     * @param systemPrompt 系统提示词，null 或空时不注入
      */
-    public Flux<String> streamChat(List<Map<String, String>> messages, String systemPrompt) {
-        List<Map<String, String>> fullMessages = buildMessages(messages, systemPrompt);
+    public Flux<String> streamChat(List<ChatMessage> messages, String systemPrompt) {
+        List<ChatMessage> fullMessages = buildMessages(messages, systemPrompt);
         Map<String, Object> requestBody = Map.of(
-                "model", model,
-                "messages", fullMessages,
-                "stream", true,
+                "model",       model,
+                "messages",    fullMessages,
+                "stream",      true,
                 "temperature", 0.7,
-                "max_tokens", 2048
+                "max_tokens",  2048
         );
 
         return webClient.post()
@@ -65,27 +65,25 @@ public class CtyunAiClient {
                 .bodyToFlux(String.class)
                 .timeout(Duration.ofSeconds(timeoutSeconds))
                 .filter(line -> line != null && !line.isBlank())
-                .map(line -> {
-                    // SSE 格式：去除 "data: " 前缀
-                    if (line.startsWith("data: ")) {
-                        return line.substring(6);
-                    }
-                    return line;
-                })
+                .map(line -> line.startsWith("data: ") ? line.substring(6) : line)
                 .filter(data -> !data.equals("[DONE]"));
     }
 
     /**
-     * 非流式对话：同步返回完整回复内容。
+     * 非流式对话：阻塞等待并返回完整回复文本。
+     *
+     * @param messages     对话消息列表
+     * @param systemPrompt 系统提示词
+     * @return AI 回复正文
      */
-    public String chat(List<Map<String, String>> messages, String systemPrompt) {
-        List<Map<String, String>> fullMessages = buildMessages(messages, systemPrompt);
+    public String chat(List<ChatMessage> messages, String systemPrompt) {
+        List<ChatMessage> fullMessages = buildMessages(messages, systemPrompt);
         Map<String, Object> requestBody = Map.of(
-                "model", model,
-                "messages", fullMessages,
-                "stream", false,
+                "model",       model,
+                "messages",    fullMessages,
+                "stream",      false,
                 "temperature", 0.7,
-                "max_tokens", 2048
+                "max_tokens",  2048
         );
 
         String response = webClient.post()
@@ -106,6 +104,7 @@ public class CtyunAiClient {
 
     /**
      * 从流式 SSE chunk JSON 中提取 delta content 文本。
+     * chunk 格式异常时返回空字符串，不向上抛出。
      */
     public String extractDeltaContent(String chunkJson) {
         try {
@@ -116,14 +115,16 @@ public class CtyunAiClient {
         }
     }
 
-    private List<Map<String, String>> buildMessages(
-            List<Map<String, String>> messages, String systemPrompt) {
-        if (systemPrompt != null && !systemPrompt.isBlank()) {
-            var list = new java.util.ArrayList<Map<String, String>>();
-            list.add(Map.of("role", "system", "content", systemPrompt));
-            list.addAll(messages);
-            return list;
+    /**
+     * 若有 systemPrompt，则在消息列表头部插入 system 消息。
+     */
+    private List<ChatMessage> buildMessages(List<ChatMessage> messages, String systemPrompt) {
+        if (systemPrompt == null || systemPrompt.isBlank()) {
+            return messages;
         }
-        return messages;
+        List<ChatMessage> full = new ArrayList<>(messages.size() + 1);
+        full.add(ChatMessage.system(systemPrompt));
+        full.addAll(messages);
+        return full;
     }
 }

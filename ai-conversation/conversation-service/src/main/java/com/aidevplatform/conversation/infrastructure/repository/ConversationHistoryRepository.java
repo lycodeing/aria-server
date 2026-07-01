@@ -2,6 +2,7 @@ package com.aidevplatform.conversation.infrastructure.repository;
 
 import com.aidevplatform.common.web.redis.RedisCacheHelper;
 import com.aidevplatform.common.web.redis.RedisLockHelper;
+import com.aidevplatform.conversation.domain.ConversationMessage;
 import com.aidevplatform.conversation.infrastructure.mq.ConversationMessagePublisher;
 import com.aidevplatform.conversation.infrastructure.persistence.mapper.ConversationMessageMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -9,54 +10,45 @@ import org.springframework.stereotype.Repository;
 
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
+import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 
 /**
  * 对话历史 Repository。
  *
- * <p>职责一：维护 Redis List 热数据（key: {@code chat:session:{id}}），供 AI 对话和 WS 路由实时读取。
- * <p>职责二：通过 {@link RedisLockHelper} 执行 Lua 原子脚本生成 session 内单调递增 seq，
- * 支持客户端断线重连后的 sinceSeq 增量同步。
- * <p>职责三：每次追加消息时，通过 {@link ConversationMessagePublisher} 发布到 RabbitMQ Direct Exchange，
- * 由 Consumer 异步消费并持久化到 PostgreSQL（含 seq 字段）。
+ * <p>职责一：维护 Redis List 热数据（key: {@code chat:session:{id}}），供 AI 对话和 WebSocket 路由实时读取。
+ * <p>职责二：通过 Lua 原子脚本生成 session 内单调递增 seq，支持客户端断线重连的 sinceSeq 增量同步。
+ * <p>职责三：每次追加消息时，通过 {@link ConversationMessagePublisher} 发布到 RabbitMQ，
+ * 由 Consumer 异步持久化到 PostgreSQL。
  *
  * <p>双写策略：
  * <pre>
  *   append() / appendAgentMessage()
- *     ├─ Redis List  chat:session:{id}   （热数据，三元组 [role, content, seq]，TTL 24h）
- *     └─ RabbitMQ MESSAGE 事件（含 seq）  （冷存储，异步持久化 → DB）
+ *     ├─ Redis List  chat:session:{id}  （热数据，四元组 [role, content, seq, timestamp]，TTL 24h）
+ *     └─ RabbitMQ MESSAGE 事件（含 seq） （冷存储，异步持久化至 DB）
  * </pre>
  *
  * <p>角色约定：
  * <ul>
- *   <li>Redis List / AI 请求：user / assistant（OpenAI 标准，兼容 AI 回退）</li>
- *   <li>Stream → DB：user / assistant（AI）/ agent（人工座席，便于质检分析）</li>
+ *   <li>Redis List / AI 请求：user / assistant（OpenAI 标准）</li>
+ *   <li>DB 持久化：user / assistant（AI）/ agent（人工座席，便于质检分析）</li>
  * </ul>
- *
- * <p>Redis 操作统一通过 {@link RedisCacheHelper} / {@link RedisLockHelper} 进行，
- * 不直接使用 RedisTemplate。
  */
 @Slf4j
 @Repository
 public class ConversationHistoryRepository {
 
-    /** Redis List key 前缀（热数据，实时路由用） */
-    private static final String KEY_PREFIX        = "chat:session:";
-    /** Redis seq 计数器 key 前缀，session 内单调递增 */
-    private static final String SEQ_KEY_PREFIX    = "chat:seq:";
+    // ---- Redis key 前缀 ----
+    private static final String KEY_PREFIX     = "chat:session:";
+    private static final String SEQ_KEY_PREFIX = "chat:seq:";
 
     /**
      * 原子初始化 + INCR Lua 脚本。
      *
-     * <p>解决"INCR 与 DB max 兜底 SET 之间的竞态"：
-     * 服务端单线程内原子完成"key 不存在则 SET dbMax → 否则跳过 → INCR 返回新值"，
-     * 杜绝并发首次写入时 lastSeq 跳跃或非单调。
+     * <p>解决"INCR 与 DB max 兜底 SET 之间的竞态"：在 Redis 单线程内原子完成
+     * "key 不存在则 SET dbMax → 否则跳过 → INCR 返回新值"，杜绝并发首次写入时 seq 跳跃。
      *
-     * <p>KEYS[1] = seq key
-     * <p>ARGV[1] = DB 中该 session 当前 max seq（兜底初始值，无历史传 0）
-     * <p>ARGV[2] = key TTL（秒）
+     * <p>KEYS[1] = seq key；ARGV[1] = DB max seq（兜底初始值）；ARGV[2] = key TTL（秒）
      */
     private static final String INIT_AND_INCR_LUA = """
             if redis.call('EXISTS', KEYS[1]) == 0 then
@@ -69,27 +61,19 @@ public class ConversationHistoryRepository {
             new org.springframework.data.redis.core.script.DefaultRedisScript<>(INIT_AND_INCR_LUA, Long.class);
 
     /**
-     * 已初始化标记，避免每次 nextSeq 都查 DB max。
-     * Redis 过期或被驱逐时通过 invalidate 重置。
+     * 已初始化标记，避免每次 nextSeq 都查询 DB max。
+     * Redis 过期或重启后通过 Lua 脚本自动重新初始化。
      */
     private final java.util.Set<String> initializedSessions =
             java.util.concurrent.ConcurrentHashMap.newKeySet();
-    /** 热数据 TTL（小时） */
-    private static final long   TTL_HOURS         = 24L;
-    /** 每个会话最多保留的对话轮数 */
-    private static final int    MAX_HISTORY_TURNS = 20;
-    /** Redis List 中每条消息占用的元素数（role, content, seq 三元组） */
-    private static final int    ELEMENTS_PER_MSG  = 3;
 
-    /** AI 兼容角色标识（Redis List 和 AI 请求使用） */
+    private static final long TTL_HOURS         = 24L;
+    private static final int  MAX_HISTORY_TURNS = 20;
+    /** Redis List 中每条消息占用的元素数（role / content / seq / timestamp 四元组） */
+    private static final int  ELEMENTS_PER_MSG  = 4;
+
     private static final String ROLE_ASSISTANT = "assistant";
-    /** DB 持久化时人工座席角色标识（DB 专用，区分 AI 和人工） */
     private static final String ROLE_AGENT     = "agent";
-
-    /** 消息 Map 字段名，与前端/MQ payload 保持一致 */
-    private static final String FIELD_ROLE    = "role";
-    private static final String FIELD_CONTENT = "content";
-    private static final String FIELD_SEQ     = "seq";
 
     private final RedisCacheHelper             cache;
     private final RedisLockHelper              lockHelper;
@@ -97,9 +81,9 @@ public class ConversationHistoryRepository {
     private final ConversationMessageMapper    messageMapper;
 
     public ConversationHistoryRepository(RedisCacheHelper cache,
-                                          RedisLockHelper lockHelper,
-                                          ConversationMessagePublisher publisher,
-                                          ConversationMessageMapper messageMapper) {
+                                         RedisLockHelper lockHelper,
+                                         ConversationMessagePublisher publisher,
+                                         ConversationMessageMapper messageMapper) {
         this.cache         = cache;
         this.lockHelper    = lockHelper;
         this.publisher     = publisher;
@@ -113,29 +97,21 @@ public class ConversationHistoryRepository {
     /**
      * 生成 session 内的下一个单调递增 seq（Redis Lua 原子 INCR + DB 兜底）。
      *
-     * <p>核心保证：
-     * <ol>
-     *   <li>首次执行（或 TTL 过期后）通过 Lua 脚本原子地 "SET if not exists + INCR"，
-     *       消除"INCR 与 DB max 兜底之间的并发竞态"</li>
-     *   <li>初始值取自 {@code SELECT MAX(seq) FROM cs_conversation_message WHERE session_id=?}，
-     *       Redis 重启后不会与 DB 已有 seq 冲突</li>
-     *   <li>同一进程内首次为某 session 操作时才查 DB，后续走纯 INCR 路径</li>
-     * </ol>
+     * <p>首次为某 session 操作时，从 DB 查询 max seq 作为初始化基准，
+     * 后续通过纯 INCR 路径生成，避免 Redis 重启后与 DB 已有 seq 冲突。
      *
      * @param sessionId 会话唯一标识
      * @return 单调递增 seq（≥ 1）
-     * @throws IllegalStateException Redis 执行失败（业务侧需做降级处理）
      */
     public long nextSeq(String sessionId) {
         String key = SEQ_KEY_PREFIX + sessionId;
-        // 首次操作该 session 时，需要传入 DB max 作为初始化基准；后续直接 INCR
         long dbMaxBaseline = initializedSessions.contains(sessionId)
                 ? 0L
                 : messageMapper.selectMaxSeq(sessionId);
 
         Long seq = lockHelper.executeLua(
                 INIT_AND_INCR_SCRIPT,
-                java.util.Collections.singletonList(key),
+                Collections.singletonList(key),
                 String.valueOf(dbMaxBaseline),
                 String.valueOf(Duration.ofHours(TTL_HOURS).getSeconds())
         );
@@ -151,12 +127,12 @@ public class ConversationHistoryRepository {
     // -------------------------------------------------------
 
     /**
-     * 追加访客或 AI 消息（role=user / assistant），并发布到 MQ 持久化。
+     * 追加访客或 AI 消息（role = user / assistant），并发布到 MQ 异步持久化。
      *
      * @param sessionId 会话 ID
      * @param role      消息角色（user / assistant）
-     * @param content   消息内容
-     * @return 该消息的 seq（供调用方推送给客户端）
+     * @param content   消息正文
+     * @return 分配给该消息的 seq
      */
     public long append(String sessionId, String role, String content) {
         long seq = nextSeq(sessionId);
@@ -167,9 +143,9 @@ public class ConversationHistoryRepository {
 
     /**
      * 追加人工座席消息。
-     * Redis List 仍写 assistant 角色（保持 AI 历史格式兼容），DB 中标记为 agent。
+     * Redis List 写入 assistant 角色（保持与 AI 历史格式兼容），DB 中标记为 agent（便于质检）。
      *
-     * @return 该消息的 seq
+     * @return 分配给该消息的 seq
      */
     public long appendAgentMessage(String sessionId, String content) {
         long seq = nextSeq(sessionId);
@@ -183,18 +159,15 @@ public class ConversationHistoryRepository {
     // -------------------------------------------------------
 
     /**
-     * 获取全量历史消息列表（已截断至 MAX_HISTORY_TURNS）。
-     * 供 AI 对话（ChatAppService）和座席接入时加载上下文使用。
-     *
-     * <p>返回元素含 role / content / seq，AI 请求侧自行忽略 seq。
+     * 获取全量历史消息列表，截断至最近 MAX_HISTORY_TURNS 轮。
+     * 供 AI 对话和座席接入时加载上下文使用。
      */
-    public List<Map<String, Object>> findAll(String sessionId) {
+    public List<ConversationMessage> findAll(String sessionId) {
         List<String> raw = cache.lRange(KEY_PREFIX + sessionId, 0, -1);
         if (raw == null || raw.isEmpty()) {
             return new ArrayList<>();
         }
-
-        List<Map<String, Object>> messages = parseTriples(raw);
+        List<ConversationMessage> messages = parseQuadruples(raw);
         if (messages.size() > MAX_HISTORY_TURNS) {
             messages = messages.subList(messages.size() - MAX_HISTORY_TURNS, messages.size());
         }
@@ -202,89 +175,71 @@ public class ConversationHistoryRepository {
     }
 
     /**
-     * 增量查询：返回 sessionId 在 sinceSeq 之后的所有消息（seq 严格大于）。
+     * 增量查询：返回 seq 严格大于 sinceSeq 的消息列表（按 seq 升序）。
      *
      * <p>查询路径（先热后冷）：
      * <ol>
-     *   <li>Redis List 命中（24h 热数据），filter seq > sinceSeq，命中即返</li>
-     *   <li>Redis 缺失或起始 seq 早于 List 头部 → 从 DB 查 {@code findBySessionSinceSeq}</li>
+     *   <li>Redis 热数据健康且覆盖 sinceSeq 范围 → 过滤后直接返回</li>
+     *   <li>Redis 缺失、数据早于 sinceSeq、或含脏数据（seq ≤ 0）→ 回退至 DB 查询</li>
      * </ol>
      *
-     * @param sessionId 会话唯一标识
-     * @param sinceSeq  起始 seq（不含）
-     * @return 按 seq 升序排列的消息列表
+     * @param sinceSeq 起始 seq（不含），客户端传入 lastSeq 以补齐空窗消息
      */
-    public List<Map<String, Object>> findSince(String sessionId, long sinceSeq) {
+    public List<ConversationMessage> findSince(String sessionId, long sinceSeq) {
         List<String> raw = cache.lRange(KEY_PREFIX + sessionId, 0, -1);
-        List<Map<String, Object>> redisMsgs = parseTriples(raw);
+        List<ConversationMessage> redisMsgs = parseQuadruples(raw);
 
-        // Redis 数据健康度校验：包含 seq<=0 的脏数据时整体回退 DB，避免脏数据混入返回结果
-        boolean redisHealthy = redisMsgs.stream().allMatch(m -> {
-            Object s = m.get(FIELD_SEQ);
-            return s instanceof Long && (Long) s > 0L;
-        });
+        // 校验 Redis 数据健康：含 seq≤0 的脏数据时整体回退 DB
+        boolean redisHealthy = redisMsgs.stream().allMatch(m -> m.seq() > 0L);
 
-        // 判断 Redis List 是否包含 sinceSeq 之后的全部数据：
-        // 若 List 中最早一条 seq <= sinceSeq + 1，说明 Redis 包含全部所需消息
         if (redisHealthy && !redisMsgs.isEmpty()) {
-            long earliestSeq = (long) redisMsgs.get(0).get(FIELD_SEQ);
+            long earliestSeq = redisMsgs.get(0).seq();
+            // Redis List 包含 sinceSeq 之后的全部数据时直接过滤返回
             if (earliestSeq <= sinceSeq + 1) {
-                List<Map<String, Object>> result = new ArrayList<>();
-                for (Map<String, Object> msg : redisMsgs) {
-                    if ((long) msg.get(FIELD_SEQ) > sinceSeq) {
-                        result.add(msg);
-                    }
-                }
-                return result;
+                return redisMsgs.stream()
+                        .filter(m -> m.seq() > sinceSeq)
+                        .toList();
             }
         }
 
-        // 回退到 DB（包含历史遗留 + 24h 之前的冷数据 + Redis 脏数据兜底）
-        log.debug("[History] Redis 未覆盖 sinceSeq 或包含脏数据，回退 DB 查询 sessionId={} sinceSeq={}",
-                sessionId, sinceSeq);
+        // 回退 DB（覆盖 24h 前冷数据及 Redis 脏数据场景）
+        log.debug("[History] 回退 DB 查询 sessionId={} sinceSeq={}", sessionId, sinceSeq);
         return messageMapper.findBySessionSinceSeq(sessionId, sinceSeq).stream()
-                .map(e -> {
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put(FIELD_ROLE,    e.getRole() != null ? e.getRole().getValue() : null);
-                    m.put(FIELD_CONTENT, e.getContent());
-                    m.put(FIELD_SEQ,     e.getSeq());
-                    return m;
-                })
+                .map(e -> ConversationMessage.of(
+                        e.getRole() != null ? e.getRole().getValue() : null,
+                        e.getContent(),
+                        e.getSeq()))
                 .toList();
     }
 
     /**
-     * 全量覆盖保存历史（AI 流式回复完成后调用）。
-     *
-     * <p>使用 {@link RedisCacheHelper#replaceListAtomically} 在 Pipeline 中完成
-     * DEL + RPUSH + EXPIRE，避免并发场景下 delete 与 rPush 之间产生竞态。
+     * 全量原子替换 Redis List（AI 流式回复完成后调用）。
+     * 使用 Pipeline 完成 DEL + RPUSH + EXPIRE，避免并发场景下的竞态。
      */
-    public void saveAll(String sessionId, List<Map<String, Object>> messages) {
-        // 展开为 [role, content, seq, role, content, seq, ...] 三元组序列
+    public void saveAll(String sessionId, List<ConversationMessage> messages) {
         List<String> elements = new ArrayList<>(messages.size() * ELEMENTS_PER_MSG);
-        for (Map<String, Object> msg : messages) {
-            elements.add(String.valueOf(msg.get(FIELD_ROLE)));
-            elements.add(String.valueOf(msg.get(FIELD_CONTENT)));
-            Object seq = msg.get(FIELD_SEQ);
-            elements.add(seq != null ? String.valueOf(seq) : "0");
+        for (ConversationMessage msg : messages) {
+            elements.add(msg.role());
+            elements.add(msg.content());
+            elements.add(String.valueOf(msg.seq()));
+            elements.add(msg.timestamp() != null ? String.valueOf(msg.timestamp()) : "");
         }
         cache.replaceListAtomically(KEY_PREFIX + sessionId, elements, Duration.ofHours(TTL_HOURS));
 
-        // Pipeline 完成后再发布 MQ 事件（最后一条 assistant 消息）
+        // 发布最后一条 assistant 消息的 MQ 事件（使用已有 seq，不重新生成）
         if (!messages.isEmpty()) {
-            Map<String, Object> last = messages.get(messages.size() - 1);
-            if (ROLE_ASSISTANT.equals(last.get(FIELD_ROLE))) {
-                long seq = nextSeq(sessionId);
-                publishMessageEvent(sessionId, ROLE_ASSISTANT,
-                        String.valueOf(last.get(FIELD_CONTENT)), seq);
+            ConversationMessage last = messages.get(messages.size() - 1);
+            if (ROLE_ASSISTANT.equals(last.role()) && last.seq() > 0) {
+                publishMessageEvent(sessionId, ROLE_ASSISTANT, last.content(), last.seq());
             }
         }
     }
 
-    /** 清除会话历史（会话结束或新建对话时调用） */
+    /** 清除会话历史（会话结束或重新开始时调用）。seq 计数器保留，靠 TTL 自动清理。 */
     public void delete(String sessionId) {
         cache.delete(KEY_PREFIX + sessionId);
-        // seq 计数器保留（防止重建会话时 seq 冲突），靠 24h TTL 自动清理
+        // 同步清除初始化标记，防止该 set 随会话数量无限增长
+        initializedSessions.remove(sessionId);
     }
 
     // -------------------------------------------------------
@@ -292,38 +247,49 @@ public class ConversationHistoryRepository {
     // -------------------------------------------------------
 
     /**
-     * 原子写入 Redis List 三元组 [role, content, seq] 并 LTRIM 保留最新 MAX_HISTORY_TURNS 轮。
-     *
-     * <p>使用 {@link RedisCacheHelper#lRightPushAll} 一次 RPUSH 多个元素，避免并发场景下
-     * 三次单独 push 之间被其他客户端插入命令导致元组错位。
+     * 原子写入 Redis List 四元组 [role, content, seq, timestamp] 并 LTRIM 保留最新历史。
+     * 一次 RPUSH 多个元素，避免三次单独 push 之间被其他命令插入导致元组错位。
      */
     private void writeToListWithTrim(String sessionId, String role, String content, long seq) {
         String key = KEY_PREFIX + sessionId;
-        cache.lRightPushAll(key, role, content, String.valueOf(seq));
+        cache.lRightPushAll(key, role, content, String.valueOf(seq),
+                String.valueOf(System.currentTimeMillis()));
         cache.lTrim(key, -(MAX_HISTORY_TURNS * (long) ELEMENTS_PER_MSG), -1);
         cache.expire(key, Duration.ofHours(TTL_HOURS));
     }
 
     /**
-     * 解析 Redis List 中的 [role, content, seq] 三元组序列为消息列表。
-     * 列表长度不是 3 的倍数时（脏数据），跳过尾部不完整记录。
+     * 将 Redis List 原始字符串序列解析为 {@link ConversationMessage} 列表。
+     *
+     * <p>兼容两种格式：
+     * <ul>
+     *   <li>新格式（4元组）：[role, content, seq, timestamp]，ELEMENTS_PER_MSG=4</li>
+     *   <li>旧格式（3元组）：[role, content, seq]，历史数据或滚动部署窗口内可能出现</li>
+     * </ul>
+     * 长度不是 3 或 4 的整数倍时，跳过尾部不完整记录（脏数据容错）。
      */
-    private List<Map<String, Object>> parseTriples(List<String> raw) {
+    private List<ConversationMessage> parseQuadruples(List<String> raw) {
         if (raw == null || raw.isEmpty()) {
             return new ArrayList<>();
         }
-        List<Map<String, Object>> messages = new ArrayList<>(raw.size() / ELEMENTS_PER_MSG);
-        for (int i = 0; i + ELEMENTS_PER_MSG - 1 < raw.size(); i += ELEMENTS_PER_MSG) {
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put(FIELD_ROLE,    raw.get(i));
-            m.put(FIELD_CONTENT, raw.get(i + 1));
-            m.put(FIELD_SEQ,     parseSeq(raw.get(i + 2)));
-            messages.add(m);
+        // 探测格式：4元组优先；若 size%4!=0 且 size%3==0 则按旧格式解析
+        int step = ELEMENTS_PER_MSG;
+        if (raw.size() % ELEMENTS_PER_MSG != 0 && raw.size() % 3 == 0) {
+            step = 3;
+            log.debug("[History] 检测到旧3元组格式数据，按兼容模式解析，size={}", raw.size());
+        }
+        List<ConversationMessage> messages = new ArrayList<>(raw.size() / step);
+        for (int i = 0; i + step - 1 < raw.size(); i += step) {
+            String role    = raw.get(i);
+            String content = raw.get(i + 1);
+            long   seq     = parseSeq(raw.get(i + 2));
+            Long   timestamp = (step == 4) ? parseTimestamp(raw.get(i + 3)) : null;
+            messages.add(new ConversationMessage(role, content, seq, timestamp));
         }
         return messages;
     }
 
-    /** 容错解析 seq 字符串，非法时返回 0（历史遗留二元组数据走 DB 兜底） */
+    /** 容错解析 seq 字符串，非法时返回 0（旧数据走 DB 兜底）。 */
     private long parseSeq(String raw) {
         try {
             return Long.parseLong(raw);
@@ -332,20 +298,19 @@ public class ConversationHistoryRepository {
         }
     }
 
+    /** 容错解析 timestamp 字符串，空或非法时返回 null。 */
+    private Long parseTimestamp(String raw) {
+        if (raw == null || raw.isBlank()) return null;
+        try {
+            return Long.parseLong(raw);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
     /**
-     * 通过 RabbitMQ Publisher 发布消息事件（异步持久化）。
-     * Publisher 内置 @Retryable（3次），三次失败后异常向上传播，打印 WARN 日志。
-     */
-    /**
-     * 通过 RabbitMQ Publisher 发布消息事件（异步持久化）。
-     *
-     * <p>Spring Retry @Retryable 三次失败后可能抛出多种异常：
-     * <ul>
-     *   <li>{@link org.springframework.amqp.AmqpException} — Broker 连接/路由失败</li>
-     *   <li>{@link org.springframework.retry.ExhaustedRetryException} — 重试耗尽包装异常</li>
-     *   <li>底层 IOException 等运行时异常</li>
-     * </ul>
-     * 此处使用更宽的 RuntimeException 兜底，保证消息已存 Redis List 的前提下不阻断主流程。
+     * 通过 RabbitMQ Publisher 发布消息事件（异步持久化至 DB）。
+     * Publisher 内置重试（3次），耗尽后捕获异常并打印 WARN，不阻断主流程。
      */
     private void publishMessageEvent(String sessionId, String role, String content, long seq) {
         try {
