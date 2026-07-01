@@ -4,6 +4,10 @@ import com.aidevplatform.common.web.response.R;
 import com.aidevplatform.conversation.application.service.ChatAppService;
 import com.aidevplatform.conversation.application.service.SessionQueueService;
 import com.aidevplatform.conversation.application.service.SessionQueueService.SessionQueueItem;
+import com.aidevplatform.conversation.domain.ConversationMessage;
+import com.aidevplatform.conversation.infrastructure.knowledge.KnowledgeSearchResult;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
@@ -40,11 +44,15 @@ public class ChatController {
 
     private final ChatAppService chatService;
     private final SessionQueueService sessionQueueService;
+    private final ObjectMapper objectMapper;
 
     /**
      * SSE 流式对话接口。
      * - 会话已接入人工（ACTIVE）：存历史，提示已转人工，不调 AI
-     * - 会话未接入（WAITING/无）：走 AI SSE 流式回复
+     * - 会话未接入（WAITING/无）：
+     *   1. 先检索知识库 hits
+     *   2. 发送 event:sources（JSON 数组，含 docId/breadcrumb），前端用于展示溯源标签
+     *   3. 流式输出 AI 回复
      * 前端用 native fetch + ReadableStream 消费，不经过 axios，无需 R<> 包装。
      */
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -52,6 +60,11 @@ public class ChatController {
         String sessionId = req.getSessionId() != null
                 ? req.getSessionId()
                 : GUEST_SESSION_PREFIX + UUID.randomUUID().toString().replace("-", "");
+
+        // 消息内容不能为空
+        if (req.getMessage() == null || req.getMessage().isBlank()) {
+            return Flux.just(ServerSentEvent.<String>builder().event("done").data("[DONE]").build());
+        }
 
         // 已接入人工 → 存消息到 history + 返回提示，不走 AI
         if (sessionQueueService.isActive(sessionId)) {
@@ -62,11 +75,22 @@ public class ChatController {
             );
         }
 
-        // 未接入人工 → 走 AI 流式回复
-        return chatService.streamChat(sessionId, req.getMessage())
+        // 提前检索知识块，避免在 AI 流式链中重复检索
+        List<KnowledgeSearchResult.Hit> hits = chatService.searchHits(req.getMessage());
+
+        // 将 hits 序列化为 JSON，通过 event:sources 推给前端
+        String sourcesJson = buildSourcesJson(hits);
+
+        // event:sources → AI 流式 chunk → event:done
+        Flux<ServerSentEvent<String>> sourcesEvent = Flux.just(
+                ServerSentEvent.<String>builder().event("sources").data(sourcesJson).build()
+        );
+        Flux<ServerSentEvent<String>> aiStream = chatService.streamChat(sessionId, req.getMessage(), hits)
                 .map(chunk -> ServerSentEvent.<String>builder().data(chunk).build())
                 .concatWith(Flux.just(
                         ServerSentEvent.<String>builder().event("done").data("[DONE]").build()));
+
+        return sourcesEvent.concatWith(aiStream);
     }
 
     /**
@@ -95,7 +119,7 @@ public class ChatController {
      * @param sinceSeq  起始 seq（不含），缺省 0 表示全量
      */
     @GetMapping("/history")
-    public R<List<Map<String, Object>>> history(
+    public R<List<ConversationMessage>> history(
             @RequestParam String sessionId,
             @RequestParam(required = false, defaultValue = "0") long sinceSeq) {
         if (sinceSeq > 0L) {
@@ -126,6 +150,29 @@ public class ChatController {
     }
 
     // ---- Request 内部类（【强制】必须有 toString，使用 @Data 统一处理） ----
+
+    /**
+     * 将 hits 序列化为 JSON 数组，格式：[{"docId":"...","label":"..."}]。
+     * 序列化失败时返回空数组，不阻断 SSE 流。
+     */
+    private String buildSourcesJson(List<KnowledgeSearchResult.Hit> hits) {
+        if (hits.isEmpty()) return "[]";
+        List<Map<String, String>> sources = hits.stream()
+                .map(h -> {
+                    String label = (h.getBreadcrumb() != null && !h.getBreadcrumb().isBlank())
+                            ? h.getBreadcrumb() : "文档片段";
+                    return Map.of(
+                            "docId",  h.getDocId() != null ? h.getDocId() : "",
+                            "label",  label
+                    );
+                })
+                .toList();
+        try {
+            return objectMapper.writeValueAsString(sources);
+        } catch (JsonProcessingException e) {
+            return "[]";
+        }
+    }
 
     @Data
     public static class ChatRequest {
