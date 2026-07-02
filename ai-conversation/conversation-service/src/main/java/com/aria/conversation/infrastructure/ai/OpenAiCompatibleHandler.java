@@ -2,9 +2,11 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.common.web.ai.AiModelConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 
@@ -12,6 +14,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * OpenAI 兼容协议处理器。
@@ -19,11 +22,19 @@ import java.util.Map;
  *
  * <p>流式 delta 路径：{@code choices[0].delta.content}
  * <p>认证：{@code Authorization: Bearer {apiKey}}
+ *
+ * <p>WebClient 按 baseUrl 缓存，避免每次请求重建连接池（文件描述符泄漏）。
  */
 @Slf4j
+@Component
+@RequiredArgsConstructor
 public class OpenAiCompatibleHandler implements AiProtocolHandler {
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    /** Spring Boot 自动配置的 ObjectMapper，继承 record/时间/null 等全局配置 */
+    private final ObjectMapper objectMapper;
+
+    /** 按 baseUrl 缓存 WebClient，每个供应商端点只创建一个连接池 */
+    private final ConcurrentHashMap<String, WebClient> clientCache = new ConcurrentHashMap<>();
 
     @Override
     public String protocol() {
@@ -40,8 +51,10 @@ public class OpenAiCompatibleHandler implements AiProtocolHandler {
                 "temperature", config.temperature(),
                 "max_tokens",  config.maxTokens()
         );
+        // apiKey 按请求传递，避免缓存 WebClient 后无法反映 key 变更
         return buildClient(config).post()
                 .uri("/chat/completions")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + config.apiKey())
                 .bodyValue(body)
                 .retrieve()
                 .bodyToFlux(String.class)
@@ -63,6 +76,7 @@ public class OpenAiCompatibleHandler implements AiProtocolHandler {
         );
         String response = buildClient(config).post()
                 .uri("/chat/completions")
+                .header(HttpHeaders.AUTHORIZATION, "Bearer " + config.apiKey())
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(String.class)
@@ -86,13 +100,17 @@ public class OpenAiCompatibleHandler implements AiProtocolHandler {
         }
     }
 
+    /**
+     * 按 baseUrl 缓存 WebClient，避免每次请求重建 Netty 连接池。
+     * apiKey 不作为默认 header，而是在每次请求时单独传递，支持热切换。
+     */
     private WebClient buildClient(AiModelConfig config) {
-        return WebClient.builder()
-                .baseUrl(config.baseUrl())
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + config.apiKey())
-                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                .codecs(c -> c.defaultCodecs().maxInMemorySize(10 * 1024 * 1024))
-                .build();
+        return clientCache.computeIfAbsent(config.baseUrl(), url ->
+                WebClient.builder()
+                        .baseUrl(url)
+                        .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                        .codecs(c -> c.defaultCodecs().maxInMemorySize(10 * 1024 * 1024))
+                        .build());
     }
 
     private List<ChatMessage> buildMessages(List<ChatMessage> messages, String systemPrompt) {

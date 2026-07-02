@@ -3,7 +3,7 @@ package com.aria.conversation.interfaces.rest;
 import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.ChatAppService;
 import com.aria.conversation.application.service.SessionQueueService;
-import com.aria.conversation.application.service.SessionQueueService.SessionQueueItem;
+import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -42,6 +42,13 @@ public class ChatController {
     private static final String DEFAULT_TAG = "咨询";
     private static final String AGENT_HINT_MSG = "（消息已发送给人工客服）";
 
+    /**
+     * sessionId 格式校验：与 ChatWebSocketHandler.SESSION_ID_PATTERN 保持一致。
+     * 只允许字母、数字、下划线、连字符，长度 1~64，防止 Redis key 注入。
+     */
+    private static final java.util.regex.Pattern SESSION_ID_PATTERN =
+            java.util.regex.Pattern.compile("^[a-zA-Z0-9_\\-]{1,64}$");
+
     private final ChatAppService chatService;
     private final SessionQueueService sessionQueueService;
     private final ObjectMapper objectMapper;
@@ -57,13 +64,23 @@ public class ChatController {
      */
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> streamChat(@RequestBody ChatRequest req) {
-        String sessionId = req.getSessionId() != null
-                ? req.getSessionId()
-                : GUEST_SESSION_PREFIX + UUID.randomUUID().toString().replace("-", "");
-
         // 消息内容不能为空
         if (req.getMessage() == null || req.getMessage().isBlank()) {
             return Flux.just(ServerSentEvent.<String>builder().event("done").data("[DONE]").build());
+        }
+
+        // sessionId：前端传入时校验格式，未传则服务端生成合规 ID
+        String sessionId;
+        if (req.getSessionId() != null) {
+            if (!SESSION_ID_PATTERN.matcher(req.getSessionId()).matches()) {
+                return Flux.just(
+                        ServerSentEvent.<String>builder().event("error").data("非法的 sessionId 格式").build(),
+                        ServerSentEvent.<String>builder().event("done").data("[DONE]").build()
+                );
+            }
+            sessionId = req.getSessionId();
+        } else {
+            sessionId = GUEST_SESSION_PREFIX + UUID.randomUUID().toString().replace("-", "");
         }
 
         // 已接入人工 → 存消息到 history + 返回提示，不走 AI
@@ -77,8 +94,6 @@ public class ChatController {
 
         // 提前检索知识块，避免在 AI 流式链中重复检索
         List<KnowledgeSearchResult.Hit> hits = chatService.searchHits(req.getMessage());
-
-        // 将 hits 序列化为 JSON，通过 event:sources 推给前端
         String sourcesJson = buildSourcesJson(hits);
 
         // event:sources → AI 流式 chunk → event:done
@@ -101,9 +116,15 @@ public class ChatController {
         if (req.getMessage() == null || req.getMessage().isBlank()) {
             return R.fail(400, "消息内容不能为空");
         }
-        String sessionId = req.getSessionId() != null
-                ? req.getSessionId()
-                : GUEST_SESSION_PREFIX + UUID.randomUUID().toString().replace("-", "");
+        String sessionId;
+        if (req.getSessionId() != null) {
+            if (!SESSION_ID_PATTERN.matcher(req.getSessionId()).matches()) {
+                return R.fail(400, "非法的 sessionId 格式");
+            }
+            sessionId = req.getSessionId();
+        } else {
+            sessionId = GUEST_SESSION_PREFIX + UUID.randomUUID().toString().replace("-", "");
+        }
         String reply = chatService.chat(sessionId, req.getMessage());
         return R.ok(Map.of("reply", reply, "sessionId", sessionId));
     }
@@ -192,22 +213,27 @@ public class ChatController {
     @Data
     public static class TransferRequest {
         /**
-         * 会话 ID
+         * 会话 ID（必填，格式同 sessionId 规范）
          */
+        @jakarta.validation.constraints.NotBlank(message = "sessionId 不能为空")
+        @jakarta.validation.constraints.Pattern(
+            regexp = "^[a-zA-Z0-9_\\-]{1,64}$",
+            message = "sessionId 格式非法（只允许字母、数字、下划线、连字符，长度 1~64）")
         private String sessionId;
 
         /**
-         * 用户名称
+         * 用户名称（必填）
          */
+        @jakarta.validation.constraints.NotBlank(message = "userName 不能为空")
         private String userName;
 
         /**
-         * 转人工原因
+         * 转人工原因（可选）
          */
         private String transferReason;
 
         /**
-         * 标签
+         * 标签（可选）
          */
         private String tag;
     }

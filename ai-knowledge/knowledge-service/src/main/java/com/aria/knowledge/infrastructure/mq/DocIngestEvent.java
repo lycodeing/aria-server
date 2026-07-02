@@ -42,4 +42,15 @@ public class DocIngestEvent implements Serializable {
     /** 文件存储路径，MinIO 格式：oss://bucket/docs/{docId}/{filename} */
     @NotBlank(message = "storagePath 不能为空")
     private String storagePath;
+
+    /**
+     * 强制重新摄取标记。
+     *
+     * <p>为 false（默认）时：{@link com.aria.knowledge.infrastructure.mq.handler.IdempotencyCheckHandler}
+     * 会对 PUBLISHED/FAILED/DEPRECATED 终态文档调用 abort，跳过摄取。
+     *
+     * <p>为 true 时：跳过终态校验，允许对已发布文档重新生成 chunk（解析逻辑升级场景）。
+     * 仅由 {@link com.aria.knowledge.application.service.DocIngestAppService#reingest} 发布时设置。
+     */
+    private boolean forceReingest;
 }

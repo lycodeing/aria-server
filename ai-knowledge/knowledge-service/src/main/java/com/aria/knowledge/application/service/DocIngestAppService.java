@@ -99,17 +99,33 @@ public class DocIngestAppService {
             .build();
         docRepository.save(doc);
 
-        // Step 3：注册事务回调，提交后发布 MQ（保证 Consumer 能查到 DB 记录）
+        // Step 3：注册事务回调：
+        //   afterCommit  → 发布 MQ（保证 Consumer 能查到 DB 记录）
+        //   afterRollback → 删除 MinIO 文件（补偿，避免 DB 失败后文件孤立）
         DocIngestEvent event = DocIngestEvent.builder()
             .docId(docId)
             .kbId(kbId)
             .fileType(fileType)
             .storagePath(storagePath)
             .build();
+        final String finalStoragePath = storagePath;
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
                 publisher.publish(event);
+            }
+
+            @Override
+            public void afterCompletion(int status) {
+                // STATUS_ROLLED_BACK = 1：事务回滚时删除 MinIO 孤立文件
+                if (status == TransactionSynchronization.STATUS_ROLLED_BACK) {
+                    log.warn("文档上传事务回滚，清理 MinIO 孤立文件 docId={} path={}", docId, finalStoragePath);
+                    try {
+                        minioStorageService.delete(finalStoragePath);
+                    } catch (Exception ex) {
+                        log.error("清理 MinIO 孤立文件失败，需人工处理 docId={} path={}", docId, finalStoragePath, ex);
+                    }
+                }
             }
         });
 
@@ -220,8 +236,11 @@ public class DocIngestAppService {
     }
 
     /**
-     * 已发布文档重新摄取：不改变状态，直接重新发布 MQ。
+     * 已发布文档重新摄取：不改变状态，直接重新发布 MQ（携带 forceReingest=true）。
      * 适用于解析逻辑升级后需要重新生成 chunk 的场景，pipeline 幂等处理。
+     *
+     * <p>forceReingest=true 使 IdempotencyCheckHandler 跳过 PUBLISHED 终态校验，
+     * 确保摄取管道正常执行而不被 abort 静默丢弃。
      */
     public void reingest(String docId) {
         KnowledgeDoc doc = docRepository.findById(docId)
@@ -235,6 +254,7 @@ public class DocIngestAppService {
             .kbId(doc.getKbId())
             .fileType(doc.getFileType())
             .storagePath(doc.getStoragePath())
+            .forceReingest(true)   // 跳过 IdempotencyCheckHandler 终态校验
             .build();
         publisher.publish(event);
         log.info("文档重新摄取已触发，docId={}", docId);

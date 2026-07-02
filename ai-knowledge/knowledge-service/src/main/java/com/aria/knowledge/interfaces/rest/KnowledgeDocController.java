@@ -116,8 +116,10 @@ public class KnowledgeDocController {
         String contentType = resolvePreviewContentType(doc.getFileType());
         response.setContentType(contentType);
         response.setContentLength(bytes.length);
-        // 内联显示（非 attachment），让浏览器直接渲染 PDF
-        response.setHeader("Content-Disposition", "inline; filename=\"" + doc.getFileName() + "\"");
+        // 文件名转义：移除 CR/LF/双引号/反斜杠，防止 HTTP Response Splitting 注入
+        String safeName = doc.getFileName() != null
+                ? doc.getFileName().replaceAll("[\\r\\n\"\\\\]", "_") : "document";
+        response.setHeader("Content-Disposition", "inline; filename=\"" + safeName + "\"");
         response.getOutputStream().write(bytes);
         response.getOutputStream().flush();
     }
@@ -153,41 +155,40 @@ public class KnowledgeDocController {
     /** Chunk 详情 VO（仅用于此接口，不含向量字段） */
     @Data
     public static class ChunkVO {
-        public String  chunkId;
-        public Integer pageNum;
-        public String  sectionTitle;
-        public String  chunkType;
-        public Integer tokenCount;
-        public String  content;
-        public Double  retrievalWeight;
+        private String  chunkId;
+        private Integer pageNum;
+        private String  sectionTitle;
+        private String  chunkType;
+        private Integer tokenCount;
+        private String  content;
+        private Double  retrievalWeight;
     }
 
     @Operation(summary = "检索测试（管理后台，返回命中 chunk 列表+分数+来源+文档元数据）")
     @PostMapping("/search-test")
     public R<List<SearchHitVO>> searchTest(@RequestBody SearchTestRequest req) {
         var hits = searchAppService.managementSearch(req.getQuery(), req.getKbId(), req.getTopK());
-        // 批量查 docId → fileName，避免 N+1
-        java.util.Map<String, String> fileNameMap = hits.stream()
+
+        // 批量查 docId → fileName，单次 IN 查询替代 N 次 findById，消除 N+1
+        List<String> docIds = hits.stream()
             .map(h -> h.getDocId())
             .filter(id -> id != null && !id.isBlank())
             .distinct()
-            .collect(java.util.stream.Collectors.toMap(
-                id -> id,
-                id -> docRepository.findById(id).map(d -> d.getFileName()).orElse(""),
-                (a, b) -> a
-            ));
+            .toList();
+        java.util.Map<String, String> fileNameMap = docRepository.findFileNamesByIds(docIds);
+
         List<SearchHitVO> vos = hits.stream().map(h -> {
             SearchHitVO vo = new SearchHitVO();
-            vo.chunkId      = h.getChunkId();
-            vo.docId        = h.getDocId() != null ? h.getDocId() : "";
-            vo.kbId         = h.getKbId() != null ? h.getKbId() : req.getKbId();
-            vo.fileName     = fileNameMap.getOrDefault(vo.docId, "");
-            vo.content      = h.getContent();
-            vo.score        = h.getScore();
-            vo.source       = h.getSource() != null ? h.getSource().name() : "VECTOR";
-            vo.pageNum      = h.getPageNum();
-            vo.sectionTitle = h.getSectionTitle();
-            vo.chunkType    = h.getChunkType() != null ? h.getChunkType() : "TEXT";
+            vo.setChunkId(h.getChunkId());
+            vo.setDocId(h.getDocId() != null ? h.getDocId() : "");
+            vo.setKbId(h.getKbId() != null ? h.getKbId() : req.getKbId());
+            vo.setFileName(fileNameMap.getOrDefault(vo.getDocId(), ""));
+            vo.setContent(h.getContent());
+            vo.setScore(h.getScore());
+            vo.setSource(h.getSource() != null ? h.getSource().name() : "VECTOR");
+            vo.setPageNum(h.getPageNum());
+            vo.setSectionTitle(h.getSectionTitle());
+            vo.setChunkType(h.getChunkType() != null ? h.getChunkType() : "TEXT");
             return vo;
         }).toList();
         return R.ok(vos);
@@ -210,17 +211,14 @@ public class KnowledgeDocController {
     @Operation(summary = "查询文档 chunk 统计（总数、各类型数量、总 token）")
     @GetMapping("/{docId}/stats")
     public R<DocStatsVO> stats(@PathVariable("docId") String docId) {
-        List<KnowledgeChunk> chunks = chunkRepository.findByDocId(docId);
+        // 使用 DB 聚合查询，避免全量加载 chunk 到内存后 stream 统计
+        java.util.Map<String, Long> statsMap = chunkRepository.countStatsByDocId(docId);
         DocStatsVO vo = new DocStatsVO();
-        vo.totalChunks = chunks.size();
-        vo.totalTokens = chunks.stream()
-            .mapToInt(c -> c.getTokenCount() != null ? c.getTokenCount() : 0).sum();
-        vo.textChunks  = (int) chunks.stream()
-            .filter(c -> c.getChunkType() == null || "TEXT".equals(c.getChunkType().name())).count();
-        vo.tableChunks = (int) chunks.stream()
-            .filter(c -> c.getChunkType() != null && "TABLE".equals(c.getChunkType().name())).count();
-        vo.imageChunks = (int) chunks.stream()
-            .filter(c -> c.getChunkType() != null && "IMAGE_CAPTION".equals(c.getChunkType().name())).count();
+        vo.setTotalChunks((int) (long) statsMap.getOrDefault("totalChunks", 0L));
+        vo.setTotalTokens((int) (long) statsMap.getOrDefault("totalTokens", 0L));
+        vo.setTextChunks((int) (long) statsMap.getOrDefault("textChunks", 0L));
+        vo.setTableChunks((int) (long) statsMap.getOrDefault("tableChunks", 0L));
+        vo.setImageChunks((int) (long) statsMap.getOrDefault("imageChunks", 0L));
         return R.ok(vo);
     }
 
@@ -231,24 +229,24 @@ public class KnowledgeDocController {
     }
 
     @Data public static class SearchHitVO {
-        public String  chunkId;
-        public String  docId;
-        public String  kbId;
-        public String  fileName;
-        public String  content;
-        public double  score;
-        public String  source;
-        public Integer pageNum;
-        public String  sectionTitle;
-        public String  chunkType;
+        private String  chunkId;
+        private String  docId;
+        private String  kbId;
+        private String  fileName;
+        private String  content;
+        private double  score;
+        private String  source;
+        private Integer pageNum;
+        private String  sectionTitle;
+        private String  chunkType;
     }
 
     @Data public static class DocStatsVO {
-        public int totalChunks;
-        public int totalTokens;
-        public int textChunks;
-        public int tableChunks;
-        public int imageChunks;
+        private int totalChunks;
+        private int totalTokens;
+        private int textChunks;
+        private int tableChunks;
+        private int imageChunks;
     }
 
     @Operation(summary = "批量下线文档（最多 50 条，非 PUBLISHED 状态自动跳过）")

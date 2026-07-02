@@ -16,9 +16,13 @@ public final class SensitiveDataUtils {
     private static final Pattern ID_CARD_PATTERN =
         Pattern.compile("(\\d{6})\\d{8}(\\d{4}[Xx])");
 
-    /** 银行卡号：保留后 4 位 */
+    /**
+     * 银行卡号：16~19 位，使用负向环视确保只匹配独立的数字块，
+     * 防止误伤订单号、快递单号等嵌在文本中的长数字串。
+     * 替换后保留后 4 位，前缀显示 ************。
+     */
     private static final Pattern BANK_CARD_PATTERN =
-        Pattern.compile("\\d{12,19}(\\d{4})");
+        Pattern.compile("(?<!\\d)(\\d{12,15})(\\d{4})(?!\\d)");
 
     private SensitiveDataUtils() {}
 
@@ -34,7 +38,8 @@ public final class SensitiveDataUtils {
         }
         String result = PHONE_PATTERN.matcher(text).replaceAll("$1****$2");
         result = ID_CARD_PATTERN.matcher(result).replaceAll("$1********$2");
-        result = BANK_CARD_PATTERN.matcher(result).replaceAll("************$1");
+        // 银行卡脱敏：负向环视确保只匹配独立数字块，前缀替换为 ************ 后保留后 4 位
+        result = BANK_CARD_PATTERN.matcher(result).replaceAll("************$2");
         return result;
     }
 }

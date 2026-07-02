@@ -3,7 +3,7 @@ package com.aria.conversation.interfaces.rest;
 import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.SessionQueueService;
 import com.aria.conversation.application.service.SessionQueueService.OnlineAgentVO;
-import com.aria.conversation.application.service.SessionQueueService.SessionQueueItem;
+import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.infrastructure.mq.SessionEventSubscriber;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -58,18 +58,30 @@ public class SessionQueueController {
     /** WS Handler，close 时主动以 NORMAL 状态关闭访客 WS（触发前端 code=1000 流程） */
     private final com.aria.conversation.infrastructure.websocket.ChatWebSocketHandler chatWebSocketHandler;
 
+    /**
+     * 全局单任务心跳调度器（单线程即可，心跳任务串行执行）。
+     * 替代原来每个 SSE 连接独立 ScheduledFuture 的方案，N 个座席只占 1 个周期任务。
+     */
     private final ScheduledExecutorService heartbeatScheduler = new ScheduledThreadPoolExecutor(
-            Math.max(4, Runtime.getRuntime().availableProcessors()),
-            new ThreadFactory() {
-                private final AtomicInteger count = new AtomicInteger(0);
-                @Override
-                public Thread newThread(Runnable r) {
-                    Thread t = new Thread(r, "sse-heartbeat-" + count.getAndIncrement());
-                    t.setDaemon(true);
-                    return t;
-                }
+            1,
+            r -> {
+                Thread t = new Thread(r, "sse-global-heartbeat");
+                t.setDaemon(true);
+                return t;
             }
     );
+
+    /** 当前激活的 Spring Profile 列表，用于区分生产/非生产环境 */
+    @org.springframework.beans.factory.annotation.Value("${spring.profiles.active:dev}")
+    private String activeProfile;
+
+    /** 启动全局心跳任务：每 20s 向所有活跃 SSE 连接广播一次 comment 心跳 */
+    @jakarta.annotation.PostConstruct
+    public void startGlobalHeartbeat() {
+        heartbeatScheduler.scheduleAtFixedRate(
+                eventSubscriber::broadcastHeartbeat,
+                HEARTBEAT_INTERVAL_SEC, HEARTBEAT_INTERVAL_SEC, TimeUnit.SECONDS);
+    }
 
     @PreDestroy
     public void shutdownScheduler() {
@@ -90,10 +102,10 @@ public class SessionQueueController {
 
     /**
      * 座席接入会话。
-     * 从请求 Header Authorization 或 query param token 中提取座席 ID，
-     * 若无法解析则使用 "anonymous"（Phase-2 引入 Sa-Token 后可精确获取）。
+     * 从请求 Header Authorization 或 query param token 中提取座席 ID。
      *
-     * <p>兼容 body 直传 agentId 模式（开发阶段前端无 token 时使用，Phase-2 移除）。
+     * <p>body.agentId 直传模式仅在非生产环境（非 prod profile）下启用，
+     * 生产环境必须通过 token 认证，防止任意用户伪装座席接管会话。
      */
     @PostMapping("/{sessionId}/accept")
     public R<SessionQueueItem> accept(
@@ -104,9 +116,9 @@ public class SessionQueueController {
             @RequestHeader(value = "Authorization", required = false) String authorization,
             @org.springframework.web.bind.annotation.RequestBody(required = false)
                     java.util.Map<String, String> body) {
-        // 优先 token/header；无 token 时从 body.agentId 获取（开发阶段兜底）
         String agentId = resolveAgentId(token, authorization);
-        if (ANONYMOUS_AGENT.equals(agentId) && body != null) {
+        // body.agentId 直传仅允许非生产环境（开发/测试阶段前端无 token 时使用）
+        if (ANONYMOUS_AGENT.equals(agentId) && body != null && isDevMode()) {
             String bodyAgentId = body.get("agentId");
             if (bodyAgentId != null && AGENT_ID_PATTERN.matcher(bodyAgentId).matches()) {
                 agentId = bodyAgentId;
@@ -192,17 +204,9 @@ public class SessionQueueController {
             return emitter;
         }
 
-        ScheduledFuture<?> heartbeat = heartbeatScheduler.scheduleAtFixedRate(() -> {
-            try {
-                emitter.send(SseEmitter.event().comment("heartbeat"));
-            } catch (IOException e) {
-                emitter.completeWithError(e);
-            }
-        }, HEARTBEAT_INTERVAL_SEC, HEARTBEAT_INTERVAL_SEC, TimeUnit.SECONDS);
-
+        // 心跳由全局单任务（startGlobalHeartbeat）统一广播，此处无需为每个连接独立调度
         final String finalAgentId = agentId;
         Runnable cleanup = () -> {
-            heartbeat.cancel(true);
             eventSubscriber.remove(emitter);
             if (!ANONYMOUS_AGENT.equals(finalAgentId)) {
                 queueService.deregisterAgent(finalAgentId);
@@ -234,6 +238,14 @@ public class SessionQueueController {
             if (!bearer.isBlank()) return bearer;
         }
         return ANONYMOUS_AGENT;
+    }
+
+    /**
+     * 判断当前是否为非生产环境（开发/测试）。
+     * 生产环境禁止 body.agentId 直传绕过 token 认证。
+     */
+    private boolean isDevMode() {
+        return !activeProfile.contains("prod") && !activeProfile.contains("production");
     }
 
     /**

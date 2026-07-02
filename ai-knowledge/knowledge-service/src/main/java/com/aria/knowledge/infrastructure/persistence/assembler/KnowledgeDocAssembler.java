@@ -3,12 +3,14 @@ package com.aria.knowledge.infrastructure.persistence.assembler;
 import com.aria.knowledge.domain.model.DocStatus;
 import com.aria.knowledge.domain.model.KnowledgeDoc;
 import com.aria.knowledge.infrastructure.persistence.entity.KnowledgeDocEntity;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 /**
  * 文档对象转换器（基础设施层）。
  * 职责：KnowledgeDocEntity ↔ KnowledgeDoc 双向转换。
  */
+@Slf4j
 @Component
 public class KnowledgeDocAssembler {
 
@@ -22,7 +24,7 @@ public class KnowledgeDocAssembler {
             .fileType(e.getFileType())
             .storagePath(e.getStoragePath())
             .contentHash(e.getContentHash())
-            .status(DocStatus.valueOf(e.getStatus()))
+            .status(safeParseStatus(e.getStatus()))
             .version(e.getVersion())
             .effectiveFrom(e.getEffectiveFrom())
             .expiresAt(e.getExpiresAt())
@@ -49,6 +51,21 @@ public class KnowledgeDocAssembler {
             .expiresAt(d.getExpiresAt())
             .uploaderId(d.getUploaderId())
             .reviewerId(d.getReviewerId())
+            // createdAt/updatedAt 由 MyBatis-Plus AutoFill 自动处理，不在此映射
             .build();
+    }
+
+    /**
+     * 容错解析 DocStatus，DB 中存在历史脏数据或枚举改名时降级为 DRAFT，
+     * 避免 valueOf 抛 IllegalArgumentException 导致整批查询失败。
+     */
+    private DocStatus safeParseStatus(String raw) {
+        if (raw == null) return DocStatus.DRAFT;
+        try {
+            return DocStatus.valueOf(raw);
+        } catch (IllegalArgumentException e) {
+            log.warn("[Assembler] 未知 DocStatus={}，降级为 DRAFT", raw);
+            return DocStatus.DRAFT;
+        }
     }
 }

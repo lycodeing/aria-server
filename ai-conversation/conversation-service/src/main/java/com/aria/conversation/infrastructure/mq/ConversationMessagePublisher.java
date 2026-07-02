@@ -94,11 +94,12 @@ public class ConversationMessagePublisher {
      */
     @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 1000, multiplier = 2))
     public void publishSessionAccept(String sessionId, String agentId, long timestamp) {
-        Map<String, Object> payload = new java.util.HashMap<>();
-        payload.put(ConversationStreamEvent.FIELD_TYPE,       ConversationStreamEvent.Type.SESSION_ACCEPT.name());
-        payload.put(ConversationStreamEvent.FIELD_SESSION_ID, sessionId);
-        payload.put(ConversationStreamEvent.FIELD_AGENT_ID,   agentId);
-        payload.put(ConversationStreamEvent.FIELD_TIMESTAMP,  timestamp);
+        Map<String, Object> payload = Map.of(
+            ConversationStreamEvent.FIELD_TYPE,       ConversationStreamEvent.Type.SESSION_ACCEPT.name(),
+            ConversationStreamEvent.FIELD_SESSION_ID, sessionId,
+            ConversationStreamEvent.FIELD_AGENT_ID,   agentId,
+            ConversationStreamEvent.FIELD_TIMESTAMP,  timestamp
+        );
         rabbitTemplate.convertAndSend(exchange, routingKey, payload);
         log.info("[MQ] SESSION_ACCEPT published sessionId={} agentId={}", sessionId, agentId);
     }
@@ -110,12 +111,13 @@ public class ConversationMessagePublisher {
     @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 1000, multiplier = 2))
     public void publishSessionTransfer(String sessionId, String fromAgentId,
                                        String toAgentId, long timestamp) {
-        Map<String, Object> payload = new java.util.HashMap<>();
-        payload.put(ConversationStreamEvent.FIELD_TYPE,          ConversationStreamEvent.Type.SESSION_TRANSFER.name());
-        payload.put(ConversationStreamEvent.FIELD_SESSION_ID,    sessionId);
-        payload.put(ConversationStreamEvent.FIELD_FROM_AGENT_ID, fromAgentId);
-        payload.put(ConversationStreamEvent.FIELD_TO_AGENT_ID,   toAgentId);
-        payload.put(ConversationStreamEvent.FIELD_TIMESTAMP,     timestamp);
+        Map<String, Object> payload = Map.of(
+            ConversationStreamEvent.FIELD_TYPE,          ConversationStreamEvent.Type.SESSION_TRANSFER.name(),
+            ConversationStreamEvent.FIELD_SESSION_ID,    sessionId,
+            ConversationStreamEvent.FIELD_FROM_AGENT_ID, fromAgentId,
+            ConversationStreamEvent.FIELD_TO_AGENT_ID,   toAgentId,
+            ConversationStreamEvent.FIELD_TIMESTAMP,     timestamp
+        );
         rabbitTemplate.convertAndSend(exchange, routingKey, payload);
         log.info("[MQ] SESSION_TRANSFER published sessionId={} {} → {}",
                 sessionId, fromAgentId, toAgentId);

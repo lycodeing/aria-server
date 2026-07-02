@@ -8,13 +8,17 @@ import java.util.List;
 
 /**
  * knowledge-service /internal/knowledge/search 接口响应 DTO。
+ *
+ * <p>响应格式对齐 {@code R<T>}（code=200 表示成功），
+ * 与 InternalKnowledgeController 改用 R<T> 包装后保持一致。
  */
 @Data
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class KnowledgeSearchResult {
 
-    /** 响应状态码，0 表示成功 */
+    /** 响应状态码，200 表示成功（对齐 R.ok() 的 SUCCESS_CODE） */
     private int code;
+    private String msg;
     private SearchData data;
 
     @Data

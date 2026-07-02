@@ -2,8 +2,10 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.common.web.ai.AiModelConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
+import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Flux;
 
@@ -11,6 +13,7 @@ import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -19,12 +22,21 @@ import java.util.stream.Collectors;
  * <p>端点：{@code POST /v1/messages}
  * <p>认证：{@code x-api-key} + {@code anthropic-version: 2023-06-01}
  * <p>流式 delta 路径：event=content_block_delta → {@code delta.text}
+ *
+ * <p>WebClient 按 baseUrl 缓存，避免每次请求重建 Netty 连接池。
  */
 @Slf4j
+@Component
+@RequiredArgsConstructor
 public class AnthropicHandler implements AiProtocolHandler {
 
     private static final String ANTHROPIC_VERSION = "2023-06-01";
-    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /** Spring Boot 自动配置的 ObjectMapper，继承全局配置 */
+    private final ObjectMapper objectMapper;
+
+    /** 按 baseUrl 缓存 WebClient，每个端点只创建一个连接池 */
+    private final ConcurrentHashMap<String, WebClient> clientCache = new ConcurrentHashMap<>();
 
     @Override
     public String protocol() {
@@ -36,6 +48,7 @@ public class AnthropicHandler implements AiProtocolHandler {
         Map<String, Object> body = buildBody(config, messages, systemPrompt, true);
         return buildClient(config).post()
                 .uri("/v1/messages")
+                .header("x-api-key", config.apiKey())
                 .bodyValue(body)
                 .retrieve()
                 .bodyToFlux(String.class)
@@ -48,6 +61,7 @@ public class AnthropicHandler implements AiProtocolHandler {
         Map<String, Object> body = buildBody(config, messages, systemPrompt, false);
         String response = buildClient(config).post()
                 .uri("/v1/messages")
+                .header("x-api-key", config.apiKey())
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(String.class)
@@ -92,13 +106,16 @@ public class AnthropicHandler implements AiProtocolHandler {
         return body;
     }
 
+    /**
+     * 按 baseUrl 缓存 WebClient，apiKey 在每次请求时单独传递（支持热切换）。
+     */
     private WebClient buildClient(AiModelConfig config) {
-        return WebClient.builder()
-                .baseUrl(config.baseUrl())
-                .defaultHeader("x-api-key", config.apiKey())
-                .defaultHeader("anthropic-version", ANTHROPIC_VERSION)
-                .defaultHeader("content-type", MediaType.APPLICATION_JSON_VALUE)
-                .codecs(c -> c.defaultCodecs().maxInMemorySize(10 * 1024 * 1024))
-                .build();
+        return clientCache.computeIfAbsent(config.baseUrl(), url ->
+                WebClient.builder()
+                        .baseUrl(url)
+                        .defaultHeader("anthropic-version", ANTHROPIC_VERSION)
+                        .defaultHeader("content-type", MediaType.APPLICATION_JSON_VALUE)
+                        .codecs(c -> c.defaultCodecs().maxInMemorySize(10 * 1024 * 1024))
+                        .build());
     }
 }

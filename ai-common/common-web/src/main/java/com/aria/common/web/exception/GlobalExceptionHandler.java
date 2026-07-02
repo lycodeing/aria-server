@@ -27,9 +27,19 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<R<Void>> handleBusiness(BusinessException e, HttpServletRequest request) {
         log.warn("业务异常: code={}, message={}, path={}", e.getCode(), e.getMessage(), request.getRequestURI());
-        // 根据业务错误码映射 HTTP 状态码，4xx 直接使用，其余返回 400
-        int httpStatus = (e.getCode() >= 400 && e.getCode() < 600) ? e.getCode() : 400;
+        // 业务错误码与 HTTP 状态码分离：
+        // - 标准三位 HTTP 错误码（400~599）直接作为 HTTP 状态码
+        // - 四位以上业务码（如 4004/5010）统一返回 HTTP 400，客户端通过 R.code 获取业务含义
+        // 避免将 4004 直接设为 HTTP 4004（无效状态码）导致客户端行为不可预期
+        int httpStatus = isStandardHttpError(e.getCode()) ? e.getCode() : 400;
         return ResponseEntity.status(httpStatus).body(R.fail(e.getCode(), e.getMessage()));
+    }
+
+    /**
+     * 判断是否为标准三位 HTTP 错误状态码（400~599 范围内）。
+     */
+    private static boolean isStandardHttpError(int code) {
+        return code >= 400 && code <= 599 && code < 1000;
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

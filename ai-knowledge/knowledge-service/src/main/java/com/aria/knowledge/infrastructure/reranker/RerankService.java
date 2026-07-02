@@ -33,13 +33,14 @@ import java.util.*;
 public class RerankService {
 
     private final RestClient restClient;
-
-    @Value("${knowledge.reranker.model-name:bge-reranker-v2-m3}")
-    private String modelName;
+    /** final 字段，构造函数参数注入，避免 @Value 在构造后才填充导致 null 引用 */
+    private final String modelName;
 
     public RerankService(
             @Value("${knowledge.reranker.base-url:http://localhost:8001}") String baseUrl,
+            @Value("${knowledge.reranker.model-name:bge-reranker-v2-m3}") String modelName,
             @Value("${knowledge.reranker.timeout-seconds:10}") int timeoutSeconds) {
+        this.modelName = modelName;
         // 使用 JDK HttpClient 设置连接和读取超时，避免慢服务拖死线程
         HttpClient httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(timeoutSeconds))

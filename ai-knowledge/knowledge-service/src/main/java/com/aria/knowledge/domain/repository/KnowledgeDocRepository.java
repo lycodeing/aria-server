@@ -35,6 +35,19 @@ public interface KnowledgeDocRepository {
 
     void updateStatusBatch(List<String> docIds, DocStatus status);
 
+    /**
+     * 批量查询 docId → fileName 映射，消除 searchTest 中逐条查询的 N+1 问题。
+     *
+     * @param docIds 文档 ID 列表
+     * @return docId → fileName 的 Map，不存在的 docId 不在结果中
+     */
+    java.util.Map<String, String> findFileNamesByIds(List<String> docIds);
+
+    /**
+     * 带条件的原子状态更新：仅当文档当前状态为 DRAFT 时才更新为目标状态。
+     */
+    int updateStatusIfDraft(String docId, DocStatus newStatus);
+
     default void atomicSwap(String oldDocId, String newDocId) {
         updateStatusBatch(List.of(oldDocId), DocStatus.DEPRECATED);
         updateStatusBatch(List.of(newDocId), DocStatus.PUBLISHED);

@@ -43,12 +43,8 @@ public class DocExpiryService {
         // 批量更新状态（一条 SQL，避免 N+1）
         docRepository.updateStatusBatch(docIds, DocStatus.DEPRECATED);
 
-        // 逐个删除 chunk（各文档 chunk 数量不同，逐个事务更安全）
-        docIds.forEach(docId -> {
-            chunkRepository.deleteByDocId(docId);
-            log.info("过期文档已下线，docId={}", docId);
-        });
-
+        // 批量删除 chunk（单条 WHERE doc_id IN (...)，替代 N 次单文档删除）
+        chunkRepository.deleteByDocIds(docIds);
         log.info("过期文档批量下线完成，共处理 {} 篇，date={}", docIds.size(), today);
     }
 }

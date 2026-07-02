@@ -132,12 +132,15 @@ public class RedisLockHelper {
     /**
      * 通用 Lua 脚本执行入口（业务侧持有自定义脚本时使用）。
      *
+     * <p>参数类型固定为 {@code String...}，避免 {@code Object...} 作为整体数组传入
+     * 导致 Lua ARGV 只有 1 个元素的问题。
+     *
      * @param script 已包装的 RedisScript
      * @param keys   KEYS 数组
-     * @param args   ARGV 数组
+     * @param args   ARGV 数组（字符串）
      * @return 脚本返回值
      */
-    public <T> T executeLua(RedisScript<T> script, List<String> keys, Object... args) {
-        return redis.execute(script, keys, args);
+    public <T> T executeLua(RedisScript<T> script, List<String> keys, String... args) {
+        return redis.execute(script, keys, (Object[]) args);
     }
 }

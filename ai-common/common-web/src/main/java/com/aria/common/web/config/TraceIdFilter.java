@@ -19,10 +19,19 @@ import java.util.UUID;
 public class TraceIdFilter extends OncePerRequestFilter {
     public static final String HEADER_TRACE_ID = "X-Trace-Id";
 
+    /** 合法 traceId 格式：字母、数字、连字符，长度 8~64，防止日志污染和响应头注入 */
+    private static final java.util.regex.Pattern TRACE_ID_PATTERN =
+            java.util.regex.Pattern.compile("^[a-zA-Z0-9\\-]{8,64}$");
+
     @Override
-    protected void doFilterInternal(@NonNull HttpServletRequest request, @NonNull HttpServletResponse response, @NonNull FilterChain filterChain) throws ServletException, IOException {
+    protected void doFilterInternal(@NonNull HttpServletRequest request,
+                                    @NonNull HttpServletResponse response,
+                                    @NonNull FilterChain filterChain) throws ServletException, IOException {
         String traceId = request.getHeader(HEADER_TRACE_ID);
-        if (traceId == null || traceId.isBlank()) traceId = UUID.randomUUID().toString().replace("-", "");
+        // 校验格式：不合法时忽略前端传入值，服务端自行生成，防止日志污染和响应头注入
+        if (traceId == null || traceId.isBlank() || !TRACE_ID_PATTERN.matcher(traceId).matches()) {
+            traceId = UUID.randomUUID().toString().replace("-", "");
+        }
         MDC.put(R.MDC_TRACE_ID, traceId);
         response.setHeader(HEADER_TRACE_ID, traceId);
         try { filterChain.doFilter(request, response); }

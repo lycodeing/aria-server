@@ -286,4 +286,47 @@ public class RedisCacheHelper {
             throw new IllegalArgumentException("TTL 必须大于零 key=" + key);
         }
     }
+
+    /**
+     * 原子自增计数器，并设置/刷新 TTL。
+     *
+     * <p>用途：座席 SSE 连接引用计数，每次建连 +1，断连 -1，
+     * 计数归 0 时才真正将座席从在线列表移除，支持多标签同时在线场景。
+     *
+     * @param key key 名
+     * @param ttl TTL（每次 incr 后刷新，避免 key 永不过期）
+     * @return 自增后的值
+     */
+    public Long increment(String key, Duration ttl) {
+        Long val = redis.opsForValue().increment(key);
+        if (ttl != null) {
+            redis.expire(key, ttl);
+        }
+        return val;
+    }
+
+    /**
+     * 原子自减计数器。
+     *
+     * @param key key 名
+     * @return 自减后的值（可能为负，调用方需判断 ≤ 0 时做清理）
+     */
+    public Long decrement(String key) {
+        return redis.opsForValue().decrement(key);
+    }
+
+    /**
+     * Hash 字段原子增减（HINCRBY）。
+     *
+     * <p>用途：在同一个 Hash 内维护多个座席的连接引用计数，
+     * 相比独立 String key 方案，N 个座席只占 1 个 Redis key。
+     *
+     * @param key   Hash key
+     * @param field Hash field（如 agentId）
+     * @param delta 增量（正数=+，负数=-）
+     * @return 操作后的值
+     */
+    public Long hIncrementBy(String key, String field, long delta) {
+        return redis.opsForHash().increment(key, field, delta);
+    }
 }

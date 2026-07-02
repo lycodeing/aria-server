@@ -76,12 +76,11 @@ public class ChatAppService {
         StringBuilder assistantReply = new StringBuilder();
 
         return aiClient.streamChat(aiPrompt, systemPrompt)
-                .map(chunk -> {
-                    String content = aiClient.extractDeltaContent(chunk);
-                    if (!content.isEmpty()) assistantReply.append(content);
+                .map(content -> {
+                    // streamChat 返回的已是提取后的 delta 文本，直接追加
+                    assistantReply.append(content);
                     return content;
                 })
-                .filter(content -> !content.isEmpty())
                 .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
                 .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"))
                 // doFinally 在完成和出错两种情况下都执行，保证 assistant 回复落库

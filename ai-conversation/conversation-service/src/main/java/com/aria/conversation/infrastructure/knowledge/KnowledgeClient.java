@@ -33,6 +33,10 @@ public class KnowledgeClient {
     @Value("${knowledge.search.timeout-seconds:5}")
     private int timeoutSeconds;
 
+    /** 内部服务间通信密钥，与 auth-service 保持一致 */
+    @Value("${aria.internal.secret:change-this-in-production}")
+    private String internalSecret;
+
     /**
      * 注入 Spring Boot 自动配置的 WebClient.Builder，
      * 确保 Micrometer 指标、分布式追踪等能力自动集成。
@@ -75,6 +79,7 @@ public class KnowledgeClient {
         try {
             KnowledgeSearchResult result = webClient.post()
                     .uri("/internal/knowledge/search")
+                    .header("X-Internal-Secret", internalSecret)
                     .bodyValue(Map.of(
                             "query", query,
                             "kbId",  defaultKbId,
@@ -99,7 +104,7 @@ public class KnowledgeClient {
                     .timeout(Duration.ofSeconds(timeoutSeconds))
                     .block();
 
-            if (result == null || result.getCode() != 0) {
+            if (result == null || result.getCode() != 200) {
                 log.warn("[RAG] 知识库检索响应异常，code={}", result != null ? result.getCode() : "null");
                 return List.of();
             }

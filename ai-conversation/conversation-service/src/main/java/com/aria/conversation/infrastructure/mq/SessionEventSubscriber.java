@@ -72,6 +72,31 @@ public class SessionEventSubscriber {
     }
 
     /**
+     * 全局心跳广播：由 {@link com.aria.conversation.interfaces.rest.SessionQueueController}
+     * 的单个全局定时任务调用，向所有活跃 SSE 连接发送 comment 心跳，
+     * 替代原来每个连接独立 ScheduledFuture 的方案，降低线程池压力。
+     */
+    public void broadcastHeartbeat() {
+        if (emitters.isEmpty()) return;
+        List<SseEmitter> dead = new ArrayList<>();
+        for (SseEmitter emitter : emitters) {
+            try {
+                emitter.send(SseEmitter.event().comment("heartbeat"));
+            } catch (IOException | IllegalStateException e) {
+                dead.add(emitter);
+                try { emitter.completeWithError(e); } catch (Exception ignore) {}
+            } catch (RuntimeException e) {
+                dead.add(emitter);
+                try { emitter.completeWithError(e); } catch (Exception ignore) {}
+            }
+        }
+        if (!dead.isEmpty()) {
+            emitters.removeAll(dead);
+            log.debug("[SSE] 心跳清理僵尸 emitter {}个，剩余={}", dead.size(), emitters.size());
+        }
+    }
+
+    /**
      * 消费 Fanout 队列中的会话事件并广播给所有 SSE 连接。
      *
      * <p>使用 {@code exclusive="true", autoDelete="true"} 匿名队列，确保：

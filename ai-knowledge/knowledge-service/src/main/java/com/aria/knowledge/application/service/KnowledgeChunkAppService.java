@@ -44,7 +44,8 @@ public class KnowledgeChunkAppService {
 
     /**
      * 编辑 chunk 内容并重新向量化。
-     * 流程：更新文本 → 重新 embed → 同步更新 DB（content + vector + tokenCount）。
+     * 流程：embed 生成新向量 → 单次 UPDATE 原子写入 content + tokenCount + vector，
+     * 避免两步 UPDATE 中途失败导致内容与向量不同步。
      */
     @Transactional(rollbackFor = Exception.class)
     public void updateContent(String chunkId, String newContent) {
@@ -56,13 +57,10 @@ public class KnowledgeChunkAppService {
         chunk.setTokenCount(TokenUtils.estimate(newContent));
         // 重新向量化（就地填充 vector 字段）
         embeddingService.embed(List.of(chunk));
-        // 更新内容和 token
-        chunkRepository.updateContent(chunkId, newContent, chunk.getTokenCount());
-        // 更新向量
-        if (chunk.getVector() != null) {
-            chunkRepository.updateVector(chunkId,
-                com.aria.common.core.util.VectorUtils.toStr(chunk.getVector()));
-        }
+        // 单次 UPDATE 原子同步 content、tokenCount、vector
+        String vectorStr = chunk.getVector() != null
+                ? com.aria.common.core.util.VectorUtils.toStr(chunk.getVector()) : null;
+        chunkRepository.updateContentAndVector(chunkId, newContent, chunk.getTokenCount(), vectorStr);
         log.info("Chunk 内容已更新并重新向量化，chunkId={}", chunkId);
     }
 

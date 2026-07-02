@@ -2,14 +2,26 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 
-<mapper namespace="com.aria.customerservice.auth.infrastructure.persistence.role.RoleMapper">
+<mapper namespace="com.aria.auth.infrastructure.persistence.role.RoleMapper">
 
     <!-- 查询用户拥有的角色列表（状态为 active） -->
-    <select id="findRolesByUserId" resultType="com.aria.customerservice.auth.infrastructure.persistence.role.RoleDO">
+    <select id="findRolesByUserId" resultType="com.aria.auth.infrastructure.persistence.role.RoleDO">
         SELECT r.*
         FROM cs_auth.sys_role r
                  INNER JOIN cs_auth.sys_user_role ur ON r.id = ur.role_id
         WHERE ur.user_id = #{userId}
+          AND r.status = 'active'
+    </select>
+
+    <!-- 批量查询多个用户的角色列表，消除 N+1 问题。结果含 user_id 用于调用方分组 -->
+    <select id="findRolesByUserIds" resultType="com.aria.auth.infrastructure.persistence.role.RoleDO">
+        SELECT r.*, ur.user_id AS userId
+        FROM cs_auth.sys_role r
+                 INNER JOIN cs_auth.sys_user_role ur ON r.id = ur.role_id
+        WHERE ur.user_id IN
+        <foreach collection="userIds" item="uid" open="(" separator="," close=")">
+            #{uid}
+        </foreach>
           AND r.status = 'active'
     </select>
 

@@ -139,11 +139,13 @@ public class ConversationPersistRepository {
 
     /**
      * 批量写入消息明细（MESSAGE 事件触发）。
-     * 使用循环 insert 保证每条消息独立，失败时抛出异常，
-     * 由 ConversationPersistenceService 决定是否 ACK（不 ACK 则留在 PEL 重试）。
+     *
+     * <p>幂等保障：{@link DuplicateKeyException} 视为已写入，静默跳过（MQ 至少一次投递语义）。
+     * 其他异常视为写入失败，记录后收集，全部处理完毕再统一抛出，
+     * 阻止调用方 ACK，保留在 PEL 等待重试。
      *
      * @param messages 消息实体列表，不得为 null
-     * @throws RuntimeException 任意一条消息写入失败时抛出，阻止调用方 ACK
+     * @throws RuntimeException 存在非幂等写入失败时抛出，阻止调用方 ACK
      */
     public void saveMessages(List<ConversationMessageEntity> messages) {
         if (messages == null || messages.isEmpty()) {
@@ -153,6 +155,10 @@ public class ConversationPersistRepository {
         for (ConversationMessageEntity msg : messages) {
             try {
                 messageMapper.insert(msg);
+            } catch (DuplicateKeyException e) {
+                // (session_id, seq) 唯一索引冲突：消息已存在，MQ 重试时幂等跳过
+                log.debug("[Persist] 消息已存在，幂等跳过 sessionId={} seq={}",
+                        msg.getSessionId(), msg.getSeq());
             } catch (Exception e) {
                 log.error("[Persist] 消息写入失败 sessionId={} role={}",
                         msg.getSessionId(), msg.getRole(), e);

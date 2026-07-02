@@ -35,7 +35,8 @@ public class MarkdownParser extends AbstractDocumentParser {
     /** 按 # / ## 标题边界切分为虚拟页列表 */
     private List<ParsedPage> splitByHeading(String text) {
         List<ParsedPage> pages = new ArrayList<>();
-        String[] sections = text.split("(?=\n#{1,2} )");
+        // 使用多行模式匹配行首标题，修复原正则要求 \n 前缀导致文档首行标题无法分割的问题
+        String[] sections = text.split("(?m)(?=^#{1,2} )");
         int virtualPage = 1;
         for (String section : sections) {
             if (section.isBlank()) continue;

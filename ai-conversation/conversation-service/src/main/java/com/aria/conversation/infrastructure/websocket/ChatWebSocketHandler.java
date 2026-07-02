@@ -105,11 +105,14 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         session.getAttributes().put(ATTR_SESSION_ID, sessionId);
 
         if (PATH_SEGMENT_CHAT.equals(role)) {
-            visitorSessions.put(sessionId, session);
+            // 重连时关闭旧连接并清理其 sendLock，防止旧 TCP 半开和锁 map 无限增长
+            WebSocketSession oldVisitor = visitorSessions.put(sessionId, session);
+            closeStaleSession(oldVisitor);
             log.info("[WS] visitor connected sessionId={}", sessionId);
             sendJson(session, Map.of("type", MSG_TYPE_CONNECTED, "sessionId", sessionId, "role", MessageRole.USER.getValue()));
         } else {
-            agentSessions.put(sessionId, session);
+            WebSocketSession oldAgent = agentSessions.put(sessionId, session);
+            closeStaleSession(oldAgent);
             log.info("[WS] agent connected sessionId={}", sessionId);
             sendJson(session, Map.of("type", MSG_TYPE_CONNECTED, "sessionId", sessionId, "role", MessageRole.AGENT.getValue()));
             // 通知访客人工已接入
@@ -261,6 +264,22 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     // ----------------------------------------------------------------
     // 内部工具
     // ----------------------------------------------------------------
+
+    /**
+     * 关闭已被替换的旧 WebSocket 连接，并清理其 sendLock。
+     * 防止同一 sessionId 重连时旧 TCP 连接半开及锁 map 无限增长。
+     */
+    private void closeStaleSession(WebSocketSession stale) {
+        if (stale == null) return;
+        sendLocks.remove(stale.getId());
+        if (stale.isOpen()) {
+            try {
+                stale.close(CloseStatus.GOING_AWAY);
+            } catch (IOException e) {
+                log.warn("[WS] 关闭旧连接失败 staleId={} msg={}", stale.getId(), e.getMessage());
+            }
+        }
+    }
 
     /**
      * 向 WebSocket 发送 JSON 消息。

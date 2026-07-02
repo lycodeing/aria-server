@@ -1,5 +1,7 @@
 package com.aria.knowledge.domain.model;
 
+// TODO(Phase-2): ChunkType 当前位于 infrastructure.parser 包，违反 DDD 分层原则（domain 不应依赖 infra）。
+// 计划将 ChunkType 迁移到 domain.model 包，同步更新 PdfParser/SplitResult 等 infra 层的引用。
 import com.aria.knowledge.infrastructure.parser.ChunkType;
 import lombok.Builder;
 import lombok.Data;

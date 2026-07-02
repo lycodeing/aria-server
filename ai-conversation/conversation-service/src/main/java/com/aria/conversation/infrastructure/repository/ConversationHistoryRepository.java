@@ -57,8 +57,24 @@ public class ConversationHistoryRepository {
             return redis.call('INCR', KEYS[1])
             """;
 
+    /**
+     * 强制重置 seq 基准并 INCR Lua 脚本。
+     *
+     * <p>用于 Redis TTL 过期后 seq 从 1 重新开始时，以 DB max 为基准重置后再 INCR，
+     * 防止与已持久化的 seq 产生冲突。
+     *
+     * <p>KEYS[1] = seq key；ARGV[1] = DB max seq；ARGV[2] = key TTL（秒）
+     */
+    private static final String RESET_AND_INCR_LUA = """
+            redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+            return redis.call('INCR', KEYS[1])
+            """;
+
     private static final org.springframework.data.redis.core.script.RedisScript<Long> INIT_AND_INCR_SCRIPT =
             new org.springframework.data.redis.core.script.DefaultRedisScript<>(INIT_AND_INCR_LUA, Long.class);
+
+    private static final org.springframework.data.redis.core.script.RedisScript<Long> RESET_AND_INCR_SCRIPT =
+            new org.springframework.data.redis.core.script.DefaultRedisScript<>(RESET_AND_INCR_LUA, Long.class);
 
     private static final long TTL_HOURS         = 24L;
     private static final int  MAX_HISTORY_TURNS = 20;
@@ -88,21 +104,33 @@ public class ConversationHistoryRepository {
     // -------------------------------------------------------
 
     /**
+     * 已成功初始化 seq 计数器的 sessionId 本地缓存。
+     *
+     * <p>优化目标：热路径（Redis key 已存在）跳过 DB 查询，只有冷路径（首次或 TTL 过期）才查 DB。
+     * <p>Redis TTL 过期检测：若 Lua INCR 返回 1 且本地标记为已初始化，说明 Redis key 已过期重建，
+     * 此时清除标记并用 DB max 重新修正基准值，防止 seq 从 1 重新开始与 DB 已有记录冲突。
+     */
+    private final java.util.Set<String> initializedSessions =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
      * 生成 session 内的下一个单调递增 seq（Redis Lua 原子 INCR + DB 兜底）。
      *
-     * <p>首次为某 session 操作时，从 DB 查询 max seq 作为初始化基准，
-     * 后续通过纯 INCR 路径生成，避免 Redis 重启后与 DB 已有 seq 冲突。
+     * <p>热路径优化：已初始化的 session 跳过 DB 查询，仅走 Redis INCR；
+     * 首次或 TTL 过期时查 DB 作为基准，由 Lua 原子初始化后再 INCR。
      *
      * @param sessionId 会话唯一标识
      * @return 单调递增 seq（≥ 1）
      */
     public long nextSeq(String sessionId) {
         String key = SEQ_KEY_PREFIX + sessionId;
-        // 每次都查 DB max 作为基准值传入 Lua，由 Lua 原子判断：
-        // - Redis key 不存在（首次或 TTL 过期）：SET dbMax → INCR → 返回 dbMax+1
-        // - Redis key 已存在：跳过 SET，直接 INCR
-        // 消除内存 initializedSessions 与 Redis TTL 不同步的竞态问题
-        long dbMaxBaseline = messageMapper.selectMaxSeq(sessionId);
+        boolean alreadyInitialized = initializedSessions.contains(sessionId);
+
+        // 冷路径：首次访问，查 DB 获取基准值
+        long dbMaxBaseline = alreadyInitialized ? 0L : messageMapper.selectMaxSeq(sessionId);
+        if (!alreadyInitialized) {
+            initializedSessions.add(sessionId);
+        }
 
         Long seq = lockHelper.executeLua(
                 INIT_AND_INCR_SCRIPT,
@@ -112,6 +140,23 @@ public class ConversationHistoryRepository {
         );
         if (seq == null) {
             throw new IllegalStateException("Redis seq INCR 返回 null, sessionId=" + sessionId);
+        }
+
+        // 热路径兜底：seq==1 且本地标记为已初始化，说明 Redis key TTL 已过期被重建
+        // 重新查 DB 修正基准，防止与已持久化的 seq 冲突
+        if (seq == 1L && alreadyInitialized) {
+            long dbMax = messageMapper.selectMaxSeq(sessionId);
+            if (dbMax > 0) {
+                // 重新执行 INIT_AND_INCR，此时 key 已存在（值为 1），Lua 跳过 SET 直接 INCR
+                // 先强制设置为 dbMax，再 INCR，确保 seq 正确接续
+                lockHelper.executeLua(
+                        RESET_AND_INCR_SCRIPT,
+                        Collections.singletonList(key),
+                        String.valueOf(dbMax),
+                        String.valueOf(Duration.ofHours(TTL_HOURS).getSeconds())
+                );
+                seq = dbMax + 1L;
+            }
         }
         return seq;
     }
@@ -232,6 +277,8 @@ public class ConversationHistoryRepository {
     /** 清除会话历史（会话结束或重新开始时调用）。seq 计数器保留，靠 TTL 自动清理。 */
     public void delete(String sessionId) {
         cache.delete(KEY_PREFIX + sessionId);
+        // 同步清理本地初始化标记，下次 nextSeq 时重新从 DB 获取基准值
+        initializedSessions.remove(sessionId);
     }
 
     // -------------------------------------------------------

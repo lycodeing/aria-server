@@ -1,5 +1,6 @@
 package com.aria.knowledge.interfaces.rest;
 
+import com.aria.common.web.response.R;
 import com.aria.knowledge.application.service.KnowledgeSearchAppService;
 import com.aria.knowledge.domain.model.ChunkHit;
 import jakarta.validation.Valid;
@@ -16,7 +17,9 @@ import java.util.Map;
 /**
  * 内部知识库检索接口（供 conversation-service 通过 knowledge-sdk 调用）。
  * 路径前缀 /internal/**，不在 Swagger 文档中暴露（application.yml 已配置 paths-to-exclude）。
- * 通过 AK/SK HMAC 签名鉴权（同 code-service 内部接口规范）。
+ *
+ * <p>响应格式统一使用 {@link R} 包装，与平台其他接口保持一致，
+ * knowledge-client SDK 统一解析 R.data 字段。
  */
 @RestController
 @RequestMapping("/internal/knowledge")
@@ -30,24 +33,19 @@ public class InternalKnowledgeController {
      * conversation-service 通过 KnowledgeClient.search() 调用此接口。
      */
     @PostMapping("/search")
-    public Map<String, Object> search(@RequestBody @Valid SearchRequest request) {
+    public R<SearchResponse> search(@RequestBody @Valid SearchRequest request) {
         List<ChunkHit> hits = searchAppService.hybridSearch(
             request.getQuery(), request.getKbId(), request.getTopK());
-        return Map.of(
-            "code", 0,
-            "data", Map.of(
-                "hits", hits.stream().map(this::toDto).toList(),
-                "totalFound", hits.size()
-            )
-        );
+        List<Map<String, Object>> dtos = hits.stream().map(this::toDto).toList();
+        return R.ok(new SearchResponse(dtos, hits.size()));
     }
 
     /**
      * BGE-Reranker 重排序接口（conversation-service 可选调用）。
+     * Reranker 服务已配置时走真实精排；未配置时原样返回候选列表。
      */
     @PostMapping("/rerank")
-    public Map<String, Object> rerank(@RequestBody @Valid RerankRequest request) {
-        // 当前直接返回，实现阶段接入 BGE-Reranker
+    public R<RerankResponse> rerank(@RequestBody @Valid RerankRequest request) {
         List<ChunkHit> candidates = request.getChunks().stream()
             .map(dto -> ChunkHit.builder()
                 .chunkId(dto.getChunkId())
@@ -56,22 +54,27 @@ public class InternalKnowledgeController {
                 .build())
             .toList();
         List<ChunkHit> reranked = searchAppService.rerank(request.getQuery(), candidates);
-        return Map.of("code", 0, "data", Map.of("hits", reranked.stream().map(this::toDto).toList()));
+        return R.ok(new RerankResponse(reranked.stream().map(this::toDto).toList()));
     }
 
     private Map<String, Object> toDto(ChunkHit hit) {
         return Map.of(
             "chunkId",       hit.getChunkId(),
-            "docId",         hit.getDocId() != null ? hit.getDocId() : "",
-            "content",       hit.getContent(),
-            "breadcrumb",    hit.getBreadcrumb() != null ? hit.getBreadcrumb() : "",
-            "parentChunkId", hit.getParentChunkId() != null ? hit.getParentChunkId() : "",
+            "docId",         hit.getDocId()         != null ? hit.getDocId()                : "",
+            "content",       hit.getContent()        != null ? hit.getContent()              : "",
+            "breadcrumb",    hit.getBreadcrumb()     != null ? hit.getBreadcrumb()           : "",
+            "parentChunkId", hit.getParentChunkId()  != null ? hit.getParentChunkId()        : "",
             "score",         hit.getScore(),
-            "source",        hit.getSource() != null ? hit.getSource().name() : "VECTOR"
+            "source",        hit.getSource()         != null ? hit.getSource().name()        : "VECTOR"
         );
     }
 
-    // ===== 内部 DTO =====
+    // ===== 响应 DTO =====
+
+    public record SearchResponse(List<Map<String, Object>> hits, int totalFound) {}
+    public record RerankResponse(List<Map<String, Object>> hits) {}
+
+    // ===== 请求 DTO =====
 
     @Data
     public static class SearchRequest {

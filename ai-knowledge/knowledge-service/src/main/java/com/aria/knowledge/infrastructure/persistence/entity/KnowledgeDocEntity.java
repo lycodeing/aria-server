@@ -9,12 +9,15 @@ import java.time.LocalDate;
 /**
  * 知识库文档数据库对象（基础设施层，不在 domain 层使用）。
  * 使用 VARCHAR(36) 主键（IdType.INPUT），与 DDL 保持一致。
+ *
+ * <p>schema 限定：显式指定 schema=ai_knowledge，
+ * 避免多 schema PostgreSQL 环境中依赖 search_path 导致找不到表。
  */
 @Data
 @Builder
 @NoArgsConstructor
 @AllArgsConstructor
-@TableName("knowledge_doc")
+@TableName(schema = "ai_knowledge", value = "knowledge_doc")
 public class KnowledgeDocEntity {
 
     @TableId(type = IdType.INPUT)

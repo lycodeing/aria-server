@@ -55,4 +55,10 @@ public interface KnowledgeChunkMapper extends BaseMapper<KnowledgeChunkEntity> {
 
     /** 汇总指定知识库所有已发布 chunk 的 token 总量 */
     Long selectTokenSumByKbId(@Param("kbId") String kbId);
+
+    /**
+     * 汇总指定文档的所有 chunk token 总量（用于文档级统计）。
+     * SQL 定义在 KnowledgeChunkMapper.xml。
+     */
+    Long selectTokenSumByDocId(@Param("docId") String docId);
 }

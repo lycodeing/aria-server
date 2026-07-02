@@ -26,10 +26,13 @@ public class PageQuery implements Serializable {
 
     private static final long serialVersionUID = 1L;
 
+    /** 平台分页上限，防止超大查询打垮数据库 */
+    public static final int MAX_PAGE_SIZE = 200;
+
     /** 页码索引（0-based，默认 0） */
     private int page = 0;
 
-    /** 每页大小（默认 20，平台硬限制上限 200） */
+    /** 每页大小（默认 20，上限 {@link #MAX_PAGE_SIZE}） */
     private int size = 20;
 
     /**
@@ -40,10 +43,9 @@ public class PageQuery implements Serializable {
     }
 
     /**
-     * 获取合法每页大小（1~200）。
-     * 200 为平台硬限制，防止超大查询打垮数据库。
+     * 获取合法每页大小（1~{@link #MAX_PAGE_SIZE}）。
      */
     public int safeSize() {
-        return Math.min(Math.max(size, 1), 200);
+        return Math.min(Math.max(size, 1), MAX_PAGE_SIZE);
     }
 }

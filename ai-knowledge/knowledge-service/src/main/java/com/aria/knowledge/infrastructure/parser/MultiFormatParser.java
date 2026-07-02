@@ -24,7 +24,15 @@ public class MultiFormatParser {
         this.parsers = parserList.stream()
             .collect(Collectors.toMap(
                 p -> p.supportedType().toUpperCase(),
-                p -> p
+                p -> p,
+                (existing, newer) -> {
+                    // 同一 fileType 注册了多个解析器时，保留后注册的并打印 WARN，方便排查配置冲突
+                    log.warn("[Parser] 检测到重复解析器 fileType={}，{} 被 {} 覆盖",
+                            newer.supportedType(),
+                            existing.getClass().getSimpleName(),
+                            newer.getClass().getSimpleName());
+                    return newer;
+                }
             ));
         log.info("已注册文档解析器：{}", parsers.keySet());
     }

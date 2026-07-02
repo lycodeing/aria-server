@@ -35,7 +35,9 @@ public class BuildChunksHandler implements IngestHandler {
                 .id(String.valueOf(IdGenerator.nextId()))
                 .docId(docId)
                 .kbId(kbId)
-                .docStatus(DocStatus.PUBLISHED.name())
+                // docStatus 不在 chunk 上预设为 PUBLISHED，与文档当前状态解耦；
+                // chunk 的可检索状态由文档 status 控制，StatusUpdateHandler 完成后对外生效
+                .docStatus(DocStatus.DRAFT.name())
                 .content(split.getContent())
                 .tokenCount(TokenUtils.estimate(split.getContent()))
                 .retrievalWeight(BigDecimal.ONE)

@@ -37,8 +37,10 @@ public class QualityFilterHandler implements IngestHandler {
             docId, ctx.getSplits().size(), qualified.size());
 
         if (qualified.isEmpty()) {
-            log.warn("[质量过滤] 全部切片未通过质量门控，docId={}，跳过摄取", docId);
-            docRepository.updateStatusBatch(List.of(docId), DocStatus.PUBLISHED);
+            log.warn("[质量过滤] 全部切片未通过质量门控，标记为 FAILED docId={}", docId);
+            // 全量过滤：文档内容无法提取有效 chunk（空白/乱码/图片扫描件等），
+            // 必须标记为 FAILED 而非 PUBLISHED，避免用户误以为文档已成功入库
+            docRepository.updateStatusBatch(List.of(docId), DocStatus.FAILED);
             ctx.abort();
             return;
         }

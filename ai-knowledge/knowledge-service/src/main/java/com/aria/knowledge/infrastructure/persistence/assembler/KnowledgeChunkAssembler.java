@@ -48,8 +48,8 @@ public class KnowledgeChunkAssembler {
             .createdAt(e.getCreatedAt())
             .pageNum(e.getPageNum())
             .sectionTitle(e.getSectionTitle())
-            .chunkType(e.getChunkType() != null
-                ? ChunkType.valueOf(e.getChunkType()) : ChunkType.TEXT)
+            // 容错处理：DB 中存在历史脏数据或枚举改名时降级为 TEXT，避免整批查询失败
+            .chunkType(safeParseChunkType(e.getChunkType()))
             .build();
     }
 
@@ -60,7 +60,9 @@ public class KnowledgeChunkAssembler {
             .id(d.getId())
             .docId(d.getDocId())
             .kbId(d.getKbId())
-            .docStatus(d.getDocStatus() != null ? d.getDocStatus() : "PUBLISHED")
+            // 默认 DRAFT 而非 PUBLISHED：chunk 初始状态应跟随文档状态，
+            // 由 StatusUpdateHandler 在 pipeline 完成后统一改为 PUBLISHED
+            .docStatus(d.getDocStatus() != null ? d.getDocStatus() : "DRAFT")
             .parentChunkId(d.getParentChunkId())
             .breadcrumb(d.getBreadcrumb())
             .content(d.getContent())
@@ -94,6 +96,20 @@ public class KnowledgeChunkAssembler {
             .sectionTitle(do_.getSectionTitle())
             .chunkType(do_.getChunkType())
             .build();
+    }
+
+    /**
+     * 容错解析 ChunkType 枚举，DB 中存在历史脏数据或枚举值改名时降级为 TEXT，
+     * 避免 valueOf 抛 IllegalArgumentException 导致整批查询失败。
+     */
+    private ChunkType safeParseChunkType(String raw) {
+        if (raw == null) return ChunkType.TEXT;
+        try {
+            return ChunkType.valueOf(raw);
+        } catch (IllegalArgumentException e) {
+            log.warn("[Assembler] 未知 chunkType={}，降级为 TEXT", raw);
+            return ChunkType.TEXT;
+        }
     }
 
     private List<String> parseJsonList(String json) {

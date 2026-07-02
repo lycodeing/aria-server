@@ -37,25 +37,34 @@ public class WebSocketConfig implements WebSocketConfigurer {
     private final AgentHandshakeInterceptor agentHandshakeInterceptor;
 
     /**
-     * 允许的跨域来源，从配置文件读取。
-     * 生产环境请通过 APP_CORS_ALLOWED_ORIGINS 环境变量设置实际域名，禁止使用通配符 *。
+     * 访客端 WS 允许的跨域来源（访客页面可内嵌至任意站点，通常设为 *）。
+     * 生产环境通过 APP_CORS_ALLOWED_ORIGINS 环境变量设置。
      */
     @Value("${app.cors.allowed-origins}")
     private String allowedOriginsConfig;
 
+    /**
+     * 座席端 WS 允许的跨域来源（仅允许受信任的管理后台域名）。
+     * 生产环境通过 APP_CORS_AGENT_ORIGINS 环境变量设置，不配置时继承访客端来源。
+     * 建议设为实际管理后台域名，不使用通配符 *。
+     */
+    @Value("${app.cors.agent-origins:${app.cors.allowed-origins}}")
+    private String agentOriginsConfig;
+
     @Override
     public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
-        // 将逗号分隔的配置值拆分为数组
         String[] allowedOrigins = allowedOriginsConfig.split(",\\s*");
+        // 座席端使用独立来源白名单，与访客端解耦
+        String[] agentOrigins = agentOriginsConfig.split(",\\s*");
 
-        // 访客端：保持现有开放策略（访客页面可内嵌至任意站点），不要求 token
+        // 访客端：开放策略（访客页面可内嵌至任意站点），不要求 token
         registry.addHandler(chatWebSocketHandler, "/ws/chat/*")
                 .setAllowedOrigins(allowedOrigins);
 
-        // 座席端：加入握手拦截器，token 缺失时握手阶段返回 HTTP 401
+        // 座席端：独立来源白名单 + 握手拦截器，token 缺失时握手阶段返回 HTTP 401
         registry.addHandler(chatWebSocketHandler, "/ws/agent/*")
                 .addInterceptors(agentHandshakeInterceptor)
-                .setAllowedOrigins(allowedOrigins);
+                .setAllowedOrigins(agentOrigins);
     }
 
     /**

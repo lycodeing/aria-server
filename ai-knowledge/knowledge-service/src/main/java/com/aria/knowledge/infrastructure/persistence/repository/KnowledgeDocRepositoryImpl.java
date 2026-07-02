@@ -94,4 +94,27 @@ public class KnowledgeDocRepositoryImpl implements KnowledgeDocRepository {
             .set(KnowledgeDocEntity::getStatus, status.name())
         );
     }
+
+    @Override
+    public java.util.Map<String, String> findFileNamesByIds(List<String> docIds) {
+        if (docIds == null || docIds.isEmpty()) return java.util.Map.of();
+        return docMapper.selectList(new LambdaQueryWrapper<KnowledgeDocEntity>()
+                .in(KnowledgeDocEntity::getId, docIds)
+                .select(KnowledgeDocEntity::getId, KnowledgeDocEntity::getFileName))
+            .stream()
+            .collect(java.util.stream.Collectors.toMap(
+                    KnowledgeDocEntity::getId,
+                    e -> e.getFileName() != null ? e.getFileName() : "",
+                    (a, b) -> a));
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int updateStatusIfDraft(String docId, DocStatus newStatus) {
+        return docMapper.update(null, new LambdaUpdateWrapper<KnowledgeDocEntity>()
+            .eq(KnowledgeDocEntity::getId,     docId)
+            .eq(KnowledgeDocEntity::getStatus, DocStatus.DRAFT.name())
+            .set(KnowledgeDocEntity::getStatus, newStatus.name())
+        );
+    }
 }

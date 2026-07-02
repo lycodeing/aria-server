@@ -1,7 +1,6 @@
 package com.aria.knowledge.domain.service;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
 
 import java.util.List;
 
@@ -9,6 +8,9 @@ import java.util.List;
  * Chunk 质量领域服务（Domain Service）。
  * 职责：判断 chunk 是否具备入库资格，过滤低质量内容。
  * 纯业务规则，无框架依赖，无数据库访问。
+ *
+ * <p>实例化方式：由 infrastructure 层的 {@code AppConfig} 通过 {@code @Bean} 注册，
+ * domain 层不引入 Spring 注解，保持领域模型的框架无关性。
  *
  * <p>质量评估维度（启发式规则，后续可替换为 LLM 评分）：
  * <ul>
@@ -18,7 +20,6 @@ import java.util.List;
  * </ul>
  */
 @Slf4j
-@Service
 public class ChunkQualityDomainService {
 
     /** 有效字符占比最低阈值（低于此值视为噪声内容） */

@@ -21,6 +21,14 @@ public interface KnowledgeChunkRepository {
     void deleteByDocId(String docId);
 
     /**
+     * 批量物理删除多个文档的所有 chunk（过期批量下线时调用）。
+     * 单条 WHERE doc_id IN (...) 替代 N 次单文档删除，消除 N+1 问题。
+     *
+     * @param docIds 文档 ID 列表，不得为空
+     */
+    void deleteByDocIds(List<String> docIds);
+
+    /**
      * 向量相似度检索（pgvector 余弦距离）。
      * 内部通过 VectorUtils.toStr(queryVector) 转换后调用 XML Mapper。
      */
@@ -42,14 +50,27 @@ public interface KnowledgeChunkRepository {
      */
     List<KnowledgeChunk> findByDocId(String docId);
 
+    /**
+     * 按文档 ID 聚合 chunk 统计（DB 端聚合，避免全量加载到内存）。
+     * 返回 Map 包含：totalChunks、totalTokens、textChunks、tableChunks、imageChunks。
+     *
+     * @param docId 文档 ID
+     */
+    java.util.Map<String, Long> countStatsByDocId(String docId);
+
     /** 更新 chunk 的检索权重（0.0=禁用，1.0=启用） */
     void updateWeight(String chunkId, java.math.BigDecimal weight);
 
-    /** 更新 chunk 内容文本及 token 数（向量由调用方负责重新 embed） */
-    void updateContent(String chunkId, String content, Integer tokenCount);
-
-    /** 更新 chunk 向量（编辑内容后重新向量化时调用） */
-    void updateVector(String chunkId, String vectorStr);
+    /**
+     * 原子更新 chunk 内容、token 数和向量（单次 UPDATE，替代两步操作）。
+     * 由 KnowledgeChunkAppService.updateContent 调用，保证内容与向量始终同步。
+     *
+     * @param chunkId    chunk ID
+     * @param content    新内容文本
+     * @param tokenCount 新 token 数
+     * @param vectorStr  新向量字符串（pgvector 格式）
+     */
+    void updateContentAndVector(String chunkId, String content, int tokenCount, String vectorStr);
 
     /** 保存单个新 chunk（手动添加 Q&A 场景） */
     void save(KnowledgeChunk chunk);

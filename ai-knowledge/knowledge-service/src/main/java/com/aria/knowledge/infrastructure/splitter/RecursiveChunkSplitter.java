@@ -32,9 +32,9 @@ public class RecursiveChunkSplitter {
     /** 相邻 chunk 重叠 token 数，防止关键信息被截断 */
     private final int overlapTokens;
 
-    /** 四层递归拆分分隔符，优先级从高到低 */
+    /** 四层递归拆分分隔符，优先级从高到低（含 #### 三级标题） */
     private static final List<String> SEPARATORS =
-        List.of("\n## ", "\n### ", "\n\n", "\n", "。", ".");
+        List.of("\n## ", "\n### ", "\n#### ", "\n\n", "\n", "。", ".");
 
     public RecursiveChunkSplitter(
             @Value("${knowledge.chunk.max-tokens:512}") int maxTokens,
@@ -179,15 +179,24 @@ public class RecursiveChunkSplitter {
     }
 
     /**
-     * 硬切兜底：按 maxTokens 强制截断（最后手段，会破坏语义）。
+     * 硬切兜底：按 maxTokens 滑动窗口切分（最后手段，会破坏语义）。
+     * 使用 TokenUtils.estimate 精确控制 token 数，替代原来 *2 的经验系数，
+     * 避免中英混合文本下切片过大或过小。
      */
     private List<String> hardSplit(String text) {
         List<String> result = new ArrayList<>();
         int start = 0;
         while (start < text.length()) {
-            // 估算字符数对应 token，中文约 1:1，英文约 4:1
-            int end = Math.min(start + maxTokens * 2, text.length());
-            result.add(text.substring(start, end).trim());
+            // 逐步扩展窗口直到 token 超限，保留上一个合法边界
+            int end = start + 1;
+            while (end < text.length()
+                    && TokenUtils.estimate(text.substring(start, end + 1)) <= maxTokens) {
+                end++;
+            }
+            String chunk = text.substring(start, end).trim();
+            if (!chunk.isBlank()) {
+                result.add(chunk);
+            }
             start = end;
         }
         log.warn("触发硬切兜底，文本长度={}，建议检查文档格式", text.length());
