@@ -318,6 +318,7 @@ INSERT INTO cs_auth.sys_menu (id,parent_id,menu_type,menu_name,menu_key,path,com
 (201, 200, 'MENU',    '用户管理','SystemUser', '/system/user', 'system/user/index', 'lucide:users',       1,TRUE,TRUE, NULL),
 (202, 200, 'MENU',    '角色管理','SystemRole', '/system/role', 'system/role/index', 'lucide:shield',      2,TRUE,TRUE, NULL),
 (203, 200, 'MENU',    '菜单管理','SystemMenu', '/system/menu', 'system/menu/index', 'lucide:layout-list', 3,TRUE,TRUE, NULL),
+(205, 200, 'MENU',   'AI 模型配置','SystemAiModel','/system/ai-model','system/ai-model/index','lucide:cpu',5,TRUE,TRUE,NULL),
 (210, 201, 'BUTTON','新增用户','system:user:create',     NULL,NULL,NULL,1,FALSE,FALSE,'system:user:create'),
 (211, 201, 'BUTTON','编辑用户','system:user:update',     NULL,NULL,NULL,2,FALSE,FALSE,'system:user:update'),
 (212, 201, 'BUTTON','删除用户','system:user:delete',     NULL,NULL,NULL,3,FALSE,FALSE,'system:user:delete'),
