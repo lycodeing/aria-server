@@ -104,7 +104,8 @@ public class UserController {
 
     @DeleteMapping("/{id}")
     public R<Void> delete(@PathVariable Long id) {
-        userAppService.delete(id);
+        Long operatorId = StpUtil.getLoginIdAsLong();
+        userAppService.delete(id, operatorId);
         return R.ok();
     }
 

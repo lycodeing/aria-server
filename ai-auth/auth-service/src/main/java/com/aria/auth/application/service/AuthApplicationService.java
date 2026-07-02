@@ -2,25 +2,21 @@ package com.aria.auth.application.service;
 
 import cn.dev33.satoken.stp.SaLoginModel;
 import cn.dev33.satoken.stp.StpUtil;
+import com.aria.auth.application.command.LoginCommand;
+import com.aria.auth.application.result.LoginResult;
+import com.aria.auth.application.result.TokenRefreshResult;
 import com.aria.auth.domain.model.user.PasswordHasher;
 import com.aria.auth.domain.model.user.User;
 import com.aria.auth.domain.model.user.UserId;
 import com.aria.auth.domain.model.user.UserStatus;
-import com.aria.auth.infrastructure.security.password.PasswordExpiryChecker;
-import com.aria.auth.application.command.LoginCommand;
-import com.aria.auth.application.result.LoginResult;
-import com.aria.auth.application.result.TokenRefreshResult;
-import com.aria.auth.domain.model.user.*;
 import com.aria.auth.domain.repository.IUserRepository;
-import com.aria.auth.domain.service.LoginAttemptPolicy;
 import com.aria.auth.infrastructure.auth.SsoCookieWriter;
 import com.aria.auth.infrastructure.security.ratelimit.LoginRateLimiter;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.common.core.exception.CommonErrorCode;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 
@@ -29,15 +25,18 @@ import java.util.List;
 /**
  * 认证应用服务。
  *
- * <p>编排登录、登出、Token 刷新用例，是事务边界。
- * 不依赖 HttpServletRequest，IP 由 Controller 提前解析后放入 LoginCommand。
- *
- * @author aria
+ * <p>编排登录、登出、Token 刷新用例，自身不含 {@code @Transactional}：
+ * <ul>
+ *   <li>数据库事务委托给 {@link LoginTransactionService}，避免 Spring AOP 代理
+ *       因 {@code this} 内部调用而失效</li>
+ *   <li>登录失败的失败计数和审计事件通过 {@code REQUIRES_NEW} 独立事务持久化，
+ *       确保即使本次登录抛出异常，审计记录仍可提交</li>
+ * </ul>
  */
+@Slf4j
 @Service
+@RequiredArgsConstructor
 public class AuthApplicationService {
-
-    private static final Logger log = LoggerFactory.getLogger(AuthApplicationService.class);
 
     /** 记住我时的 Token 超时时长：30 天（秒） */
     private static final long TIMEOUT_REMEMBER_ME = 30 * 86400L;
@@ -49,75 +48,20 @@ public class AuthApplicationService {
     private static final String COOKIE_NAME_AUTHORIZATION = "Authorization";
 
     private final IUserRepository userRepo;
-    /** 依赖 Domain 层端口接口，而非具体实现 */
     private final PasswordHasher passwordHasher;
     private final LoginRateLimiter rateLimiter;
-    private final LoginAttemptPolicy attemptPolicy;
+    private final LoginTransactionService loginTransactionService;
     private final SsoCookieWriter ssoCookieWriter;
-    private final PasswordExpiryChecker passwordExpiryChecker;
-
-    public AuthApplicationService(IUserRepository userRepo,
-                                  PasswordHasher passwordHasher,
-                                  LoginRateLimiter rateLimiter,
-                                  LoginAttemptPolicy attemptPolicy,
-                                  SsoCookieWriter ssoCookieWriter,
-                                  PasswordExpiryChecker passwordExpiryChecker) {
-        this.userRepo              = userRepo;
-        this.passwordHasher        = passwordHasher;
-        this.rateLimiter           = rateLimiter;
-        this.attemptPolicy         = attemptPolicy;
-        this.ssoCookieWriter       = ssoCookieWriter;
-        this.passwordExpiryChecker = passwordExpiryChecker;
-    }
 
     /**
-     * 登录。IP 已由 Controller 层从 HttpServletRequest 提取并放入 LoginCommand。
-     *
-     * <p>两段式设计：
+     * 登录。分三段执行：
      * <ol>
-     *   <li>{@link #doLoginDb} — 事务边界内：校验、更新登录状态、持久化</li>
-     *   <li>Sa-Token login + SSO Cookie — 事务边界外：DB 已提交后才建立会话，
-     *       避免 DB 回滚后 Sa-Token 会话仍有效导致状态不一致</li>
+     *   <li>频控 + 状态校验 + 密码校验（无事务）</li>
+     *   <li>{@link LoginTransactionService#doLoginSuccess} — 事务内持久化登录状态并发布事件</li>
+     *   <li>Sa-Token 建立会话 + SSO Cookie — 事务已提交后执行，避免 DB 回滚后会话残留</li>
      * </ol>
-     *
-     * @param cmd 登录命令（含用户名、密码、记住我标志、客户端 IP）
-     * @return 登录结果（含 Token、用户信息、角色列表）
      */
     public LoginResult login(LoginCommand cmd) {
-        // Step 1：事务内校验 + 持久化（返回所需的用户快照数据）
-        LoginContext ctx = doLoginDb(cmd);
-
-        // Step 2：Sa-Token 建立会话，roles 和 permissions 存入 token extra，
-        // StpInterfaceImpl 直接读 extra，无需每次鉴权回查 DB
-        StpUtil.login(ctx.userId(), new SaLoginModel()
-                .setTimeout(ctx.timeout())
-                .setExtra("username",    ctx.username())
-                .setExtra("displayName", ctx.displayName())
-                .setExtra("roles",       ctx.roleKeys())
-                .setExtra("permissions", ctx.permissionKeys()));
-
-        // Step 3：写 SSO Cookie
-        writeSsoCookie(ctx.timeout());
-
-        return new LoginResult(
-                COOKIE_NAME_AUTHORIZATION,
-                StpUtil.getTokenValue(),
-                ctx.timeout(),
-                ctx.userId(),
-                ctx.username(),
-                ctx.displayName(),
-                ctx.roleKeys(),
-                ctx.mustChangePassword());
-    }
-
-    /**
-     * 事务内登录逻辑：校验频控/用户状态/密码，更新登录状态并持久化。
-     * 不调用 Sa-Token，确保事务回滚时不残留无效会话。
-     *
-     * @return 登录上下文（用户快照，供事务外 Sa-Token 使用）
-     */
-    @Transactional(rollbackFor = Exception.class)
-    protected LoginContext doLoginDb(LoginCommand cmd) {
         String ip = cmd.getClientIp();
 
         // 1. IP 频控
@@ -137,41 +81,37 @@ public class AuthApplicationService {
             throw BusinessException.of("AUTH_ACCOUNT_LOCKED", "账号已锁定，请稍后再试");
         }
 
-        // 4. 校验密码
+        // 4. 校验密码：失败时使用 REQUIRES_NEW 独立事务记录失败计数，确保审计不丢失
         if (!user.getPassword().matches(cmd.getPassword(), passwordHasher)) {
-            user.onLoginFailed(attemptPolicy.getMaxFailCount(), attemptPolicy.getLockDurationMinutes());
-            userRepo.save(user);
+            loginTransactionService.recordLoginFailure(user, ip);
             rateLimiter.recordFailure(ip);
-            log.warn("登录失败（密码错误）: username={}, ip={}, failCount={}",
-                    cmd.getUsername(), ip, user.getLoginFailCount());
             throw invalidCredential();
         }
 
-        // 5. 登录成功，更新状态并持久化
-        user.onLoginSucceeded(ip);
-        // 密码过期检查：若超过配置天数未修改，标记 mustChangePassword，前端引导用户修改
-        if (passwordExpiryChecker.isExpired(user.getPasswordChangedAt())) {
-            log.info("密码已过期，标记强制修改 userId={}", user.getId().getValue());
-            user.resetPassword(user.getPassword()); // 保持哈希不变，仅触发 mustChangePassword=true
-        }
-        userRepo.save(user);
-
-        // 6. 加载角色和权限（一并存入 token extra，避免 StpInterfaceImpl 每次鉴权查 DB）
-        List<String> roleKeys       = userRepo.findRoleKeysByUserId(user.getId().getValue());
-        List<String> permissionKeys = userRepo.findPermissionKeysByUserId(user.getId().getValue());
+        // 5. 登录成功：事务内更新状态 + 发布事件
         long timeout = cmd.isRememberMe() ? TIMEOUT_REMEMBER_ME : TIMEOUT_DEFAULT;
+        LoginContext ctx = loginTransactionService.doLoginSuccess(user, cmd, timeout);
 
-        return new LoginContext(
-                user.getId().getValue(), user.getUsername(),
-                user.getDisplayName(), roleKeys, permissionKeys, timeout,
-                user.isMustChangePassword());
+        // 6. Sa-Token 建立会话（DB 已提交，会话与 DB 状态一致）
+        StpUtil.login(ctx.userId(), new SaLoginModel()
+                .setTimeout(ctx.timeout())
+                .setExtra("username",    ctx.username())
+                .setExtra("displayName", ctx.displayName())
+                .setExtra("roles",       ctx.roleKeys())
+                .setExtra("permissions", ctx.permissionKeys()));
+
+        writeSsoCookie(ctx.timeout());
+
+        return new LoginResult(
+                COOKIE_NAME_AUTHORIZATION,
+                StpUtil.getTokenValue(),
+                ctx.timeout(),
+                ctx.userId(),
+                ctx.username(),
+                ctx.displayName(),
+                ctx.roleKeys(),
+                ctx.mustChangePassword());
     }
-
-    /** 登录事务内结果快照，不含任何框架引用，纯数据传递。 */
-    private record LoginContext(
-            Long userId, String username, String displayName,
-            List<String> roleKeys, List<String> permissionKeys,
-            long timeout, boolean mustChangePassword) {}
 
     /**
      * 登出，清除当前 Sa-Token 会话。
@@ -185,19 +125,12 @@ public class AuthApplicationService {
 
     /**
      * 刷新 Token，重新加载用户信息并填充 extra，保证权限校验不失效。
-     *
-     * <p>注意：必须重新从 DB 加载用户信息再填充 extra，
-     * 不能只 logout + login(userId)，否则 extra（username/displayName/roles）全部丢失，
-     * 导致后续权限校验、菜单加载等依赖 extra 的接口失效。
-     *
-     * @return 新 Token 信息
      */
     public TokenRefreshResult refreshToken() {
         if (!StpUtil.isLogin()) {
             throw BusinessException.of(CommonErrorCode.UNAUTHORIZED);
         }
         Long userId = StpUtil.getLoginIdAsLong();
-        // 重新加载用户信息，保证 extra 数据与 DB 保持同步
         User user = userRepo.findById(UserId.of(userId))
                 .orElseThrow(() -> BusinessException.of(CommonErrorCode.UNAUTHORIZED));
         List<String> roleKeys       = userRepo.findRoleKeysByUserId(userId);
@@ -218,11 +151,6 @@ public class AuthApplicationService {
     // 内部工具
     // -------------------------------------------------------
 
-    /**
-     * 尝试写入 SSO Cookie，失败时仅记录 debug 日志，不影响登录主流程。
-     *
-     * @param timeout Token 超时时长（秒）
-     */
     private void writeSsoCookie(long timeout) {
         try {
             ServletRequestAttributes attrs =
