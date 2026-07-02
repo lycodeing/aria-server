@@ -79,10 +79,11 @@ public class RoleRepositoryImpl implements IRoleRepository {
 
     @Override
     public void assignPermissions(Long roleId, List<Long> permissionIds) {
+        // 先清后批量插入：单条 SQL 多 VALUES，替代原来 N 次单行 INSERT
         roleMapper.deleteRolePermissions(roleId);
         List<Long> ids = permissionIds != null ? permissionIds : Collections.emptyList();
-        for (Long pid : ids) {
-            roleMapper.insertRolePermission(roleId, pid);
+        if (!ids.isEmpty()) {
+            roleMapper.insertRolePermissions(roleId, ids);
         }
     }
 

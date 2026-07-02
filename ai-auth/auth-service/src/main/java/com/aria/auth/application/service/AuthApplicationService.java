@@ -10,7 +10,7 @@ import com.aria.auth.infrastructure.security.password.PasswordExpiryChecker;
 import com.aria.auth.application.command.LoginCommand;
 import com.aria.auth.application.result.LoginResult;
 import com.aria.auth.application.result.TokenRefreshResult;
-import com.aria.customerservice.auth.domain.model.user.*;
+import com.aria.auth.domain.model.user.*;
 import com.aria.auth.domain.repository.IUserRepository;
 import com.aria.auth.domain.service.LoginAttemptPolicy;
 import com.aria.auth.infrastructure.auth.SsoCookieWriter;

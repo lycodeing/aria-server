@@ -8,7 +8,7 @@ import com.aria.auth.domain.model.role.Permission;
 import com.aria.auth.domain.model.role.Role;
 import com.aria.auth.interfaces.assembler.RoleAssembler;
 import com.aria.auth.interfaces.rest.vo.*;
-import com.aria.customerservice.auth.interfaces.rest.vo.*;
+import com.aria.auth.interfaces.rest.vo.*;
 import com.aria.common.core.page.PageResult;
 import com.aria.common.web.response.R;
 import lombok.Data;

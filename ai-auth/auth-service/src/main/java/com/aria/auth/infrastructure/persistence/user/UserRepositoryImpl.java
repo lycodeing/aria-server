@@ -1,7 +1,7 @@
 package com.aria.auth.infrastructure.persistence.user;
 
 import com.aria.auth.domain.model.user.*;
-import com.aria.customerservice.auth.domain.model.user.*;
+import com.aria.auth.domain.model.user.*;
 import com.aria.auth.domain.repository.IUserRepository;
 import com.aria.auth.infrastructure.persistence.role.PermissionMapper;
 import com.aria.auth.infrastructure.persistence.role.RoleDO;

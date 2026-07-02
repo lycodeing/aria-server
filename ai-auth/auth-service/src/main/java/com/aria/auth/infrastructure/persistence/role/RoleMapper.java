@@ -33,9 +33,13 @@ public interface RoleMapper extends BaseMapper<RoleDO> {
     int deleteRolePermissions(@Param("roleId") Long roleId);
 
     /**
-     * 插入角色-接口权限关联记录。
+     * 批量插入角色-接口权限关联记录（单条 SQL 多 VALUES，替代 N 次单行 INSERT）。
+     *
+     * @param roleId        角色 ID
+     * @param permissionIds 权限 ID 列表，不得为空
      */
-    int insertRolePermission(@Param("roleId") Long roleId, @Param("permissionId") Long permissionId);
+    int insertRolePermissions(@Param("roleId") Long roleId,
+                              @Param("permissionIds") List<Long> permissionIds);
 
     /**
      * 查询角色的数据权限范围类型。

@@ -1,7 +1,7 @@
 package com.aria.auth.application.service;
 
 import com.aria.auth.domain.model.user.*;
-import com.aria.customerservice.auth.domain.model.user.*;
+import com.aria.auth.domain.model.user.*;
 import com.aria.auth.domain.repository.IUserRepository;
 import com.aria.auth.domain.service.PasswordPolicyChecker;
 import com.aria.common.core.exception.BusinessException;
