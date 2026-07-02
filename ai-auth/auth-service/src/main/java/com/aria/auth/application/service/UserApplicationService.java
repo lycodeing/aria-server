@@ -1,9 +1,9 @@
 package com.aria.auth.application.service;
 
 import com.aria.auth.domain.model.user.*;
-import com.aria.auth.domain.model.user.*;
 import com.aria.auth.domain.repository.IUserRepository;
 import com.aria.auth.domain.service.PasswordPolicyChecker;
+import com.aria.common.core.domain.IDomainEventPublisher;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.common.core.exception.CommonErrorCode;
 import com.aria.auth.application.query.UserPageQuery;
@@ -28,13 +28,16 @@ public class UserApplicationService {
     /** 依赖 Domain 层端口接口，而非具体实现 */
     private final PasswordHasher passwordHasher;
     private final PasswordPolicyChecker passwordPolicy;
+    private final IDomainEventPublisher domainEventPublisher;
 
     public UserApplicationService(IUserRepository userRepo,
                                   PasswordHasher passwordHasher,
-                                  PasswordPolicyChecker passwordPolicy) {
+                                  PasswordPolicyChecker passwordPolicy,
+                                  IDomainEventPublisher domainEventPublisher) {
         this.userRepo = userRepo;
         this.passwordHasher = passwordHasher;
         this.passwordPolicy = passwordPolicy;
+        this.domainEventPublisher = domainEventPublisher;
     }
 
     // -------------------------------------------------------
@@ -67,6 +70,7 @@ public class UserApplicationService {
                 username, displayName, email, phone,
                 pwd, Set.of(), AuthProvider.LOCAL);
         userRepo.save(user);
+        domainEventPublisher.publish(user);
         return user;
     }
 
@@ -127,6 +131,7 @@ public class UserApplicationService {
         }
         user.updateProfile(displayName, email, phone);
         userRepo.save(user);
+        domainEventPublisher.publish(user);
         return user;
     }
 
@@ -144,6 +149,7 @@ public class UserApplicationService {
         User user = loadUser(id);
         user.disable();
         userRepo.save(user);
+        domainEventPublisher.publish(user);
     }
 
     /**
@@ -156,22 +162,20 @@ public class UserApplicationService {
         User user = loadUser(id);
         user.enable();
         userRepo.save(user);
+        domainEventPublisher.publish(user);
     }
 
     /**
      * 删除用户。
-     * 防止管理员删除自己，避免 Sa-Token 会话有效但 DB 记录已不存在的不一致状态。
+     * 防止操作者删除自己，避免 Sa-Token 会话有效但 DB 记录已不存在的不一致状态。
      *
-     * @param id 用户 ID
+     * @param id         被删除用户 ID
+     * @param operatorId 当前操作者 ID（由 Controller 层从 Sa-Token 会话中提取并传入）
      */
     @Transactional(rollbackFor = Exception.class)
-    public void delete(Long id) {
-        // 自删保护：当前登录用户不能删除自己
-        if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
-            Long currentUserId = cn.dev33.satoken.stp.StpUtil.getLoginIdAsLong();
-            if (id.equals(currentUserId)) {
-                throw BusinessException.of("AUTH_SELF_DELETE", "不能删除当前登录用户");
-            }
+    public void delete(Long id, Long operatorId) {
+        if (id.equals(operatorId)) {
+            throw BusinessException.of("AUTH_SELF_DELETE", "不能删除当前登录用户");
         }
         loadUser(id);
         userRepo.delete(UserId.of(id));
@@ -195,6 +199,7 @@ public class UserApplicationService {
         Password newPwd = Password.encode(newPassword, passwordHasher);
         user.changePassword(oldPassword, newPwd, passwordHasher);
         userRepo.save(user);
+        domainEventPublisher.publish(user);
     }
 
     /**
@@ -209,6 +214,7 @@ public class UserApplicationService {
         passwordPolicy.check(newPassword);
         user.resetPassword(Password.encode(newPassword, passwordHasher));
         userRepo.save(user);
+        domainEventPublisher.publish(user);
     }
 
     // -------------------------------------------------------
@@ -226,6 +232,7 @@ public class UserApplicationService {
         User user = loadUser(id);
         user.assignRoles(roleIds == null ? Set.of() : roleIds);
         userRepo.save(user);
+        domainEventPublisher.publish(user);
     }
 
     // -------------------------------------------------------
