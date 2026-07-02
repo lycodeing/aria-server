@@ -28,7 +28,7 @@ mybatis-plus:
       logic-delete-value: "NOW()"
       logic-not-delete-value: "null"
 
-# Sa-Token JWT 配置
+# Sa-Token Redis Session 配置（token 数据存 Redis，跨服务共享验证）
 sa-token:
   token-name: Authorization
   timeout: 28800
@@ -36,7 +36,6 @@ sa-token:
   is-read-header: true
   is-read-cookie: false
   max-login-count: 5
-  jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}
 
 # SpringDoc OpenAPI
 springdoc:

@@ -93,12 +93,13 @@ public class AuthApplicationService {
         LoginContext ctx = loginTransactionService.doLoginSuccess(user, cmd, timeout);
 
         // 6. Sa-Token 建立会话（DB 已提交，会话与 DB 状态一致）
-        StpUtil.login(ctx.userId(), new SaLoginModel()
-                .setTimeout(ctx.timeout())
-                .setExtra("username",    ctx.username())
-                .setExtra("displayName", ctx.displayName())
-                .setExtra("roles",       ctx.roleKeys())
-                .setExtra("permissions", ctx.permissionKeys()));
+        StpUtil.login(ctx.userId(), new SaLoginModel().setTimeout(ctx.timeout()));
+        // Redis Session 模式：将用户信息存入 token session，供其他服务跨进程读取
+        var session = StpUtil.getTokenSession();
+        session.set("username",    ctx.username());
+        session.set("displayName", ctx.displayName());
+        session.set("roles",       ctx.roleKeys());
+        session.set("permissions", ctx.permissionKeys());
 
         writeSsoCookie(ctx.timeout());
 
@@ -137,12 +138,12 @@ public class AuthApplicationService {
         List<String> permissionKeys = userRepo.findPermissionKeysByUserId(userId);
 
         StpUtil.logout();
-        StpUtil.login(userId, new SaLoginModel()
-                .setTimeout(TIMEOUT_DEFAULT)
-                .setExtra("username",    user.getUsername())
-                .setExtra("displayName", user.getDisplayName())
-                .setExtra("roles",       roleKeys)
-                .setExtra("permissions", permissionKeys));
+        StpUtil.login(userId, new SaLoginModel().setTimeout(TIMEOUT_DEFAULT));
+        var session = StpUtil.getTokenSession();
+        session.set("username",    user.getUsername());
+        session.set("displayName", user.getDisplayName());
+        session.set("roles",       roleKeys);
+        session.set("permissions", permissionKeys);
         log.info("Token 刷新成功 userId={}", userId);
         return new TokenRefreshResult(StpUtil.getTokenValue(), TIMEOUT_DEFAULT);
     }

@@ -41,12 +41,17 @@ public class UserRepositoryImpl implements IUserRepository {
     @Override
     public User save(User user) {
         UserDO userDO = toDO(user);
-        try {
+        if (userDO.getId() != null) {
+            // 主键已知：优先更新，0 行受影响说明记录不存在则插入
+            // 注意：不能在 @Transactional 内用 insert-then-catch 模式，
+            // PostgreSQL 在 insert 失败后会将事务置为 aborted 状态，
+            // 导致 catch 块内的 updateById 抛出 25P02 (in_failed_sql_transaction)
+            int updated = mapper.updateById(userDO);
+            if (updated == 0) {
+                mapper.insert(userDO);
+            }
+        } else {
             mapper.insert(userDO);
-        } catch (org.springframework.dao.DuplicateKeyException e) {
-            // 主键已存在，降级为更新（幂等：并发注册时只有一个 insert 成功）
-            userDO.setId(user.getId().getValue());
-            mapper.updateById(userDO);
         }
         return user;
     }

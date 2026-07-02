@@ -38,15 +38,6 @@
             <artifactId>postgresql</artifactId>
         </dependency>
 
-        <!--
-            Sa-Token JWT 模式（common-web 只引入了 starter + redis-jackson，
-            JWT 签名需额外引入 sa-token-jwt）
-        -->
-        <dependency>
-            <groupId>cn.dev33</groupId>
-            <artifactId>sa-token-jwt</artifactId>
-        </dependency>
-
         <!-- BCrypt 密码哈希（Spring Security Crypto，仅使用密码工具，不引入完整安全框架） -->
         <dependency>
             <groupId>org.springframework.security</groupId>
