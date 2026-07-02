@@ -1,5 +1,7 @@
 package com.aria.knowledge.infrastructure.parser;
 
+import com.aria.knowledge.domain.model.ChunkType;
+
 import lombok.Builder;
 import lombok.Data;
 

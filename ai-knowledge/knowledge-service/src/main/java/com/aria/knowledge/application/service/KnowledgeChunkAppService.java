@@ -7,7 +7,7 @@ import com.aria.knowledge.domain.model.DocStatus;
 import com.aria.knowledge.domain.model.KnowledgeChunk;
 import com.aria.knowledge.domain.repository.KnowledgeChunkRepository;
 import com.aria.knowledge.infrastructure.embedding.EmbeddingService;
-import com.aria.knowledge.infrastructure.parser.ChunkType;
+import com.aria.knowledge.domain.model.ChunkType;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;

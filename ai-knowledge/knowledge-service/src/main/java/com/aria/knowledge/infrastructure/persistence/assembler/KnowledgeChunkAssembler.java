@@ -2,7 +2,7 @@ package com.aria.knowledge.infrastructure.persistence.assembler;
 
 import com.aria.knowledge.domain.model.ChunkHit;
 import com.aria.knowledge.domain.model.KnowledgeChunk;
-import com.aria.knowledge.infrastructure.parser.ChunkType;
+import com.aria.knowledge.domain.model.ChunkType;
 import com.aria.knowledge.infrastructure.persistence.do_.ChunkHitDO;
 import com.aria.knowledge.infrastructure.persistence.entity.KnowledgeChunkEntity;
 import com.aria.common.core.util.VectorUtils;

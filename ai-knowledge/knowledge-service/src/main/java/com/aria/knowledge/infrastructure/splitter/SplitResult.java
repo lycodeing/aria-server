@@ -1,6 +1,6 @@
 package com.aria.knowledge.infrastructure.splitter;
 
-import com.aria.knowledge.infrastructure.parser.ChunkType;
+import com.aria.knowledge.domain.model.ChunkType;
 import lombok.Builder;
 import lombok.Data;
 

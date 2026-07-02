@@ -1,5 +1,7 @@
 package com.aria.knowledge.infrastructure.parser;
 
+import com.aria.knowledge.domain.model.ChunkType;
+
 import com.aria.common.core.exception.BusinessException;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.xwpf.usermodel.XWPFDocument;

@@ -3,7 +3,7 @@ package com.aria.knowledge.infrastructure.mq.handler;
 import com.aria.knowledge.domain.model.KnowledgeChunk;
 import com.aria.knowledge.infrastructure.mq.DocIngestEvent;
 import com.aria.knowledge.infrastructure.mq.IngestContext;
-import com.aria.knowledge.infrastructure.parser.ChunkType;
+import com.aria.knowledge.domain.model.ChunkType;
 import com.aria.knowledge.infrastructure.splitter.SplitResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;

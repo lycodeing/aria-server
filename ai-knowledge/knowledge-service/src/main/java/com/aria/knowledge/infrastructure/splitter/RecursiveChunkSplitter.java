@@ -1,7 +1,7 @@
 package com.aria.knowledge.infrastructure.splitter;
 
 import com.aria.common.core.util.TokenUtils;
-import com.aria.knowledge.infrastructure.parser.ChunkType;
+import com.aria.knowledge.domain.model.ChunkType;
 import com.aria.knowledge.infrastructure.parser.ParsedDocument;
 import com.aria.knowledge.infrastructure.parser.ParsedBlock;
 import com.aria.knowledge.infrastructure.parser.ParsedPage;
