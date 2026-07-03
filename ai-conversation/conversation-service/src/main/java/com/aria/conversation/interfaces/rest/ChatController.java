@@ -94,17 +94,19 @@ public class ChatController {
 
         // 提前检索知识块，避免在 AI 流式链中重复检索
         List<KnowledgeSearchResult.Hit> hits = chatService.searchHits(req.getMessage());
-        String sourcesJson = buildSourcesJson(hits);
 
-        // event:sources → AI 流式 chunk → event:done
-        Flux<ServerSentEvent<String>> sourcesEvent = Flux.just(
-                ServerSentEvent.<String>builder().event("sources").data(sourcesJson).build()
-        );
         Flux<ServerSentEvent<String>> aiStream = chatService.streamChat(sessionId, req.getMessage(), hits)
                 .map(chunk -> ServerSentEvent.<String>builder().data(chunk).build())
                 .concatWith(Flux.just(
                         ServerSentEvent.<String>builder().event("done").data("[DONE]").build()));
 
+        // 有知识库命中时才推送 event:sources，空命中不发，避免前端拼入 "[]"
+        if (hits.isEmpty()) {
+            return aiStream;
+        }
+        Flux<ServerSentEvent<String>> sourcesEvent = Flux.just(
+                ServerSentEvent.<String>builder().event("sources").data(buildSourcesJson(hits)).build()
+        );
         return sourcesEvent.concatWith(aiStream);
     }
 
