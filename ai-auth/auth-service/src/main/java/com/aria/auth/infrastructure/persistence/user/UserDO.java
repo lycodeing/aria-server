@@ -15,8 +15,8 @@ import java.util.List;
 @Setter
 @TableName(value = "cs_auth.sys_user", autoResultMap = true)
 public class UserDO {
-    /** 主键 ID */
-    @TableId(type = IdType.AUTO)
+    /** 主键 ID（由应用层 IdGenerator 生成，禁止数据库自增） */
+    @TableId(type = IdType.INPUT)
     private Long id;
     /** 创建时间 */
     private LocalDateTime createdAt;

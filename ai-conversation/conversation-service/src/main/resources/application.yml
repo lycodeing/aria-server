@@ -14,6 +14,15 @@ spring:
   application:
     name: aria-conversation
 
+# Sa-Token（与 auth-service 共享 JWT 密钥，用于验证座席 token）
+sa-token:
+  token-name: Authorization
+  timeout: 28800
+  token-prefix: "Bearer"
+  is-read-header: true
+  is-read-cookie: false
+  jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}
+
   # -------- 数据库（对话历史持久化） --------
   datasource:
     url: jdbc:postgresql://localhost:5432/ai_customerservice
@@ -96,7 +105,7 @@ app:
   cors:
     # 开发环境默认允许本地前端，生产必须替换
     # 开发期 web-antd 端口可能为 5666/5667/5668/5669/5670，全部放行；aria-web 开发端口 5173；生产必须替换为实际域名
-    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:5173,http://localhost:5666,http://localhost:5667,http://localhost:5668,http://localhost:5669,http://localhost:5670,http://localhost:5671,http://localhost:5672}
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:https://chat.lycodeing.cn,http://localhost:5670,http://localhost:5671}
 
 # -------- 访客身份验证配置 --------
 visitor:

@@ -1,6 +1,15 @@
 spring:
   application:
     name: aria-knowledge
+
+# Sa-Token（与 auth-service 共享 JWT 密钥，用于验证管理员 token）
+sa-token:
+  token-name: Authorization
+  timeout: 28800
+  token-prefix: "Bearer"
+  is-read-header: true
+  is-read-cookie: false
+  jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}
   datasource:
     url: jdbc:postgresql://localhost:5432/ai_knowledge
     username: ${DB_USERNAME:postgres}
