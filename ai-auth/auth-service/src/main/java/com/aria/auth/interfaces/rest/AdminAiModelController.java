@@ -90,6 +90,18 @@ public class AdminAiModelController {
         return R.ok();
     }
 
+    /**
+     * 测试模型连通性。
+     * CHAT 模型：发送极简非流式请求，验证 API Key + 地址有效性。
+     * EMBEDDING 模型：发送一条测试文本，验证向量服务可访问。
+     *
+     * @return { success, latencyMs, message }
+     */
+    @PostMapping("/{id}/test")
+    public R<java.util.Map<String, Object>> testConnection(@PathVariable Long id) {
+        return R.ok(service.testConnection(id));
+    }
+
     // ---- 内部转换 ----
 
     private AiModelVO toVO(AiModelConfigDO do_) {

@@ -14,6 +14,11 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.time.LocalDateTime;
 
 /**
@@ -200,6 +205,81 @@ public class AiModelConfigService {
         if (record == null) throw new IllegalArgumentException("AI 模型配置不存在: id=" + id);
         return record;
     }
+
+    // -------------------------------------------------------
+    // 连接测试
+    // -------------------------------------------------------
+
+    /**
+     * 测试指定模型配置的连通性。
+     * <ul>
+     *   <li>CHAT：向 /v1/chat/completions 发送一条非流式极简请求，验证 API Key 和地址有效性</li>
+     *   <li>EMBEDDING：向 /v1/embeddings 发送一条测试文本，验证向量服务可访问</li>
+     * </ul>
+     *
+     * @return map 包含 success(boolean)、latencyMs(long)、message(string)
+     */
+    public java.util.Map<String, Object> testConnection(Long id) {
+        AiModelConfigDO cfg = getOrThrow(id);
+        String apiKey = decryptApiKey(cfg.getApiKeyEnc());
+        String baseUrl = cfg.getBaseUrl().stripTrailing();
+        if (!baseUrl.endsWith("/")) baseUrl = baseUrl + "/";
+
+        long start = System.currentTimeMillis();
+        try {
+            HttpClient client = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .build();
+
+            String body;
+            String endpoint;
+            boolean isEmbedding = "EMBEDDING".equalsIgnoreCase(cfg.getModelType());
+
+            if (isEmbedding) {
+                // Embedding 测试：发一条极短文本
+                endpoint = baseUrl + "embeddings";
+                body = String.format(
+                    "{\"model\":\"%s\",\"input\":\"test\"}",
+                    cfg.getModelName());
+            } else {
+                // Chat 测试：发一条极简消息，max_tokens=1 降低延迟
+                endpoint = baseUrl + "chat/completions";
+                body = String.format(
+                    "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"stream\":false}",
+                    cfg.getModelName());
+            }
+
+            HttpRequest req = HttpRequest.newBuilder()
+                    .uri(URI.create(endpoint))
+                    .timeout(Duration.ofSeconds(cfg.getTimeoutSec() != null ? cfg.getTimeoutSec() : 30))
+                    .header("Content-Type", "application/json")
+                    .header("Authorization", "Bearer " + apiKey)
+                    .POST(HttpRequest.BodyPublishers.ofString(body))
+                    .build();
+
+            HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
+            long latency = System.currentTimeMillis() - start;
+
+            if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
+                String detail = isEmbedding ? "向量模型连通正常" : "对话模型连通正常";
+                log.info("[AI Test] id={} type={} latency={}ms OK", id, cfg.getModelType(), latency);
+                return java.util.Map.of("success", true, "latencyMs", latency, "message", detail);
+            } else {
+                // 截取响应体前 200 字符作为错误提示，避免泄露过多信息
+                String errBody = resp.body();
+                if (errBody != null && errBody.length() > 200) errBody = errBody.substring(0, 200) + "...";
+                log.warn("[AI Test] id={} status={} body={}", id, resp.statusCode(), errBody);
+                return java.util.Map.of("success", false, "latencyMs", latency,
+                        "message", "HTTP " + resp.statusCode() + "：" + errBody);
+            }
+        } catch (Exception e) {
+            long latency = System.currentTimeMillis() - start;
+            log.warn("[AI Test] id={} error={}", id, e.getMessage());
+            return java.util.Map.of("success", false, "latencyMs", latency,
+                    "message", "连接失败：" + e.getMessage());
+        }
+    }
+
 
     /** 注册事务提交后回调，确保 DB 变更已持久化再广播，避免下游读到旧数据 */
     private void broadcastChangeAfterCommit() {
