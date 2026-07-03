@@ -33,12 +33,17 @@ public class AiModelConfigService {
     private final AiConfigEventPublisher eventPublisher;
 
     /** 分页查询（api_key_enc 原样返回，Controller 层负责脱敏） */
-    public Page<AiModelConfigDO> page(int pageNum, int pageSize) {
+    public Page<AiModelConfigDO> page(int pageNum, int pageSize, String modelType) {
         Page<AiModelConfigDO> page = new Page<>(pageNum, pageSize);
-        return mapper.selectPage(page,
+        com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<AiModelConfigDO> wrapper =
                 new LambdaQueryWrapper<AiModelConfigDO>()
                         .isNull(AiModelConfigDO::getDeletedAt)
-                        .orderByDesc(AiModelConfigDO::getCreatedAt));
+                        .orderByDesc(AiModelConfigDO::getCreatedAt);
+        // modelType 为空时查全部，非空时按类型过滤（前端 TAB 切换时传入）
+        if (modelType != null && !modelType.isBlank()) {
+            wrapper.eq(AiModelConfigDO::getModelType, modelType);
+        }
+        return mapper.selectPage(page, wrapper);
     }
 
     /**
@@ -59,6 +64,7 @@ public class AiModelConfigService {
         do_.setMaxTokens(req.getMaxTokens());
         do_.setTimeoutSec(req.getTimeoutSec());
         do_.setIsEnabled(Boolean.TRUE.equals(req.getIsEnabled()));
+        do_.setModelType(req.getModelType());
         do_.setCreatedBy(operatorId);
         do_.setCreatedAt(LocalDateTime.now());
         do_.setUpdatedAt(LocalDateTime.now());
@@ -95,20 +101,22 @@ public class AiModelConfigService {
     }
 
     /**
-     * 将指定配置设为默认（原默认自动取消）。
-     * 使用 clearAllDefault + updateById 两步，依赖事务保证原子性。
+     * 将指定配置设为默认（原同类型默认自动取消）。
+     * CHAT 和 EMBEDDING 各自独立管理默认，互不影响。
+     * 使用 clearAllDefaultByType + updateById 两步，依赖事务保证原子性。
      */
     @Transactional
     public void setDefault(Long id) {
-        getOrThrow(id);
-        mapper.clearAllDefault();
+        AiModelConfigDO record = getOrThrow(id);
+        // 按 model_type 范围清除默认，避免误清另一类型的默认配置
+        mapper.clearAllDefaultByType(record.getModelType());
         AiModelConfigDO upd = new AiModelConfigDO();
         upd.setId(id);
         upd.setIsDefault(true);
         upd.setUpdatedAt(LocalDateTime.now());
         mapper.updateById(upd);
         broadcastChangeAfterCommit();
-        log.info("[AiModelConfig] 默认配置切换为 id={}", id);
+        log.info("[AiModelConfig] 默认配置切换为 id={} type={}", id, record.getModelType());
     }
 
     /**
@@ -129,12 +137,26 @@ public class AiModelConfigService {
     }
 
     /**
-     * 查询当前默认配置（内部接口使用，含原始加密 Key）。
+     * 查询当前默认 CHAT 配置（内部接口使用，含原始加密 Key）。
      * 返回 null 表示无激活配置。
      */
     public AiModelConfigDO getActiveConfig() {
         return mapper.selectOne(
                 new LambdaQueryWrapper<AiModelConfigDO>()
+                        .eq(AiModelConfigDO::getModelType, "CHAT")
+                        .eq(AiModelConfigDO::getIsDefault, true)
+                        .eq(AiModelConfigDO::getIsEnabled, true)
+                        .isNull(AiModelConfigDO::getDeletedAt));
+    }
+
+    /**
+     * 查询当前默认 EMBEDDING 配置（供 knowledge-service 拉取向量模型）。
+     * 返回 null 表示无激活的向量模型配置。
+     */
+    public AiModelConfigDO getActiveEmbeddingConfig() {
+        return mapper.selectOne(
+                new LambdaQueryWrapper<AiModelConfigDO>()
+                        .eq(AiModelConfigDO::getModelType, "EMBEDDING")
                         .eq(AiModelConfigDO::getIsDefault, true)
                         .eq(AiModelConfigDO::getIsEnabled, true)
                         .isNull(AiModelConfigDO::getDeletedAt));

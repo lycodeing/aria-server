@@ -61,8 +61,15 @@ sa-token:
   is-read-header: true
   is-read-cookie: false
 
+# aria 内部服务密钥（与 auth-service 的 aria.internal.secret 保持一致）
+aria:
+  auth:
+    internal-url: ${ARIA_AUTH_INTERNAL_URL:http://localhost:8083}
+  internal:
+    secret: ${INTERNAL_SECRET:change-this-in-production}
+
 knowledge:
-  # 文档摄取 MQ 配置（RabbitMQ，替换原 Redis Streams）
+  # 文档摄取 MQ 配置（RabbitMQ，替换原 Redis Streams 摄取队列）
   ingest:
     exchange: knowledge.doc.ingest
     queue: knowledge.doc.ingest.queue
@@ -76,8 +83,10 @@ knowledge:
     max-tokens: 512
     overlap-tokens: 50
   embedding:
-    model: bge-m3
-    base-url: ${EMBEDDING_BASE_URL:http://localhost:8000}
+    # model / base-url / api-key 统一在 auth-service 后台管理（AI 模型配置 → EMBEDDING 类型）
+    # 以下为运维调优参数，与模型配置无关
+    batch-size: ${EMBEDDING_BATCH_SIZE:32}
+    timeout-seconds: ${EMBEDDING_TIMEOUT:30}
   reranker:
     # 默认关闭，启用需设置 RERANKER_ENABLED=true 及对应服务地址
     enabled: ${RERANKER_ENABLED:false}

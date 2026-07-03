@@ -3,6 +3,7 @@ package com.aria.knowledge.infrastructure.embedding;
 import com.aria.knowledge.domain.model.KnowledgeChunk;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -20,7 +21,7 @@ import java.util.concurrent.ThreadLocalRandom;
 @Slf4j
 @Service
 // I-10：加 @Profile("!prod") 防止生产环境意外激活 Stub（配置缺失时随机向量不可用于生产检索）
-@org.springframework.context.annotation.Profile("!prod")
+@Profile("!prod")
 @ConditionalOnMissingBean(name = "realEmbeddingService")
 public class StubEmbeddingService implements EmbeddingService {
 

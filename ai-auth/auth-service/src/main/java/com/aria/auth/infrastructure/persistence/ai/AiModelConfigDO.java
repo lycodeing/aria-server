@@ -31,6 +31,9 @@ public class AiModelConfigDO {
     private BigDecimal temperature;
     private Integer maxTokens;
     private Integer timeoutSec;
+    /** 模型类型：CHAT=对话大模型，EMBEDDING=向量模型 */
+    private String  modelType;
+
     @com.baomidou.mybatisplus.annotation.TableField("is_default")
     private Boolean isDefault;
     @com.baomidou.mybatisplus.annotation.TableField("is_enabled")

@@ -163,6 +163,37 @@ COMMENT ON TABLE cs_auth.sys_role_data_scope IS 'ALL/DEPT_TREE/DEPT_ONLY/CUSTOM_
 CREATE OR REPLACE TRIGGER trg_cs_role_scope_updated BEFORE UPDATE ON cs_auth.sys_role_data_scope
     FOR EACH ROW EXECUTE FUNCTION cs_auth.set_updated_at();
 
+-- 11. AI 模型配置表（对话模型 + 向量模型统一管理，model_type 区分类型）
+CREATE TABLE IF NOT EXISTS cs_auth.ai_model_config (
+    id           BIGSERIAL     PRIMARY KEY,
+    name         VARCHAR(100)  NOT NULL,
+    provider     VARCHAR(50)   NOT NULL,
+    api_protocol VARCHAR(30)   NOT NULL DEFAULT 'OPENAI_COMPATIBLE',
+    model_type   VARCHAR(20)   NOT NULL DEFAULT 'CHAT'
+                 CHECK (model_type IN ('CHAT','EMBEDDING')),
+    remark       VARCHAR(255),
+    base_url     VARCHAR(500)  NOT NULL,
+    api_key_enc  VARCHAR(1000),
+    model_name   VARCHAR(100)  NOT NULL,
+    temperature  NUMERIC(4,2)  DEFAULT 0.7,
+    max_tokens   INT           DEFAULT 2048,
+    timeout_sec  INT           DEFAULT 60,
+    is_default   BOOLEAN       NOT NULL DEFAULT FALSE,
+    is_enabled   BOOLEAN       NOT NULL DEFAULT TRUE,
+    created_by   BIGINT,
+    created_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at   TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    deleted_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_ai_model_type_default
+    ON cs_auth.ai_model_config(model_type, is_default)
+    WHERE deleted_at IS NULL AND is_enabled = TRUE;
+COMMENT ON COLUMN cs_auth.ai_model_config.model_type   IS 'CHAT=对话大模型, EMBEDDING=向量模型';
+COMMENT ON COLUMN cs_auth.ai_model_config.api_key_enc  IS '加密存储，格式：PLAINTEXT:{raw} 或 AES:{base64}';
+COMMENT ON COLUMN cs_auth.ai_model_config.is_default   IS '同一 model_type 内唯一默认，setDefault 操作按 type 范围 clear';
+CREATE OR REPLACE TRIGGER trg_ai_model_updated BEFORE UPDATE ON cs_auth.ai_model_config
+    FOR EACH ROW EXECUTE FUNCTION cs_auth.set_updated_at();
+
 -- ::ANCHOR_CONVERSATION_SCHEMA::
 
 -- ============================================================
@@ -319,6 +350,11 @@ INSERT INTO cs_auth.sys_menu (id,parent_id,menu_type,menu_name,menu_key,path,com
 (202, 200, 'MENU',    '角色管理','SystemRole', '/system/role', 'system/role/index', 'lucide:shield',      2,TRUE,TRUE, NULL),
 (203, 200, 'MENU',    '菜单管理','SystemMenu', '/system/menu', 'system/menu/index', 'lucide:layout-list', 3,TRUE,TRUE, NULL),
 (205, 200, 'MENU',   'AI 模型配置','SystemAiModel','/system/ai-model','system/ai-model/index','lucide:cpu',5,TRUE,TRUE,NULL),
+-- AI 模型配置 BUTTON（parent=205，230-233 号段）
+(230, 205, 'BUTTON','新增配置',   'system:ai-model:create',      NULL,NULL,NULL,1,FALSE,FALSE,'system:ai-model:create'),
+(231, 205, 'BUTTON','编辑配置',   'system:ai-model:update',      NULL,NULL,NULL,2,FALSE,FALSE,'system:ai-model:update'),
+(232, 205, 'BUTTON','删除配置',   'system:ai-model:delete',      NULL,NULL,NULL,3,FALSE,FALSE,'system:ai-model:delete'),
+(233, 205, 'BUTTON','设为默认',   'system:ai-model:set-default', NULL,NULL,NULL,4,FALSE,FALSE,'system:ai-model:set-default'),
 (210, 201, 'BUTTON','新增用户','system:user:create',     NULL,NULL,NULL,1,FALSE,FALSE,'system:user:create'),
 (211, 201, 'BUTTON','编辑用户','system:user:update',     NULL,NULL,NULL,2,FALSE,FALSE,'system:user:update'),
 (212, 201, 'BUTTON','删除用户','system:user:delete',     NULL,NULL,NULL,3,FALSE,FALSE,'system:user:delete'),
@@ -339,8 +375,28 @@ INSERT INTO cs_auth.sys_permission (permission_key, permission_name, module) VAL
 ('system:user:create','新增用户','system'),('system:user:update','编辑用户','system'),
 ('system:user:delete','删除用户','system'),('system:user:reset-pwd','重置密码','system'),
 ('system:role:create','新增角色','system'),('system:role:update','编辑角色','system'),
-('system:role:delete','删除角色','system')
+('system:role:delete','删除角色','system'),
+-- AI 模型配置按钮权限
+('system:ai-model:create',      '新增AI模型配置', 'system'),
+('system:ai-model:update',      '编辑AI模型配置', 'system'),
+('system:ai-model:delete',      '删除AI模型配置', 'system'),
+('system:ai-model:set-default', '设为默认AI模型', 'system')
 ON CONFLICT (permission_key) DO NOTHING;
+
+-- AI 模型配置种子数据（两条默认配置：对话模型 + 向量模型）
+INSERT INTO cs_auth.ai_model_config
+    (name, provider, api_protocol, model_type, base_url, api_key_enc, model_name, temperature, max_tokens, timeout_sec, is_default, is_enabled, created_at, updated_at) VALUES
+(
+    '默认对话模型', 'Custom', 'OPENAI_COMPATIBLE', 'CHAT',
+    'http://localhost:11434/v1', 'PLAINTEXT:', 'qwen2.5:7b',
+    0.7, 2048, 60, TRUE, TRUE, NOW(), NOW()
+),
+(
+    '默认向量模型', 'Custom', 'OPENAI_COMPATIBLE', 'EMBEDDING',
+    'http://localhost:8000', 'PLAINTEXT:', 'bge-m3',
+    0.0, 0, 30, TRUE, TRUE, NOW(), NOW()
+)
+ON CONFLICT DO NOTHING;
 
 -- 角色
 INSERT INTO cs_auth.sys_role (id,role_key,role_name,is_system,status) VALUES
