@@ -61,7 +61,14 @@ mybatis-plus:
       logic-not-delete-value: "NULL"
 
 server:
-  port: 8081
+  port: 8084
+
+# Sa-Token Redis Session 配置（与 auth-service 共享同一 Redis，直接验 token session）
+sa-token:
+  token-name: Authorization
+  token-prefix: "Bearer"
+  is-read-header: true
+  is-read-cookie: false
 
 knowledge:
   # 文档摄取 MQ 配置（RabbitMQ，替换原 Redis Streams）

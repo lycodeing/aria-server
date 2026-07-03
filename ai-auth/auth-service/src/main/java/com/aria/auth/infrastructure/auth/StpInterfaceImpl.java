@@ -18,12 +18,13 @@ import java.util.List;
 public class StpInterfaceImpl implements StpInterface {
 
     private static final String PERMISSIONS_KEY = "permissions";
-    private static final String ROLES_KEY = "permissions";
+    private static final String ROLES_KEY = "roles";
 
     @Override
     @SuppressWarnings("unchecked")
     public List<String> getPermissionList(Object loginId, String loginType) {
-        Object perms = StpUtil.getExtra(loginId.toString(), PERMISSIONS_KEY);
+        // Redis Session 模式：从 token session 读取，登录时已存入
+        Object perms = StpUtil.getTokenSessionByToken(StpUtil.getTokenValue()).get(PERMISSIONS_KEY);
         if (perms instanceof List<?> list) {
             return (List<String>) list;
         }
@@ -33,7 +34,8 @@ public class StpInterfaceImpl implements StpInterface {
     @Override
     @SuppressWarnings("unchecked")
     public List<String> getRoleList(Object loginId, String loginType) {
-        Object roles = StpUtil.getExtra(loginId.toString(), ROLES_KEY);
+        // Redis Session 模式：从 token session 读取
+        Object roles = StpUtil.getTokenSessionByToken(StpUtil.getTokenValue()).get(ROLES_KEY);
         if (roles instanceof List<?> list) {
             return (List<String>) list;
         }

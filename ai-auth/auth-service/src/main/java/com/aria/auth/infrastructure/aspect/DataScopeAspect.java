@@ -72,9 +72,9 @@ public class DataScopeAspect {
 
         Long userId = StpUtil.getLoginIdAsLong();
 
-        // 从 token extra 读取角色键，避免重复查 DB（StpInterfaceImpl 已同步此约定）
+        // Redis Session 模式：从 token session 读取角色键，登录时已存入
         @SuppressWarnings("unchecked")
-        List<String> roleKeys = (List<String>) StpUtil.getExtra("roles");
+        List<String> roleKeys = (List<String>) StpUtil.getTokenSession().get("roles");
         if (roleKeys == null || roleKeys.isEmpty()) {
             return List.of();
         }

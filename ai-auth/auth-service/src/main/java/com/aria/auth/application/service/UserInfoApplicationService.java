@@ -33,7 +33,7 @@ public class UserInfoApplicationService {
     private static final String ROLE_PREFIX_KF = "kf_";
 
     /** 超级管理员首页路由 */
-    private static final String HOME_PATH_ANALYTICS = "/analytics";
+    private static final String HOME_PATH_ANALYTICS = "/dashboard/analysis";
 
     /** 客服角色首页路由 */
     private static final String HOME_PATH_CHAT = "/customerservice/chat";
@@ -59,8 +59,8 @@ public class UserInfoApplicationService {
         User user = userRepository.findById(UserId.of(userId))
                 .orElseThrow(() -> BusinessException.of(CommonErrorCode.NOT_FOUND, "用户"));
 
-        // 从 token extra 读取角色键，避免重复查 DB（登录时已存入）
-        Object extra = cn.dev33.satoken.stp.StpUtil.getExtra(String.valueOf(userId), "roles");
+        // Redis Session 模式：从 token session 读取角色键，登录时已存入
+        Object extra = cn.dev33.satoken.stp.StpUtil.getTokenSession().get("roles");
         List<String> roles = extra instanceof List<?> list
                 ? (List<String>) list
                 : roleRepository.findByUserId(userId).stream().map(Role::getRoleKey).toList();
