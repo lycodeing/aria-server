@@ -65,6 +65,7 @@ public class DitManageAppService {
         domainRepository.evict(domain.getCode());
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public void deleteDomain(Long id) {
         DomainDO domainDO = getDomain(id);
         domainMapper.deleteById(id);
