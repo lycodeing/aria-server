@@ -99,7 +99,7 @@ public class ChatAppService {
         }
 
         // 有 domainCode → DIT Pipeline（直接返回 Flux<ChatEvent>，含语义事件）
-        if (org.apache.commons.lang3.StringUtils.isNoneBlank(domainCode)) {
+        if (StringUtils.isNotBlank(domainCode)) {
             return streamChatWithDomain(sessionId, message, domainCode, java.util.Map.of());
         }
 
@@ -244,17 +244,23 @@ public class ChatAppService {
 
     /**
      * 领域感知流式对话（DIT Pipeline），返回 {@link ChatEvent} 流含语义事件类型。
+     *
+     * <p>整个 Route 阶段（DB 查询 + Redis + LLM 意图识别 + DISCOVER HTTP 调用）均为阻塞操作，
+     * 通过 {@code subscribeOn(Schedulers.boundedElastic())} 整体切换到 IO 线程池，
+     * 避免在 reactor-http-nio 线程上调用阻塞操作导致死锁。
      */
     public Flux<ChatEvent> streamChatWithDomain(String sessionId, String userMessage,
                                                  String domainCode,
                                                  java.util.Map<String, Object> sessionCtx) {
-        historyRepository.append(sessionId, ROLE_USER, userMessage);
-
-        List<ChatMessage> recentHistory = toAiPrompt(historyRepository.findAll(sessionId));
-        RouteResult route = ditPipeline.route(sessionId, userMessage, domainCode,
-                recentHistory, sessionCtx);
-
-        return buildDomainEventStream(sessionId, userMessage, route, sessionCtx);
+        return Mono.fromCallable(() -> {
+                    // 以下均为阻塞操作，必须在 boundedElastic 线程上执行
+                    historyRepository.append(sessionId, ROLE_USER, userMessage);
+                    List<ChatMessage> recentHistory = toAiPrompt(historyRepository.findAll(sessionId));
+                    return ditPipeline.route(sessionId, userMessage, domainCode,
+                            recentHistory, sessionCtx);
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(route -> buildDomainEventStream(sessionId, userMessage, route, sessionCtx));
     }
 
     /**
@@ -321,22 +327,17 @@ public class ChatAppService {
         }
         if (route instanceof RouteResult.PendingResult r) {
             historyRepository.append(sessionId, ROLE_ASSISTANT, r.promptMessage());
-            // 有候选项 → 发 candidates 事件；无候选项 → 发 slot_ask 事件
+            // 有候选项 → 只发 candidates 语义事件；无候选项 → 只发 slot_ask 语义事件
+            // 前端从语义事件的 data 字段读取 promptMessage，不额外发 ChatEvent.data() 避免重复渲染
             if (r.candidates() != null && !r.candidates().isEmpty()) {
                 try {
                     String candidatesJson = objectMapper.writeValueAsString(r.candidates());
-                    return Flux.just(
-                            ChatEvent.candidates(candidatesJson),
-                            ChatEvent.data(r.promptMessage())
-                    );
+                    return Flux.just(ChatEvent.candidates(candidatesJson));
                 } catch (Exception e) {
                     log.warn("[DIT] candidates 序列化失败 sessionId={}", sessionId, e);
                 }
             }
-            return Flux.just(
-                    ChatEvent.slotAsk(r.promptMessage()),
-                    ChatEvent.data(r.promptMessage())
-            );
+            return Flux.just(ChatEvent.slotAsk(r.promptMessage()));
         }
         if (route instanceof RouteResult.ExecuteResult r) {
             // 阻塞操作（工具调用 + RAG 检索）切换到 boundedElastic，避免在 reactor-http-nio 线程崩溃

@@ -191,7 +191,7 @@ public class KnowledgeDocController {
         docQuery.setPage(0);
         docQuery.setSize(1);
         long docCount = ingestAppService.listDocs(docQuery).total();
-        var stats = queryAppService.getKbStats(kbId, docCount);
+        var stats = queryAppService.getKbStats(kbId);
         KbStatsVO vo = new KbStatsVO();
         vo.setKbId(kbId);
         vo.setDocCount(docCount);

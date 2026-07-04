@@ -60,14 +60,11 @@ public class KnowledgeDocQueryAppService {
     /**
      * 查询指定知识库的 chunk/token 汇总统计。
      *
-     * @param kbId     知识库 ID
-     * @param docCount 已发布文档数（由调用方传入，避免此服务依赖 ingest 服务的分页查询）
-     * @return 知识库级 chunk 汇总统计值对象
+     * @param kbId 知识库 ID
+     * @return 知识库级 chunk 汇总统计值对象（含 chunkCount 和 tokenSum）
      */
-    public KbChunkStats getKbStats(String kbId, long docCount) {
-        KbChunkStats stats = chunkRepository.countStatsByKbId(kbId);
-        // 返回含 docCount 的完整统计（docCount 由 AppService 层聚合，不在 Repository 层耦合）
-        return new KbChunkStats(kbId, stats.chunkCount(), stats.tokenSum());
+    public KbChunkStats getKbStats(String kbId) {
+        return chunkRepository.countStatsByKbId(kbId);
     }
 
     /**

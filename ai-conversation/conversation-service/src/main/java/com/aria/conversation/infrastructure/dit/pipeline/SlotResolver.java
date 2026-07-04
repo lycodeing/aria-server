@@ -133,7 +133,7 @@ public class SlotResolver {
                             return SlotResolveResult.discovered(slot.slotName(), candidates,
                                     buildDiscoveredPrompt(candidates, slot), resolved);
                         }
-                        // DISCOVER 返回空，继续下一策略（ASK_USER）
+                        // DISCOVER 返回空列表：挂起为 MISSING 状态，询问用户直接输入
                         PendingSlotState newPending = new PendingSlotState(
                                 sessionId, domainCode, intentConfig.code(),
                                 slot.slotName(), "MISSING",
