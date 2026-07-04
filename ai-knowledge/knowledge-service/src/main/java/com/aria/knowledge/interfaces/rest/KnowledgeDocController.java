@@ -5,10 +5,12 @@ import com.aria.common.web.response.R;
 import com.aria.knowledge.application.query.DocPageQuery;
 import com.aria.knowledge.application.service.DocIngestAppService;
 import com.aria.knowledge.application.service.KnowledgeSearchAppService;
-import com.aria.knowledge.domain.repository.KnowledgeDocRepository;
+import com.aria.knowledge.domain.model.DocChunkStats;
 import com.aria.knowledge.domain.model.DocStatus;
-import com.aria.knowledge.domain.model.KnowledgeDoc;
+import com.aria.knowledge.domain.model.KbChunkStats;
 import com.aria.knowledge.domain.model.KnowledgeChunk;
+import com.aria.knowledge.domain.model.KnowledgeDoc;
+import com.aria.knowledge.domain.repository.KnowledgeDocRepository;
 import com.aria.knowledge.domain.repository.KnowledgeChunkRepository;
 import com.aria.knowledge.infrastructure.storage.MinioStorageService;
 import com.aria.knowledge.interfaces.rest.vo.DocListVO;
@@ -211,14 +213,13 @@ public class KnowledgeDocController {
     @Operation(summary = "查询文档 chunk 统计（总数、各类型数量、总 token）")
     @GetMapping("/{docId}/stats")
     public R<DocStatsVO> stats(@PathVariable("docId") String docId) {
-        // 使用 DB 聚合查询，避免全量加载 chunk 到内存后 stream 统计
-        java.util.Map<String, Long> statsMap = chunkRepository.countStatsByDocId(docId);
+        DocChunkStats stats = chunkRepository.countStatsByDocId(docId);
         DocStatsVO vo = new DocStatsVO();
-        vo.setTotalChunks((int) (long) statsMap.getOrDefault("totalChunks", 0L));
-        vo.setTotalTokens((int) (long) statsMap.getOrDefault("totalTokens", 0L));
-        vo.setTextChunks((int) (long) statsMap.getOrDefault("textChunks", 0L));
-        vo.setTableChunks((int) (long) statsMap.getOrDefault("tableChunks", 0L));
-        vo.setImageChunks((int) (long) statsMap.getOrDefault("imageChunks", 0L));
+        vo.setTotalChunks((int) stats.totalChunks());
+        vo.setTotalTokens((int) stats.totalTokens());
+        vo.setTextChunks((int) stats.textChunks());
+        vo.setTableChunks((int) stats.tableChunks());
+        vo.setImageChunks((int) stats.imageChunks());
         return R.ok(vo);
     }
 
@@ -258,20 +259,33 @@ public class KnowledgeDocController {
 
     @Operation(summary = "查询指定知识库的 chunk/token 汇总统计")
     @GetMapping("/kb-stats")
-    public R<java.util.Map<String, Object>> kbStats(@RequestParam("kbId") String kbId) {
-        var docQuery = new com.aria.knowledge.application.query.DocPageQuery();
+    public R<KbStatsVO> kbStats(@RequestParam("kbId") String kbId) {
+        var docQuery = new DocPageQuery();
         docQuery.setKbId(kbId);
         docQuery.setStatus(DocStatus.PUBLISHED);
         docQuery.setPage(0);
         docQuery.setSize(1);
         long docCount = ingestAppService.listDocs(docQuery).total();
-        var chunkStats = chunkRepository.countStatsByKbId(kbId);
-        return R.ok(java.util.Map.of(
-            "kbId",       kbId,
-            "docCount",   docCount,
-            "chunkCount", chunkStats.get("chunkCount"),
-            "tokenSum",   chunkStats.get("tokenSum")
-        ));
+        KbChunkStats stats = chunkRepository.countStatsByKbId(kbId);
+        KbStatsVO vo = new KbStatsVO();
+        vo.setKbId(kbId);
+        vo.setDocCount(docCount);
+        vo.setChunkCount(stats.chunkCount());
+        vo.setTokenSum(stats.tokenSum());
+        return R.ok(vo);
+    }
+
+    /** 知识库汇总统计 VO */
+    @Data
+    public static class KbStatsVO {
+        /** 知识库 ID */
+        private String kbId;
+        /** 已发布文档数 */
+        private long docCount;
+        /** chunk 总数 */
+        private long chunkCount;
+        /** token 总量 */
+        private long tokenSum;
     }
 
     @Data public static class BatchOfflineRequest {
