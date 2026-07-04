@@ -45,8 +45,10 @@ public class ChatAppService {
     private static final String AGENT_HINT_MSG = "（消息已发送给人工客服）";
     private static final String OUT_OF_SCOPE_REPLY =
             "抱歉，我是专业的客服助手，只能回答业务相关的问题，无法帮您解答这个问题。";
-    private static final String TRANSFER_AUTO_REASON = "系统识别到用户需要人工服务";
-    private static final String TRANSFER_DEFAULT_TAG = "咨询";
+    private static final String TRANSFER_AUTO_REASON  = "系统识别到用户需要人工服务";
+    private static final String TRANSFER_DEFAULT_TAG  = "咨询";
+    /** FAQ 路径转人工时的 intentCode 占位符，区别于 DIT 路径使用真实意图 code */
+    private static final String FAQ_TRANSFER_INTENT_CODE = "faq_transfer";
 
     private static final String BASE_SYSTEM_PROMPT = """
             你是一名专业的智能客服助手。
@@ -140,22 +142,33 @@ public class ChatAppService {
 
     /**
      * 通用 FAQ 流程：RAG + 意图路由 + LLM，包含 sources event。
-     * 返回 {@link ChatEvent} 流，有知识库命中时先发 sources 再发 AI token。
+     * 返回 {@link ChatEvent} 流，知识库命中时先发 sources 再发 AI token。
+     *
+     * <p>使用 {@code switchOnFirst} 延迟 sources 发射：只有当 {@code streamChatEvents}
+     * 第一个事件是普通数据 token 时才前置 sources；若第一个事件是 transfer/error 语义事件，
+     * 则直接透传，避免无意义的 sources 在转人工场景中先行发出造成前端状态闪烁。
      */
     private Flux<ChatEvent> streamFaq(String sessionId, String message) {
         List<KnowledgeSearchResult.Hit> hits = searchHits(message);
-        // streamChatEvents 已返回 Flux<ChatEvent>，直接使用，不再 .map(ChatEvent::data)
         Flux<ChatEvent> aiEvents = streamChatEvents(sessionId, message, hits);
 
         if (hits.isEmpty()) {
             return aiEvents;
         }
-        // transfer 路径会在 aiEvents 里发出 ChatEvent.transfer，sources 只在 FAQ 路径有效
-        // 用 switchIfEmpty 兜底避免 sources 后接空流
-        return Flux.concat(
-                Flux.just(ChatEvent.sources(buildSourcesJson(hits))),
-                aiEvents
-        );
+
+        ChatEvent sourcesEvent = ChatEvent.sources(buildSourcesJson(hits));
+        // switchOnFirst：窥探第一个事件，语义事件（transfer/error）不需要 sources 前缀
+        return aiEvents.switchOnFirst((signal, flux) -> {
+            if (signal.hasValue()) {
+                ChatEvent first = signal.get();
+                String type = first != null ? first.eventType() : null;
+                if (ChatEvent.EventType.TRANSFER.equals(type)
+                        || ChatEvent.EventType.ERROR.equals(type)) {
+                    return flux; // 转人工/错误路径跳过 sources
+                }
+            }
+            return Flux.concat(Flux.just(sourcesEvent), flux);
+        });
     }
 
     /**
@@ -218,7 +231,7 @@ public class ChatAppService {
                     : "好的，我已为您转接人工客服，请稍候。";
             historyRepository.append(sessionId, ROLE_ASSISTANT, reply);
             try {
-                String transferJson = objectMapper.writeValueAsString(new TransferPayload("faq_transfer", reply));
+                String transferJson = objectMapper.writeValueAsString(new TransferPayload(FAQ_TRANSFER_INTENT_CODE, reply));
                 return Flux.just(ChatEvent.transfer(transferJson));
             } catch (JsonProcessingException e) {
                 log.warn("[Chat] FAQ transfer payload 序列化失败 sessionId={}", sessionId, e);
@@ -254,12 +267,36 @@ public class ChatAppService {
     }
 
     /**
-     * 流式对话（自动检索），内部调用 {@link #searchHits} 后委托带 hits 的重载。
+     * 流式对话（自动检索），内部委托 {@link #streamChatEvents}。
+     *
+     * <p><b>降级策略</b>：当路由结果为转人工时，{@code streamChatEvents} 发出
+     * {@link ChatEvent#transfer} 语义事件，此方法会从 payload 中提取 message 字段
+     * 作为文字回复返回，保证调用方不会收到空 Flux。其他语义事件（sources/error 等）被丢弃。
+     *
+     * @deprecated 新代码应直接调用 {@link #stream}，可获取完整语义事件流。
+     *             本方法仅保留用于非 SSE 场景（如内部调用）的向后兼容。
      */
+    @Deprecated
     public Flux<String> streamChat(String sessionId, String userMessage) {
         return streamChatEvents(sessionId, userMessage, searchHits(userMessage))
-                .filter(e -> e.eventType() == null) // 只取普通文字 token，丢弃语义事件
-                .map(ChatEvent::data);
+                .flatMap(e -> {
+                    if (e.eventType() == null) {
+                        // 普通 AI 文字 token
+                        return Flux.just(e.data());
+                    }
+                    if (ChatEvent.EventType.TRANSFER.equals(e.eventType())) {
+                        // transfer 场景：从 payload 提取 message 作为降级文字，避免返回空 Flux
+                        try {
+                            TransferPayload payload = objectMapper.readValue(e.data(), TransferPayload.class);
+                            return Flux.just(payload.message() != null ? payload.message() : e.data());
+                        } catch (Exception ex) {
+                            log.warn("[Chat] transfer payload 解析失败，降级返回原始 data", ex);
+                            return Flux.just(e.data());
+                        }
+                    }
+                    // 其他语义事件（sources/error 等）在此上下文无意义，跳过
+                    return Flux.empty();
+                });
     }
 
     /**

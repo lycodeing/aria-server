@@ -157,6 +157,7 @@ public class DitManageAppService {
         return toolMapper.selectList(null);
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public ToolDO createTool(ToolDO tool) {
         toolMapper.insert(tool);
         log.info("创建工具: id={}", tool.getId());
