@@ -70,11 +70,13 @@ public class DitManageAppService {
     }
 
     public void updateIntent(IntentDO intent) {
-        intentMapper.updateById(intent);
+        if (intentMapper.updateById(intent) == 0)
+            throw new com.aria.common.core.exception.BusinessException(4004, "意图不存在: " + intent.getId());
         evictDomainByIntentId(intent.getId());
     }
 
     public void deleteIntent(Long intentId) {
+        evictDomainByIntentId(intentId);  // 先失效缓存，此时记录仍在
         intentMapper.deleteById(intentId);
         // 级联删除槽位和绑定
         slotMapper.delete(new LambdaQueryWrapper<IntentSlotDO>().eq(IntentSlotDO::getIntentId, intentId));
@@ -100,7 +102,9 @@ public class DitManageAppService {
 
     public void deleteSlot(Long slotId) {
         IntentSlotDO s = slotMapper.selectById(slotId);
-        if (s != null) { slotMapper.deleteById(slotId); evictDomainByIntentId(s.getIntentId()); }
+        if (s == null) throw new com.aria.common.core.exception.BusinessException(4004, "槽位不存在: " + slotId);
+        slotMapper.deleteById(slotId);
+        evictDomainByIntentId(s.getIntentId());
     }
 
     // ---- 工具 ----
@@ -136,7 +140,9 @@ public class DitManageAppService {
 
     public void deleteBinding(Long bindingId) {
         IntentToolDO b = intentToolMapper.selectById(bindingId);
-        if (b != null) { intentToolMapper.deleteById(bindingId); evictDomainByIntentId(b.getIntentId()); }
+        if (b == null) throw new com.aria.common.core.exception.BusinessException(4004, "绑定不存在: " + bindingId);
+        intentToolMapper.deleteById(bindingId);
+        evictDomainByIntentId(b.getIntentId());
     }
 
     // ---- 内部工具 ----
