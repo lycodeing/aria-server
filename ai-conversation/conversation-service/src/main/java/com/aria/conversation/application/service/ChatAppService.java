@@ -8,6 +8,8 @@ import com.aria.conversation.infrastructure.ai.IntentResult;
 import com.aria.conversation.infrastructure.ai.IntentType;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
+import com.aria.conversation.infrastructure.dit.pipeline.ToolCallResult;
+import com.aria.conversation.infrastructure.dit.pipeline.ToolExecutor;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
@@ -47,19 +49,22 @@ public class ChatAppService {
     private final IntentClassifier intentClassifier;
     private final SessionQueueService sessionQueueService;
     private final DitPipeline ditPipeline;
+    private final ToolExecutor toolExecutor;
 
     public ChatAppService(DynamicAiClient aiClient,
                           ConversationHistoryRepository historyRepository,
                           KnowledgeClient knowledgeClient,
                           IntentClassifier intentClassifier,
                           SessionQueueService sessionQueueService,
-                          DitPipeline ditPipeline) {
+                          DitPipeline ditPipeline,
+                          ToolExecutor toolExecutor) {
         this.aiClient            = aiClient;
         this.historyRepository   = historyRepository;
         this.knowledgeClient     = knowledgeClient;
         this.intentClassifier    = intentClassifier;
         this.sessionQueueService = sessionQueueService;
         this.ditPipeline         = ditPipeline;
+        this.toolExecutor        = toolExecutor;
     }
 
     // -------------------------------------------------------
@@ -168,53 +173,7 @@ public class ChatAppService {
         RouteResult route = ditPipeline.route(sessionId, userMessage, domainCode,
                 recentHistory, sessionCtx);
 
-        return switch (route) {
-            case RouteResult.TransferResult r -> {
-                try {
-                    sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
-                } catch (Exception e) {
-                    log.warn("[DIT] 自动转人工失败 sessionId={}", sessionId, e);
-                }
-                historyRepository.append(sessionId, ROLE_ASSISTANT, r.replyMessage());
-                yield Flux.just(r.replyMessage());
-            }
-            case RouteResult.PendingResult r -> {
-                historyRepository.append(sessionId, ROLE_ASSISTANT, r.promptMessage());
-                yield Flux.just(r.promptMessage());
-            }
-            case RouteResult.ExecuteResult r -> {
-                // P3 实现工具调用；当前直接走 RAG + LLM
-                List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
-                String systemPrompt = buildSystemPromptWithAddon(hits, r.systemPromptAddon());
-                List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
-                StringBuilder assistantReply = new StringBuilder();
-                yield aiClient.streamChat(aiPrompt, systemPrompt)
-                        .map(content -> { assistantReply.append(content); return content; })
-                        .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
-                        .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"))
-                        .doFinally(signal -> {
-                            if (!assistantReply.isEmpty()) {
-                                historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
-                            }
-                        });
-            }
-            case RouteResult.FallbackResult r -> {
-                // 降级：走通用 FAQ 流程，可携带领域 system prompt addon
-                List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
-                String systemPrompt = buildSystemPromptWithAddon(hits, r.systemPromptAddon());
-                List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
-                StringBuilder assistantReply = new StringBuilder();
-                yield aiClient.streamChat(aiPrompt, systemPrompt)
-                        .map(content -> { assistantReply.append(content); return content; })
-                        .doOnError(e -> log.warn("[AI] 流式对话失败（降级）sessionId={}", sessionId, e))
-                        .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"))
-                        .doFinally(signal -> {
-                            if (!assistantReply.isEmpty()) {
-                                historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
-                            }
-                        });
-            }
-        };
+        return buildDomainStream(sessionId, userMessage, route, sessionCtx);
     }
 
     /**
@@ -262,8 +221,68 @@ public class ChatAppService {
     // -------------------------------------------------------
 
     /**
-     * 将历史消息转换为 AI 接口所需的 {@link ChatMessage} 列表，剥离 seq 和 timestamp 字段。
+     * DIT 路由结果处理（Java 17 instanceof 链，避免 Java 21 sealed switch 预览特性）。
      */
+    private Flux<String> buildDomainStream(String sessionId, String userMessage,
+                                            RouteResult route,
+                                            java.util.Map<String, Object> sessionCtx) {
+        if (route instanceof RouteResult.TransferResult r) {
+            try {
+                sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
+            } catch (Exception e) {
+                log.warn("[DIT] 自动转人工失败 sessionId={}", sessionId, e);
+            }
+            historyRepository.append(sessionId, ROLE_ASSISTANT, r.replyMessage());
+            return Flux.just(r.replyMessage());
+        }
+        if (route instanceof RouteResult.PendingResult r) {
+            historyRepository.append(sessionId, ROLE_ASSISTANT, r.promptMessage());
+            return Flux.just(r.promptMessage());
+        }
+        if (route instanceof RouteResult.ExecuteResult r) {
+            // Step 4: 执行 REQUIRED 工具，结果注入 context
+            List<ToolCallResult> toolResults = toolExecutor.executeRequired(
+                    r.intentConfig(), r.resolvedSlots(), sessionCtx);
+            String toolContext = buildToolContext(toolResults);
+
+            // Step 5: LLM 流式回答（携带工具结果 + 领域 system prompt）
+            List<KnowledgeSearchResult.Hit> hits = r.intentConfig().skipRag()
+                    ? List.of() : knowledgeClient.search(userMessage);
+            String systemPrompt = buildSystemPromptWithToolContext(
+                    hits, r.systemPromptAddon(), toolContext);
+            List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
+            StringBuilder assistantReply = new StringBuilder();
+            return aiClient.streamChat(aiPrompt, systemPrompt)
+                    .map(content -> { assistantReply.append(content); return content; })
+                    .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
+                    .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"))
+                    .doFinally(signal -> {
+                        if (!assistantReply.isEmpty()) {
+                            historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
+                        }
+                    });
+        }
+        // FallbackResult 或未知类型 → 降级通用流程
+        String addon = route instanceof RouteResult.FallbackResult fr ? fr.systemPromptAddon() : null;
+        return buildAiStream(sessionId, userMessage, addon);
+    }
+
+    /** 构建 RAG + LLM 流式回答（带领域 system prompt addon）。 */
+    private Flux<String> buildAiStream(String sessionId, String userMessage, String systemPromptAddon) {
+        List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
+        String systemPrompt = buildSystemPromptWithAddon(hits, systemPromptAddon);
+        List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
+        StringBuilder assistantReply = new StringBuilder();
+        return aiClient.streamChat(aiPrompt, systemPrompt)
+                .map(content -> { assistantReply.append(content); return content; })
+                .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
+                .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"))
+                .doFinally(signal -> {
+                    if (!assistantReply.isEmpty()) {
+                        historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
+                    }
+                });
+    }
     private List<ChatMessage> toAiPrompt(List<ConversationMessage> history) {
         return history.stream()
                 .map(m -> new ChatMessage(m.role(), m.content()))

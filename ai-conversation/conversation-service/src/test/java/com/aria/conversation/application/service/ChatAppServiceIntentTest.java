@@ -4,11 +4,12 @@ import com.aria.conversation.infrastructure.ai.DynamicAiClient;
 import com.aria.conversation.infrastructure.ai.IntentClassifier;
 import com.aria.conversation.infrastructure.ai.IntentResult;
 import com.aria.conversation.infrastructure.ai.IntentType;
+import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
+import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
+import com.aria.conversation.infrastructure.dit.pipeline.ToolExecutor;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
-import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
-import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -33,13 +34,14 @@ class ChatAppServiceIntentTest {
     @Mock private IntentClassifier intentClassifier;
     @Mock private SessionQueueService sessionQueueService;
     @Mock private DitPipeline ditPipeline;
+    @Mock private ToolExecutor toolExecutor;
 
     private ChatAppService service;
 
     @BeforeEach
     void setUp() {
         service = new ChatAppService(aiClient, historyRepository, knowledgeClient,
-                intentClassifier, sessionQueueService, ditPipeline);
+                intentClassifier, sessionQueueService, ditPipeline, toolExecutor);
         // lenient: 转人工/拒答路径不走 findAll，允许该 stub 未被使用
         lenient().when(historyRepository.findAll(anyString())).thenReturn(List.of());
     }
@@ -119,7 +121,6 @@ class ChatAppServiceIntentTest {
         StepVerifier.create(result)
                 .expectNext("你好！")
                 .verifyComplete();
-        // CHITCHAT 跳过 RAG，systemPrompt 不应含【参考资料】
         verify(aiClient).streamChat(anyList(), argThat(prompt -> !prompt.contains("【参考资料】")));
     }
 
@@ -149,7 +150,6 @@ class ChatAppServiceIntentTest {
 
         Flux<String> result = service.streamChat("s7", "转人工", List.of());
 
-        // 即使 enqueue 失败，依然返回提示文本，不抛异常
         StepVerifier.create(result)
                 .expectNextMatches(msg -> msg.contains("人工客服"))
                 .verifyComplete();
