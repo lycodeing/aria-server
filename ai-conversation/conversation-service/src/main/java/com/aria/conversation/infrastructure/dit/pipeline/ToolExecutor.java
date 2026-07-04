@@ -132,7 +132,8 @@ public class ToolExecutor {
                 // 响应摘要：截断至 2000 字符
                 String resp = result.getResponse();
                 logEntry.setResponse(resp != null && resp.length() > 2000 ? resp.substring(0, 2000) : resp);
-                logEntry.setStatus(result.getStatus());
+                // ToolStatus 枚举序列化为字符串存入日志表
+                logEntry.setStatus(result.getStatus().name());
                 logEntry.setHttpStatus(result.getHttpStatus());
                 logEntry.setDurationMs((int) result.getDurationMs());
                 logEntry.setErrorMsg(result.getErrorMsg());

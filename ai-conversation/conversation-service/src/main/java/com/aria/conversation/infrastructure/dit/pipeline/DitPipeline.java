@@ -8,6 +8,7 @@ import com.aria.conversation.infrastructure.dit.repository.PendingSlotRepository
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -78,15 +79,13 @@ public class DitPipeline {
             return RouteResult.faqFallback(domain.systemPromptAddon());
         }
 
-        // 自动转人工
+        // 自动转人工：优先使用意图配置的 fallback_reply，兜底默认文案
         if (intentConfig.autoTransfer()) {
             log.info("[DIT] 意图需要转人工 sessionId={} intent={}", sessionId, intentConfig.code());
-            return RouteResult.transfer(
-                    intentConfig.code().contains("complaint")
-                    ? "非常抱歉给您带来了不好的体验，已为您转接人工客服，请稍候。"
-                    : "好的，已为您转接人工客服，请稍候。",
-                    intentConfig.code()
-            );
+            String transferReply = (intentConfig.fallbackReply() != null && StringUtils.isNotBlank(intentConfig.fallbackReply()))
+                    ? intentConfig.fallbackReply()
+                    : "好的，已为您转接人工客服，请稍候。";
+            return RouteResult.transfer(transferReply, intentConfig.code());
         }
 
         // Step 3: 槽位解析（传入 domainCode，保证 PendingSlotState 中领域信息正确）

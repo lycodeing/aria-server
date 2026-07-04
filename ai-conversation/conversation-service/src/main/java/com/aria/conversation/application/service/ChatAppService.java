@@ -1,5 +1,8 @@
 package com.aria.conversation.application.service;
 
+import com.aria.conversation.application.service.payload.ToolCallPayload;
+import com.aria.conversation.application.service.payload.ToolDonePayload;
+import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
@@ -323,7 +326,15 @@ public class ChatAppService {
                 log.warn("[DIT] 自动转人工失败 sessionId={}", sessionId, e);
             }
             historyRepository.append(sessionId, ROLE_ASSISTANT, r.replyMessage());
-            return Flux.just(ChatEvent.data(r.replyMessage()));
+            try {
+                // 合并提示文字与语义信号为单一 transfer 事件，前端一次处理即可
+                String transferJson = objectMapper.writeValueAsString(
+                        new TransferPayload(r.reason(), r.replyMessage()));
+                return Flux.just(ChatEvent.transfer(transferJson));
+            } catch (JsonProcessingException e) {
+                log.warn("[DIT] transfer payload 序列化失败 sessionId={}", sessionId, e);
+                return Flux.just(ChatEvent.data(r.replyMessage())); // 降级：只发文字
+            }
         }
         if (route instanceof RouteResult.PendingResult r) {
             historyRepository.append(sessionId, ROLE_ASSISTANT, r.promptMessage());
@@ -356,16 +367,14 @@ public class ChatAppService {
                         List<ToolCallResult> toolResults = (List<ToolCallResult>) arr[0];
                         String systemPrompt = (String) arr[1];
 
-                        // 构造工具调用状态事件
+                        // 构造工具调用状态事件（使用 Payload 记录类，消除 Map.of() 魔法值）
                         List<ChatEvent> toolEvents = new java.util.ArrayList<>();
                         for (ToolCallResult tr : toolResults) {
                             try {
                                 toolEvents.add(ChatEvent.toolCall(objectMapper.writeValueAsString(
-                                        java.util.Map.of("tool", tr.getToolCode(), "status", "running"))));
+                                        ToolCallPayload.running(tr.getToolCode()))));
                                 toolEvents.add(ChatEvent.toolDone(objectMapper.writeValueAsString(
-                                        java.util.Map.of("tool", tr.getToolCode(),
-                                                "status", tr.getStatus(),
-                                                "duration_ms", tr.getDurationMs()))));
+                                        ToolDonePayload.from(tr))));
                             } catch (Exception e) {
                                 log.warn("[DIT] 工具事件序列化失败 tool={}", tr.getToolCode(), e);
                             }
