@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * 工具执行编排器。
@@ -116,29 +117,31 @@ public class ToolExecutor {
         return defs;
     }
 
-    /** 异步写入工具调用日志（失败不影响主流程）。 */
+    /** 真正异步写入工具调用日志，不阻塞工具执行主线程。 */
     private void writeLog(String sessionId, String intentCode, String toolCode,
                           Map<String, Object> params, ToolCallResult result) {
-        try {
-            ToolCallLogDO log_ = new ToolCallLogDO();
-            log_.setSessionId(sessionId);
-            log_.setIntentCode(intentCode);
-            log_.setToolCode(toolCode);
-            // 脱敏：去掉 token、password 等敏感字段
-            String paramsJson = objectMapper.writeValueAsString(sanitize(params));
-            log_.setParams(paramsJson);
-            // 响应摘要：截断至 2000 字符
-            String resp = result.getResponse();
-            log_.setResponse(resp != null && resp.length() > 2000 ? resp.substring(0, 2000) : resp);
-            log_.setStatus(result.getStatus());
-            log_.setHttpStatus(result.getHttpStatus());
-            log_.setDurationMs((int) result.getDurationMs());
-            log_.setErrorMsg(result.getErrorMsg());
-            log_.setCreatedAt(LocalDateTime.now());
-            logMapper.insert(log_);
-        } catch (Exception e) {
-            log.warn("[DIT] 工具调用日志写入失败 tool={}", toolCode, e);
-        }
+        CompletableFuture.runAsync(() -> {
+            try {
+                ToolCallLogDO logEntry = new ToolCallLogDO();
+                logEntry.setSessionId(sessionId);
+                logEntry.setIntentCode(intentCode);
+                logEntry.setToolCode(toolCode);
+                // 脱敏：去掉 token、password 等敏感字段
+                String paramsJson = objectMapper.writeValueAsString(sanitize(params));
+                logEntry.setParams(paramsJson);
+                // 响应摘要：截断至 2000 字符
+                String resp = result.getResponse();
+                logEntry.setResponse(resp != null && resp.length() > 2000 ? resp.substring(0, 2000) : resp);
+                logEntry.setStatus(result.getStatus());
+                logEntry.setHttpStatus(result.getHttpStatus());
+                logEntry.setDurationMs((int) result.getDurationMs());
+                logEntry.setErrorMsg(result.getErrorMsg());
+                logEntry.setCreatedAt(LocalDateTime.now());
+                logMapper.insert(logEntry);
+            } catch (Exception e) {
+                log.warn("[DIT] 工具调用日志写入失败 tool={}", toolCode, e);
+            }
+        });
     }
 
     /** 脱敏：移除 params 中可能含有的 token/password/secret 字段。 */

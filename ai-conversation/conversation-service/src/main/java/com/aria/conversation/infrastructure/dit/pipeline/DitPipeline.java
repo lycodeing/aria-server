@@ -89,9 +89,9 @@ public class DitPipeline {
             );
         }
 
-        // Step 3: 槽位解析
+        // Step 3: 槽位解析（传入 domainCode，保证 PendingSlotState 中领域信息正确）
         SlotResolveResult slotResult = slotResolver.resolve(
-                sessionId, userMessage, recentHistory, intentConfig, sessionCtx);
+                sessionId, domainCode, userMessage, recentHistory, intentConfig, sessionCtx);
 
         if (slotResult.isGiveUp()) {
             return RouteResult.transfer(slotResult.promptMessage(), "slot_give_up");
@@ -136,6 +136,7 @@ public class DitPipeline {
                              Long knowledgeBaseId) implements RouteResult {}
 
         static RouteResult fallback(String reason) {
+            // reason 记录在调用方日志中，此处仅返回兜底结果
             return new FallbackResult(null);
         }
 

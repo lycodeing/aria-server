@@ -4,40 +4,39 @@ import com.aria.common.core.page.PageResult;
 import com.aria.common.web.response.R;
 import com.aria.knowledge.application.query.DocPageQuery;
 import com.aria.knowledge.application.service.DocIngestAppService;
+import com.aria.knowledge.application.service.KnowledgeDocQueryAppService;
 import com.aria.knowledge.application.service.KnowledgeSearchAppService;
-import com.aria.knowledge.domain.model.DocChunkStats;
 import com.aria.knowledge.domain.model.DocStatus;
-import com.aria.knowledge.domain.model.KbChunkStats;
 import com.aria.knowledge.domain.model.KnowledgeChunk;
 import com.aria.knowledge.domain.model.KnowledgeDoc;
-import com.aria.knowledge.domain.repository.KnowledgeDocRepository;
-import com.aria.knowledge.domain.repository.KnowledgeChunkRepository;
-import com.aria.knowledge.infrastructure.storage.MinioStorageService;
 import com.aria.knowledge.interfaces.rest.vo.DocListVO;
 import com.aria.knowledge.interfaces.rest.vo.DocStatusVO;
 import com.aria.knowledge.interfaces.rest.vo.DocUploadVO;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.servlet.http.HttpServletResponse;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Min;
-import jakarta.validation.constraints.Max;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.IOException;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 知识库文档管理接口。
- * 所有响应统一使用 R&lt;T&gt; 包装，与平台其他服务保持一致。
  *
- * @author aria
+ * <p>DDD 分层职责：Interface 层只做入参格式校验和 VO 转换，
+ * 所有业务逻辑委托给 Application 层（{@link DocIngestAppService}、
+ * {@link KnowledgeDocQueryAppService}、{@link KnowledgeSearchAppService}）。
  */
 @RestController
 @RequestMapping("/api/knowledge/docs")
@@ -45,21 +44,21 @@ import java.util.List;
 @Tag(name = "文档管理", description = "知识库文档上传、列表查询、审核、下线")
 public class KnowledgeDocController {
 
-    private final DocIngestAppService      ingestAppService;
-    private final KnowledgeChunkRepository chunkRepository;
-    private final KnowledgeSearchAppService searchAppService;
-    private final KnowledgeDocRepository   docRepository;
-    private final MinioStorageService      minioStorageService;
+    private final DocIngestAppService          ingestAppService;
+    private final KnowledgeDocQueryAppService  queryAppService;
+    private final KnowledgeSearchAppService    searchAppService;
+
+    // ---- 分页查询 ----
 
     @Operation(summary = "分页查询文档列表")
     @GetMapping
     public R<PageResult<DocListVO>> list(
             @RequestParam(name = "keyword", required = false) String keyword,
-            @RequestParam(name = "kbId", required = false) String kbId,
-            @RequestParam(name = "status", required = false) String status,
-            @RequestParam(name = "page", defaultValue = "0") int page,
-            @RequestParam(name = "size", defaultValue = "20") int size) {
-        // interfaces 层负责 String → 枚举的转换和校验，不把脏字符串透传到 Application 层
+            @RequestParam(name = "kbId",    required = false) String kbId,
+            @RequestParam(name = "status",  required = false) String status,
+            @RequestParam(name = "page",    defaultValue = "0")  int page,
+            @RequestParam(name = "size",    defaultValue = "20") int size) {
+        // Interface 层负责 String → 枚举的转换和校验，不把脏字符串透传到 Application 层
         DocStatus docStatus = null;
         if (status != null && !status.isBlank()) {
             try {
@@ -76,15 +75,18 @@ public class KnowledgeDocController {
         query.setSize(size);
         PageResult<KnowledgeDoc> result = ingestAppService.listDocs(query);
         List<DocListVO> items = result.items().stream().map(this::toListVO).toList();
-        // 使用 result 中已经过 safePage/safeSize 处理的元数据，保证响应与实际查询一致
         return R.ok(PageResult.of(result.total(), result.page(), result.size(), items));
     }
+
+    // ---- 文档状态 ----
 
     @Operation(summary = "查询文档摄取进度")
     @GetMapping("/{docId}/status")
     public R<DocStatusVO> status(@PathVariable("docId") String docId) {
         return R.ok(ingestAppService.getStatus(docId));
     }
+
+    // ---- 上传 ----
 
     @Operation(summary = "上传文档（异步处理，立即返回 202 + docId）")
     @ApiResponse(responseCode = "200", description = "文档已接收，后台处理中")
@@ -95,9 +97,12 @@ public class KnowledgeDocController {
         return R.ok(ingestAppService.submit(file, kbId));
     }
 
+    // ---- 审核 / 下线 / 重试 ----
+
     @Operation(summary = "审核文档（通过 → PUBLISHED，退回 → DRAFT）")
     @PutMapping("/{docId}/review")
-    public R<Void> review(@PathVariable("docId") String docId, @RequestBody ReviewRequest req) {
+    public R<Void> review(@PathVariable("docId") String docId,
+                          @RequestBody @Valid ReviewRequest req) {
         ingestAppService.review(docId, req.isApproved(), req.getRejectReason());
         return R.ok();
     }
@@ -109,76 +114,103 @@ public class KnowledgeDocController {
         return R.ok();
     }
 
-    @Operation(summary = "预览文档原文（PDF/HTML/Markdown 直接输出字节流，前端用 iframe 渲染）")
-    @GetMapping("/{docId}/preview")
-    public void preview(@PathVariable("docId") String docId, HttpServletResponse response) throws java.io.IOException {
-        KnowledgeDoc doc = docRepository.findById(docId)
-            .orElseThrow(() -> new com.aria.common.core.exception.BusinessException(4004, "文档不存在：" + docId));
-        byte[] bytes = minioStorageService.download(doc.getStoragePath());
-        String contentType = resolvePreviewContentType(doc.getFileType());
-        response.setContentType(contentType);
-        response.setContentLength(bytes.length);
-        // 文件名转义：移除 CR/LF/双引号/反斜杠，防止 HTTP Response Splitting 注入
-        String safeName = doc.getFileName() != null
-                ? doc.getFileName().replaceAll("[\\r\\n\"\\\\]", "_") : "document";
-        response.setHeader("Content-Disposition", "inline; filename=\"" + safeName + "\"");
-        response.getOutputStream().write(bytes);
-        response.getOutputStream().flush();
+    @Operation(summary = "失败文档重试（FAILED → DRAFT → 重新摄取）")
+    @PostMapping("/{docId}/retry")
+    public R<Void> retry(@PathVariable("docId") String docId) {
+        ingestAppService.retry(docId);
+        return R.ok();
     }
 
-    private String resolvePreviewContentType(String fileType) {
-        if (fileType == null) return "application/octet-stream";
-        return switch (fileType.toUpperCase()) {
-            case "PDF"      -> "application/pdf";
-            case "HTML"     -> "text/html; charset=UTF-8";
-            case "MARKDOWN" -> "text/plain; charset=UTF-8";
-            case "DOCX"     -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-            default         -> "application/octet-stream";
-        };
+    @Operation(summary = "已发布文档重新摄取（不改状态，幂等重跑 pipeline）")
+    @PostMapping("/{docId}/reingest")
+    public R<Void> reingest(@PathVariable("docId") String docId) {
+        ingestAppService.reingest(docId);
+        return R.ok();
+    }
+
+    @Operation(summary = "批量下线文档（最多 50 条，非 PUBLISHED 状态自动跳过）")
+    @PostMapping("/batch-offline")
+    public R<Void> batchOffline(@RequestBody @Valid BatchOfflineRequest req) {
+        ingestAppService.batchOffline(req.getDocIds());
+        return R.ok();
+    }
+
+    // ---- 查询（委托给 KnowledgeDocQueryAppService，消除 Domain/Infra 直接依赖）----
+
+    @Operation(summary = "预览文档原文（PDF/HTML/Markdown 直接输出字节流，前端用 iframe 渲染）")
+    @GetMapping("/{docId}/preview")
+    public void preview(@PathVariable("docId") String docId,
+                        HttpServletResponse response) throws IOException {
+        KnowledgeDocQueryAppService.DocPreviewResult result = queryAppService.getPreview(docId);
+        response.setContentType(resolvePreviewContentType(result.fileType()));
+        response.setContentLength(result.bytes().length);
+        // 文件名转义：移除 CR/LF/双引号/反斜杠，防止 HTTP Response Splitting 注入
+        String safeName = result.fileName() != null
+                ? result.fileName().replaceAll("[\\r\\n\"\\\\]", "_") : "document";
+        response.setHeader("Content-Disposition", "inline; filename=\"" + safeName + "\"");
+        response.getOutputStream().write(result.bytes());
+        response.getOutputStream().flush();
     }
 
     @Operation(summary = "查询文档的所有 chunk 解析详情（页码、章节、类型、内容）")
     @GetMapping("/{docId}/chunks")
     public R<List<ChunkVO>> chunks(@PathVariable("docId") String docId) {
-        List<KnowledgeChunk> chunks = chunkRepository.findByDocId(docId);
+        List<KnowledgeChunk> chunks = queryAppService.getChunks(docId);
         List<ChunkVO> vos = chunks.stream().map(c -> {
             ChunkVO vo = new ChunkVO();
-            vo.chunkId    = c.getId();
-            vo.pageNum    = c.getPageNum();
-            vo.sectionTitle = c.getSectionTitle();
-            vo.chunkType  = c.getChunkType() != null ? c.getChunkType().name() : "TEXT";
-            vo.tokenCount = c.getTokenCount();
-            vo.content    = c.getContent();
+            vo.setChunkId(c.getId());
+            vo.setPageNum(c.getPageNum());
+            vo.setSectionTitle(c.getSectionTitle());
+            vo.setChunkType(c.getChunkType() != null ? c.getChunkType().name() : "TEXT");
+            vo.setTokenCount(c.getTokenCount());
+            vo.setContent(c.getContent());
             return vo;
         }).toList();
         return R.ok(vos);
     }
 
-    /** Chunk 详情 VO（仅用于此接口，不含向量字段） */
-    @Data
-    public static class ChunkVO {
-        private String  chunkId;
-        private Integer pageNum;
-        private String  sectionTitle;
-        private String  chunkType;
-        private Integer tokenCount;
-        private String  content;
-        private Double  retrievalWeight;
+    @Operation(summary = "查询文档 chunk 统计（总数、各类型数量、总 token）")
+    @GetMapping("/{docId}/stats")
+    public R<DocStatsVO> stats(@PathVariable("docId") String docId) {
+        var stats = queryAppService.getDocStats(docId);
+        DocStatsVO vo = new DocStatsVO();
+        vo.setTotalChunks((int) stats.totalChunks());
+        vo.setTotalTokens((int) stats.totalTokens());
+        vo.setTextChunks((int) stats.textChunks());
+        vo.setTableChunks((int) stats.tableChunks());
+        vo.setImageChunks((int) stats.imageChunks());
+        return R.ok(vo);
+    }
+
+    @Operation(summary = "查询指定知识库的 chunk/token 汇总统计")
+    @GetMapping("/kb-stats")
+    public R<KbStatsVO> kbStats(@RequestParam("kbId") String kbId) {
+        DocPageQuery docQuery = new DocPageQuery();
+        docQuery.setKbId(kbId);
+        docQuery.setStatus(DocStatus.PUBLISHED);
+        docQuery.setPage(0);
+        docQuery.setSize(1);
+        long docCount = ingestAppService.listDocs(docQuery).total();
+        var stats = queryAppService.getKbStats(kbId, docCount);
+        KbStatsVO vo = new KbStatsVO();
+        vo.setKbId(kbId);
+        vo.setDocCount(docCount);
+        vo.setChunkCount(stats.chunkCount());
+        vo.setTokenSum(stats.tokenSum());
+        return R.ok(vo);
     }
 
     @Operation(summary = "检索测试（管理后台，返回命中 chunk 列表+分数+来源+文档元数据）")
     @PostMapping("/search-test")
-    public R<List<SearchHitVO>> searchTest(@RequestBody SearchTestRequest req) {
+    public R<List<SearchHitVO>> searchTest(@RequestBody @Valid SearchTestRequest req) {
         var hits = searchAppService.managementSearch(req.getQuery(), req.getKbId(), req.getTopK());
-
-        // 批量查 docId → fileName，单次 IN 查询替代 N 次 findById，消除 N+1
         List<String> docIds = hits.stream()
-            .map(h -> h.getDocId())
-            .filter(id -> id != null && !id.isBlank())
-            .distinct()
-            .toList();
-        java.util.Map<String, String> fileNameMap = docRepository.findFileNamesByIds(docIds);
-
+                .map(h -> h.getDocId())
+                .filter(id -> id != null && !id.isBlank())
+                .distinct()
+                .toList();
+        // 批量查 docId → fileName，消除 N+1
+        Map<String, String> fileNameMap = queryAppService.findFileNamesByIds(docIds);
         List<SearchHitVO> vos = hits.stream().map(h -> {
             SearchHitVO vo = new SearchHitVO();
             vo.setChunkId(h.getChunkId());
@@ -196,40 +228,56 @@ public class KnowledgeDocController {
         return R.ok(vos);
     }
 
-    @Operation(summary = "失败文档重试（FAILED → DRAFT → 重新摄取）")
-    @PostMapping("/{docId}/retry")
-    public R<Void> retry(@PathVariable("docId") String docId) {
-        ingestAppService.retry(docId);
-        return R.ok();
+    // ---- 私有工具方法 ----
+
+    private String resolvePreviewContentType(String fileType) {
+        if (fileType == null) return "application/octet-stream";
+        return switch (fileType.toUpperCase()) {
+            case "PDF"      -> "application/pdf";
+            case "HTML"     -> "text/html; charset=UTF-8";
+            case "MARKDOWN" -> "text/plain; charset=UTF-8";
+            case "DOCX"     -> "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+            default         -> "application/octet-stream";
+        };
     }
 
-    @Operation(summary = "已发布文档重新摄取（不改状态，幂等重跑 pipeline）")
-    @PostMapping("/{docId}/reingest")
-    public R<Void> reingest(@PathVariable("docId") String docId) {
-        ingestAppService.reingest(docId);
-        return R.ok();
+    private DocListVO toListVO(KnowledgeDoc doc) {
+        return DocListVO.builder()
+                .docId(doc.getId())
+                .kbId(doc.getKbId())
+                .fileName(doc.getFileName())
+                .fileType(doc.getFileType())
+                .status(doc.getStatus().name())
+                .version(doc.getVersion())
+                .uploaderId(doc.getUploaderId())
+                .reviewerId(doc.getReviewerId())
+                .createdAt(doc.getCreatedAt())
+                .updatedAt(doc.getUpdatedAt())
+                .build();
     }
 
-    @Operation(summary = "查询文档 chunk 统计（总数、各类型数量、总 token）")
-    @GetMapping("/{docId}/stats")
-    public R<DocStatsVO> stats(@PathVariable("docId") String docId) {
-        DocChunkStats stats = chunkRepository.countStatsByDocId(docId);
-        DocStatsVO vo = new DocStatsVO();
-        vo.setTotalChunks((int) stats.totalChunks());
-        vo.setTotalTokens((int) stats.totalTokens());
-        vo.setTextChunks((int) stats.textChunks());
-        vo.setTableChunks((int) stats.tableChunks());
-        vo.setImageChunks((int) stats.imageChunks());
-        return R.ok(vo);
+    // ---- VO / Request 内部类 ----
+
+    /** Chunk 详情 VO */
+    @Data
+    public static class ChunkVO {
+        private String  chunkId;
+        private Integer pageNum;
+        private String  sectionTitle;
+        private String  chunkType;
+        private Integer tokenCount;
+        private String  content;
     }
 
-    @Data public static class SearchTestRequest {
+    @Data
+    public static class SearchTestRequest {
         @NotBlank private String query;
         @NotBlank private String kbId;
         @Min(1) @Max(20) private int topK = 5;
     }
 
-    @Data public static class SearchHitVO {
+    @Data
+    public static class SearchHitVO {
         private String  chunkId;
         private String  docId;
         private String  kbId;
@@ -242,7 +290,8 @@ public class KnowledgeDocController {
         private String  chunkType;
     }
 
-    @Data public static class DocStatsVO {
+    @Data
+    public static class DocStatsVO {
         private int totalChunks;
         private int totalTokens;
         private int textChunks;
@@ -250,32 +299,6 @@ public class KnowledgeDocController {
         private int imageChunks;
     }
 
-    @Operation(summary = "批量下线文档（最多 50 条，非 PUBLISHED 状态自动跳过）")
-    @PostMapping("/batch-offline")
-    public R<Void> batchOffline(@RequestBody BatchOfflineRequest req) {
-        ingestAppService.batchOffline(req.getDocIds());
-        return R.ok();
-    }
-
-    @Operation(summary = "查询指定知识库的 chunk/token 汇总统计")
-    @GetMapping("/kb-stats")
-    public R<KbStatsVO> kbStats(@RequestParam("kbId") String kbId) {
-        var docQuery = new DocPageQuery();
-        docQuery.setKbId(kbId);
-        docQuery.setStatus(DocStatus.PUBLISHED);
-        docQuery.setPage(0);
-        docQuery.setSize(1);
-        long docCount = ingestAppService.listDocs(docQuery).total();
-        KbChunkStats stats = chunkRepository.countStatsByKbId(kbId);
-        KbStatsVO vo = new KbStatsVO();
-        vo.setKbId(kbId);
-        vo.setDocCount(docCount);
-        vo.setChunkCount(stats.chunkCount());
-        vo.setTokenSum(stats.tokenSum());
-        return R.ok(vo);
-    }
-
-    /** 知识库汇总统计 VO */
     @Data
     public static class KbStatsVO {
         /** 知识库 ID */
@@ -288,29 +311,14 @@ public class KnowledgeDocController {
         private long tokenSum;
     }
 
-    @Data public static class BatchOfflineRequest {
-        private java.util.List<String> docIds;
-    }
-
-    private DocListVO toListVO(KnowledgeDoc doc) {
-        return DocListVO.builder()
-            .docId(doc.getId())
-            .kbId(doc.getKbId())
-            .fileName(doc.getFileName())
-            .fileType(doc.getFileType())
-            .status(doc.getStatus().name())
-            .version(doc.getVersion())
-            .uploaderId(doc.getUploaderId())
-            .reviewerId(doc.getReviewerId())
-            .createdAt(doc.getCreatedAt())
-            .updatedAt(doc.getUpdatedAt())
-            .build();
+    @Data
+    public static class BatchOfflineRequest {
+        @NotNull private List<String> docIds;
     }
 
     @Data
     public static class ReviewRequest {
-        @NotNull
-        private boolean approved;
+        @NotNull private boolean approved;
         private String rejectReason;
     }
 }

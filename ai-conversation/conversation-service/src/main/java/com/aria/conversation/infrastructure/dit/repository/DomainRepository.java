@@ -158,9 +158,16 @@ public class DomainRepository {
 
     private List<IntentToolBinding> buildToolBindings(Long intentId) {
         List<IntentToolDO> bindingDOs = intentToolMapper.findByIntentId(intentId);
+        if (bindingDOs.isEmpty()) return List.of();
+
+        // 批量查询工具，消除 N+1 问题（阿里规约：禁止在循环中查询数据库）
+        List<Long> toolIds = bindingDOs.stream().map(IntentToolDO::getToolId).toList();
+        java.util.Map<Long, ToolDO> toolMap = toolMapper.selectBatchIds(toolIds).stream()
+                .collect(java.util.stream.Collectors.toMap(ToolDO::getId, t -> t));
+
         List<IntentToolBinding> result = new ArrayList<>(bindingDOs.size());
         for (IntentToolDO b : bindingDOs) {
-            ToolDO t = toolMapper.selectById(b.getToolId());
+            ToolDO t = toolMap.get(b.getToolId());
             if (t == null) continue;
             ToolConfig toolConfig = new ToolConfig(
                     t.getCode(), t.getName(), t.getDescription(),

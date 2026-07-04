@@ -158,20 +158,24 @@ public class HttpToolRunner {
 
     private HttpHeaders buildHeaders(ToolConfig tool, Map<String, Object> params) {
         HttpHeaders headers = new HttpHeaders();
-        // 认证头
+        // 认证头（字段名 token / api_key_value，生产前需接入加密存储）
         if ("BEARER".equals(tool.authType()) && tool.authConfig() != null) {
             try {
                 JsonNode auth = objectMapper.readTree(tool.authConfig());
                 String token = auth.path("token_encrypted").asText("");
                 if (!token.isBlank()) headers.setBearerAuth(token);
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.warn("[DIT] BEARER 认证头配置解析失败 tool={} authType={}", tool.code(), tool.authType(), e);
+            }
         } else if ("API_KEY".equals(tool.authType()) && tool.authConfig() != null) {
             try {
                 JsonNode auth = objectMapper.readTree(tool.authConfig());
                 String headerName = auth.path("header").asText("X-API-Key");
                 String value = auth.path("value_encrypted").asText("");
                 if (!value.isBlank()) headers.set(headerName, value);
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.warn("[DIT] API_KEY 认证头配置解析失败 tool={} authType={}", tool.code(), tool.authType(), e);
+            }
         }
         // 自定义请求头
         if (tool.headersTemplate() != null && !tool.headersTemplate().isBlank()) {
@@ -180,7 +184,9 @@ public class HttpToolRunner {
                         replacePlaceholders(tool.headersTemplate(), params));
                 hNode.fields().forEachRemaining(e ->
                         headers.set(e.getKey(), e.getValue().asText()));
-            } catch (Exception ignored) {}
+            } catch (Exception e) {
+                log.warn("[DIT] 自定义请求头模板解析失败 tool={}", tool.code(), e);
+            }
         }
         return headers;
     }
