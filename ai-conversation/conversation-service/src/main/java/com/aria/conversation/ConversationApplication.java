@@ -18,7 +18,10 @@ import org.springframework.retry.annotation.EnableRetry;
  */
 @SpringBootApplication
 @EnableRetry
-@MapperScan("com.aria.conversation.infrastructure.persistence.mapper")
+@MapperScan({
+    "com.aria.conversation.infrastructure.persistence.mapper",
+    "com.aria.conversation.infrastructure.dit.mapper"
+})
 public class ConversationApplication {
 
     public static void main(String[] args) {
