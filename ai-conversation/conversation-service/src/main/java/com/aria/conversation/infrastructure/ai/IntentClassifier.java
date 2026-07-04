@@ -80,6 +80,11 @@ public class IntentClassifier {
         }
         // 提取 JSON：LLM 有时会输出 ```json\n{...}\n```
         String json = extractJson(response.trim());
+        // 快速检查：不以 { 开头说明不是有效 JSON 对象，提前返回 UNKNOWN
+        if (!json.startsWith("{")) {
+            log.warn("[Intent] 响应不是有效 JSON 对象: {}", json);
+            return IntentResult.UNKNOWN;
+        }
         try {
             JsonNode node = objectMapper.readTree(json);
             String intentStr = node.path("intent").asText("UNKNOWN").toUpperCase();
