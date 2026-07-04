@@ -1,6 +1,8 @@
 package com.aria.knowledge.domain.repository;
 
 import com.aria.knowledge.domain.model.ChunkHit;
+import com.aria.knowledge.domain.model.DocChunkStats;
+import com.aria.knowledge.domain.model.KbChunkStats;
 import com.aria.knowledge.domain.model.KnowledgeChunk;
 
 import java.util.List;
@@ -52,11 +54,11 @@ public interface KnowledgeChunkRepository {
 
     /**
      * 按文档 ID 聚合 chunk 统计（DB 端聚合，避免全量加载到内存）。
-     * 返回 Map 包含：totalChunks、totalTokens、textChunks、tableChunks、imageChunks。
      *
      * @param docId 文档 ID
+     * @return 文档级 chunk 统计值对象
      */
-    java.util.Map<String, Long> countStatsByDocId(String docId);
+    DocChunkStats countStatsByDocId(String docId);
 
     /** 更新 chunk 的检索权重（0.0=禁用，1.0=启用） */
     void updateWeight(String chunkId, java.math.BigDecimal weight);
@@ -77,7 +79,9 @@ public interface KnowledgeChunkRepository {
 
     /**
      * 按知识库 ID 汇总 Chunk 统计（仅统计 PUBLISHED 且权重 > 0 的）。
-     * @return Map 包含 chunkCount 和 tokenSum
+     *
+     * @param kbId 知识库 ID
+     * @return 知识库级 chunk 汇总统计值对象
      */
-    java.util.Map<String, Long> countStatsByKbId(String kbId);
+    KbChunkStats countStatsByKbId(String kbId);
 }
