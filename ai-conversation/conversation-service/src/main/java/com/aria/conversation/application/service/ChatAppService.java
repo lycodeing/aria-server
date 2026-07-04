@@ -3,6 +3,9 @@ package com.aria.conversation.application.service;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
 import com.aria.conversation.infrastructure.ai.DynamicAiClient;
+import com.aria.conversation.infrastructure.ai.IntentClassifier;
+import com.aria.conversation.infrastructure.ai.IntentResult;
+import com.aria.conversation.infrastructure.ai.IntentType;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
@@ -24,6 +27,11 @@ public class ChatAppService {
     private static final String ROLE_USER      = "user";
     private static final String ROLE_ASSISTANT = "assistant";
 
+    private static final String OUT_OF_SCOPE_REPLY =
+            "抱歉，我是专业的客服助手，只能回答业务相关的问题，无法帮您解答这个问题。";
+    private static final String TRANSFER_AUTO_REASON = "系统识别到用户需要人工服务";
+    private static final String TRANSFER_DEFAULT_TAG = "咨询";
+
     private static final String BASE_SYSTEM_PROMPT = """
             你是一名专业的智能客服助手。
             请用简洁、友好的语言回答用户问题。
@@ -34,13 +42,19 @@ public class ChatAppService {
     private final DynamicAiClient aiClient;
     private final ConversationHistoryRepository historyRepository;
     private final KnowledgeClient knowledgeClient;
+    private final IntentClassifier intentClassifier;
+    private final SessionQueueService sessionQueueService;
 
     public ChatAppService(DynamicAiClient aiClient,
                           ConversationHistoryRepository historyRepository,
-                          KnowledgeClient knowledgeClient) {
-        this.aiClient          = aiClient;
-        this.historyRepository = historyRepository;
-        this.knowledgeClient   = knowledgeClient;
+                          KnowledgeClient knowledgeClient,
+                          IntentClassifier intentClassifier,
+                          SessionQueueService sessionQueueService) {
+        this.aiClient            = aiClient;
+        this.historyRepository   = historyRepository;
+        this.knowledgeClient     = knowledgeClient;
+        this.intentClassifier    = intentClassifier;
+        this.sessionQueueService = sessionQueueService;
     }
 
     // -------------------------------------------------------
@@ -56,34 +70,60 @@ public class ChatAppService {
     }
 
     /**
-     * 流式对话（带预检索 hits），供 Controller 提前检索后调用，避免重复检索。
+     * 流式对话（带预检索 hits），含意图路由。
      *
-     * <p>历史维护策略：
+     * <p>路由逻辑：
      * <ol>
-     *   <li>立即持久化 USER 消息（生成 seq + 发 MQ + 写 Redis List）</li>
-     *   <li>读取完整历史作为 AI prompt</li>
-     *   <li>流完成后持久化 ASSISTANT 回复</li>
+     *   <li>意图分类（LLM 轻量分类请求）</li>
+     *   <li>TRANSFER_REQUEST / COMPLAINT → 自动入队转人工，返回提示流</li>
+     *   <li>OUT_OF_SCOPE → 返回拒答模板流，不调 LLM</li>
+     *   <li>CHITCHAT → 跳过 RAG，直接 LLM 回复</li>
+     *   <li>FAQ_QUERY / UNKNOWN → 正常 RAG + LLM 流程</li>
      * </ol>
-     *
-     * <p>⚠️ 此方法在 Spring MVC 阻塞线程上下文调用，Flux 内部不调用 block()。
      */
     public Flux<String> streamChat(String sessionId, String userMessage,
                                    List<KnowledgeSearchResult.Hit> hits) {
         historyRepository.append(sessionId, ROLE_USER, userMessage);
 
-        String systemPrompt = buildSystemPrompt(hits);
+        // 意图分类
+        IntentResult intent = intentClassifier.classify(userMessage);
+        log.debug("[Chat] sessionId={} intent={} confidence={}", sessionId, intent.intent(), intent.confidence());
+
+        // 路由：需要转人工
+        if (intent.requiresTransfer()) {
+            try {
+                sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
+                log.info("[Chat] 自动转人工 sessionId={} intent={}", sessionId, intent.intent());
+            } catch (Exception e) {
+                log.warn("[Chat] 自动转人工失败 sessionId={}", sessionId, e);
+            }
+            String reply = intent.intent() == IntentType.COMPLAINT
+                    ? "非常抱歉给您带来了不好的体验，我已为您转接人工客服，请稍候。"
+                    : "好的，我已为您转接人工客服，请稍候。";
+            historyRepository.append(sessionId, ROLE_ASSISTANT, reply);
+            return Flux.just(reply);
+        }
+
+        // 路由：超出业务范围
+        if (intent.intent() == IntentType.OUT_OF_SCOPE) {
+            historyRepository.append(sessionId, ROLE_ASSISTANT, OUT_OF_SCOPE_REPLY);
+            return Flux.just(OUT_OF_SCOPE_REPLY);
+        }
+
+        // 路由：闲聊 → 跳过 RAG
+        List<KnowledgeSearchResult.Hit> effectiveHits = intent.skipRag() ? List.of() : hits;
+
+        String systemPrompt = buildSystemPrompt(effectiveHits);
         List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
         StringBuilder assistantReply = new StringBuilder();
 
         return aiClient.streamChat(aiPrompt, systemPrompt)
                 .map(content -> {
-                    // streamChat 返回的已是提取后的 delta 文本，直接追加
                     assistantReply.append(content);
                     return content;
                 })
                 .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
                 .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"))
-                // doFinally 在完成和出错两种情况下都执行，保证 assistant 回复落库
                 .doFinally(signal -> {
                     if (!assistantReply.isEmpty()) {
                         historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
