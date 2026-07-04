@@ -1,6 +1,7 @@
 package com.aria.conversation.application.service;
 
 import com.aria.conversation.domain.ConversationMessage;
+import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
 import com.aria.conversation.infrastructure.ai.DynamicAiClient;
 import com.aria.conversation.infrastructure.ai.IntentClassifier;
@@ -13,6 +14,8 @@ import com.aria.conversation.infrastructure.dit.pipeline.ToolExecutor;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -31,6 +34,7 @@ public class ChatAppService {
     private static final String ROLE_USER      = "user";
     private static final String ROLE_ASSISTANT = "assistant";
 
+    private static final String AGENT_HINT_MSG = "（消息已发送给人工客服）";
     private static final String OUT_OF_SCOPE_REPLY =
             "抱歉，我是专业的客服助手，只能回答业务相关的问题，无法帮您解答这个问题。";
     private static final String TRANSFER_AUTO_REASON = "系统识别到用户需要人工服务";
@@ -50,6 +54,7 @@ public class ChatAppService {
     private final SessionQueueService sessionQueueService;
     private final DitPipeline ditPipeline;
     private final ToolExecutor toolExecutor;
+    private final ObjectMapper objectMapper;
 
     public ChatAppService(DynamicAiClient aiClient,
                           ConversationHistoryRepository historyRepository,
@@ -57,7 +62,8 @@ public class ChatAppService {
                           IntentClassifier intentClassifier,
                           SessionQueueService sessionQueueService,
                           DitPipeline ditPipeline,
-                          ToolExecutor toolExecutor) {
+                          ToolExecutor toolExecutor,
+                          ObjectMapper objectMapper) {
         this.aiClient            = aiClient;
         this.historyRepository   = historyRepository;
         this.knowledgeClient     = knowledgeClient;
@@ -65,6 +71,52 @@ public class ChatAppService {
         this.sessionQueueService = sessionQueueService;
         this.ditPipeline         = ditPipeline;
         this.toolExecutor        = toolExecutor;
+        this.objectMapper        = objectMapper;
+    }
+
+    // -------------------------------------------------------
+    // 统一对话入口（DDD：Controller 只调这一个方法）
+    // -------------------------------------------------------
+
+    /**
+     * 统一流式对话入口，返回 {@link ChatEvent} 流供 Controller 转换为 SSE。
+     *
+     * <p>所有路由决策（人工接入判断、DIT Pipeline、通用 FAQ）全部在此方法内完成，
+     * Controller 只负责格式转换，不含任何业务判断。
+     *
+     * @param sessionId  会话 ID
+     * @param message    用户消息
+     * @param domainCode 领域标识（可选，null 走通用流程）
+     */
+    public Flux<ChatEvent> stream(String sessionId, String message, String domainCode) {
+        // 已接入人工 → 存历史，返回提示，不走 AI
+        if (sessionQueueService.isActive(sessionId)) {
+            historyRepository.append(sessionId, ROLE_USER, message);
+            return Flux.just(ChatEvent.data(AGENT_HINT_MSG));
+        }
+
+        // 有 domainCode → DIT Pipeline
+        if (domainCode != null && !domainCode.isBlank()) {
+            return streamChatWithDomain(sessionId, message, domainCode, java.util.Map.of())
+                    .map(ChatEvent::data);
+        }
+
+        // 通用 FAQ 流程：RAG + 意图路由 + LLM，含 sources event
+        return streamFaq(sessionId, message);
+    }
+
+    /**
+     * 用户主动请求转人工（供 Controller 调用，消除 Controller 对 SessionQueueService 的直接依赖）。
+     *
+     * @param sessionId      会话 ID
+     * @param userName       用户名称
+     * @param transferReason 转人工原因
+     * @param tag            标签
+     * @return 队列项
+     */
+    public SessionQueueItem requestTransfer(String sessionId, String userName,
+                                             String transferReason, String tag) {
+        return sessionQueueService.enqueue(sessionId, userName, transferReason, tag);
     }
 
     // -------------------------------------------------------
@@ -77,6 +129,46 @@ public class ChatAppService {
      */
     public List<KnowledgeSearchResult.Hit> searchHits(String userMessage) {
         return knowledgeClient.search(userMessage);
+    }
+
+    /**
+     * 通用 FAQ 流程：RAG + 意图路由 + LLM，包含 sources event。
+     * 返回 {@link ChatEvent} 流，有知识库命中时先发 sources 再发 AI token。
+     */
+    private Flux<ChatEvent> streamFaq(String sessionId, String message) {
+        List<KnowledgeSearchResult.Hit> hits = searchHits(message);
+        Flux<ChatEvent> aiEvents = streamChat(sessionId, message, hits).map(ChatEvent::data);
+
+        if (hits.isEmpty()) {
+            return aiEvents;
+        }
+        return Flux.concat(
+                Flux.just(ChatEvent.sources(buildSourcesJson(hits))),
+                aiEvents
+        );
+    }
+
+    /**
+     * 将 hits 序列化为 JSON 数组，格式：[{"docId":"...","label":"..."}]。
+     * 序列化失败时返回空数组，不阻断 SSE 流。
+     */
+    public String buildSourcesJson(List<KnowledgeSearchResult.Hit> hits) {
+        if (hits.isEmpty()) return "[]";
+        List<java.util.Map<String, String>> sources = hits.stream()
+                .map(h -> {
+                    String label = (h.getBreadcrumb() != null && !h.getBreadcrumb().isBlank())
+                            ? h.getBreadcrumb() : "文档片段";
+                    return java.util.Map.of(
+                            "docId", h.getDocId() != null ? h.getDocId() : "",
+                            "label", label
+                    );
+                })
+                .toList();
+        try {
+            return objectMapper.writeValueAsString(sources);
+        } catch (JsonProcessingException e) {
+            return "[]";
+        }
     }
 
     /**
@@ -265,6 +357,46 @@ public class ChatAppService {
         // FallbackResult 或未知类型 → 降级通用流程
         String addon = route instanceof RouteResult.FallbackResult fr ? fr.systemPromptAddon() : null;
         return buildAiStream(sessionId, userMessage, addon);
+    }
+
+    /** 将工具调用结果格式化为注入 LLM Prompt 的 context 字符串。 */
+    private String buildToolContext(List<ToolCallResult> results) {
+        if (results == null || results.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (ToolCallResult r : results) {
+            if (r.isSuccess() && r.getResponse() != null && !r.getResponse().isBlank()) {
+                sb.append("【").append(r.getToolCode()).append("查询结果】\n")
+                  .append(r.getResponse()).append("\n\n");
+            }
+        }
+        return sb.toString().trim();
+    }
+
+    /** 构建含工具结果、知识库内容和领域说明的 system prompt。 */
+    private String buildSystemPromptWithToolContext(List<KnowledgeSearchResult.Hit> hits,
+                                                    String systemPromptAddon,
+                                                    String toolContext) {
+        StringBuilder sb = new StringBuilder();
+        if (toolContext != null && !toolContext.isBlank()) {
+            sb.append("【实时查询数据】（请优先依据以下数据回答）\n\n")
+              .append(toolContext).append("\n---\n");
+        }
+        if (hits != null && !hits.isEmpty()) {
+            sb.append("【参考资料】（请优先依据以下内容回答，无需在回答中标注来源编号）\n\n");
+            for (int i = 0; i < hits.size(); i++) {
+                KnowledgeSearchResult.Hit hit = hits.get(i);
+                String label = (hit.getBreadcrumb() != null && !hit.getBreadcrumb().isBlank())
+                        ? hit.getBreadcrumb() : "文档片段";
+                sb.append("[").append(i + 1).append("] ").append(label).append("\n")
+                  .append(hit.getContent() != null ? hit.getContent() : "").append("\n\n");
+            }
+            sb.append("---\n");
+        }
+        if (systemPromptAddon != null && !systemPromptAddon.isBlank()) {
+            sb.append(systemPromptAddon).append("\n");
+        }
+        sb.append(BASE_SYSTEM_PROMPT);
+        return sb.toString();
     }
 
     /** 构建 RAG + LLM 流式回答（带领域 system prompt addon）。 */

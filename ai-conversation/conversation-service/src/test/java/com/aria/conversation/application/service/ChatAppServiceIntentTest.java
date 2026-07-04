@@ -10,6 +10,7 @@ import com.aria.conversation.infrastructure.dit.pipeline.ToolExecutor;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -41,7 +42,7 @@ class ChatAppServiceIntentTest {
     @BeforeEach
     void setUp() {
         service = new ChatAppService(aiClient, historyRepository, knowledgeClient,
-                intentClassifier, sessionQueueService, ditPipeline, toolExecutor);
+                intentClassifier, sessionQueueService, ditPipeline, toolExecutor, new ObjectMapper());
         // lenient: 转人工/拒答路径不走 findAll，允许该 stub 未被使用
         lenient().when(historyRepository.findAll(anyString())).thenReturn(List.of());
     }
