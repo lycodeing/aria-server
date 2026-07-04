@@ -5,6 +5,7 @@ import com.aria.conversation.application.service.ChatAppService;
 import com.aria.conversation.application.service.ChatEvent;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.ConversationMessage;
+import jakarta.validation.Valid;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
@@ -25,12 +26,14 @@ import java.util.UUID;
  *   <li>Application 层（ChatAppService）：所有业务路由（人工接入判断、DIT、FAQ）</li>
  * </ul>
  *
- * <p>CORS 说明：chat 接口为访客公开接口，允许任意源访问（访客页面可内嵌至任意站点）。
- * 座席管理接口（/api/v1/sessions）则限制为配置的前端域名。
+ * <p>CORS 说明：
+ * <ul>
+ *   <li>{@code /stream}、{@code POST /}（非流式）为访客公开接口，通过方法级 {@code @CrossOrigin} 放行任意源</li>
+ *   <li>其余接口（历史查询/转人工）由网关层统一管控 CORS，不单独放行</li>
+ * </ul>
  */
 @RestController
 @RequestMapping("/api/v1/chat")
-@CrossOrigin(origins = "*")
 @RequiredArgsConstructor
 public class ChatController {
 
@@ -49,17 +52,12 @@ public class ChatController {
     private final ChatAppService chatService;
 
     /**
-     * SSE 流式对话接口。
+     * SSE 流式对话接口（访客公开，允许任意跨域）。
      *
-     * <p>Controller 只负责：
-     * <ol>
-     *   <li>校验入参格式</li>
-     *   <li>生成/解析 sessionId</li>
-     *   <li>调 {@link ChatAppService#stream} 获取事件流</li>
-     *   <li>将 {@link ChatEvent} 转换为 {@link ServerSentEvent}</li>
-     * </ol>
+     * <p>Controller 只负责：格式校验 → sessionId 生成 → ChatEvent → SSE 转换。
      * 所有业务路由（人工接入/DIT Pipeline/FAQ）在 Application 层完成。
      */
+    @CrossOrigin(origins = "*")
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> streamChat(@RequestBody ChatRequest req) {
         if (req.getMessage() == null || req.getMessage().isBlank()) {
@@ -79,8 +77,9 @@ public class ChatController {
     }
 
     /**
-     * 非流式对话接口。
+     * 非流式对话接口（访客公开，允许任意跨域）。
      */
+    @CrossOrigin(origins = "*")
     @PostMapping
     public R<Map<String, String>> chat(@RequestBody ChatRequest req) {
         if (req.getMessage() == null || req.getMessage().isBlank()) {
@@ -126,7 +125,7 @@ public class ChatController {
      * 用户请求转人工。
      */
     @PostMapping("/transfer")
-    public R<SessionQueueItem> transfer(@RequestBody TransferRequest req) {
+    public R<SessionQueueItem> transfer(@RequestBody @Valid TransferRequest req) {
         String reason = req.getTransferReason() != null ? req.getTransferReason() : DEFAULT_TRANSFER_REASON;
         String tag = req.getTag() != null ? req.getTag() : DEFAULT_TAG;
         return R.ok(chatService.requestTransfer(req.getSessionId(), req.getUserName(), reason, tag));

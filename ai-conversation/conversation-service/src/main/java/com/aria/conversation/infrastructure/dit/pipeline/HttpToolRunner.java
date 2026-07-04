@@ -158,10 +158,14 @@ public class HttpToolRunner {
 
     private HttpHeaders buildHeaders(ToolConfig tool, Map<String, Object> params) {
         HttpHeaders headers = new HttpHeaders();
-        // 认证头（字段名 token / api_key_value，生产前需接入加密存储）
+        // 认证头
+        // 注意：authConfig 中的 token / api_key_value 字段当前以明文存储。
+        // 生产部署前需接入加密存储（如 KMS/AES），并在此处调用解密服务后再使用。
         if ("BEARER".equals(tool.authType()) && tool.authConfig() != null) {
             try {
                 JsonNode auth = objectMapper.readTree(tool.authConfig());
+                // 字段名 token_encrypted 为历史遗留，当前实际存储的是明文 token
+                // TODO: 生产前替换为解密调用
                 String token = auth.path("token_encrypted").asText("");
                 if (!token.isBlank()) headers.setBearerAuth(token);
             } catch (Exception e) {
@@ -171,6 +175,8 @@ public class HttpToolRunner {
             try {
                 JsonNode auth = objectMapper.readTree(tool.authConfig());
                 String headerName = auth.path("header").asText("X-API-Key");
+                // 字段名 value_encrypted 为历史遗留，当前实际存储的是明文值
+                // TODO: 生产前替换为解密调用
                 String value = auth.path("value_encrypted").asText("");
                 if (!value.isBlank()) headers.set(headerName, value);
             } catch (Exception e) {
