@@ -39,6 +39,12 @@ public record ChatEvent(String eventType, String data) {
         /** 业务错误，data 为错误描述字符串 */
         public static final String ERROR      = "error";
 
+        /**
+         * SSE 流结束信号，data 固定为 "[DONE]"。
+         * Controller 在 Flux 末尾追加此事件，前端据此关闭流并结束 loading 状态。
+         */
+        public static final String DONE       = "done";
+
         private EventType() { /* 工具类，不允许实例化 */ }
     }
 

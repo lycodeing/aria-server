@@ -26,7 +26,9 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 对话应用服务。
@@ -103,7 +105,7 @@ public class ChatAppService {
 
         // 有 domainCode → DIT Pipeline（直接返回 Flux<ChatEvent>，含语义事件）
         if (StringUtils.isNotBlank(domainCode)) {
-            return streamChatWithDomain(sessionId, message, domainCode, java.util.Map.of());
+            return streamChatWithDomain(sessionId, message, domainCode, Map.of());
         }
 
         // 通用 FAQ 流程：RAG + 意图路由 + LLM，含 sources event
@@ -142,11 +144,14 @@ public class ChatAppService {
      */
     private Flux<ChatEvent> streamFaq(String sessionId, String message) {
         List<KnowledgeSearchResult.Hit> hits = searchHits(message);
-        Flux<ChatEvent> aiEvents = streamChat(sessionId, message, hits).map(ChatEvent::data);
+        // streamChatEvents 已返回 Flux<ChatEvent>，直接使用，不再 .map(ChatEvent::data)
+        Flux<ChatEvent> aiEvents = streamChatEvents(sessionId, message, hits);
 
         if (hits.isEmpty()) {
             return aiEvents;
         }
+        // transfer 路径会在 aiEvents 里发出 ChatEvent.transfer，sources 只在 FAQ 路径有效
+        // 用 switchIfEmpty 兜底避免 sources 后接空流
         return Flux.concat(
                 Flux.just(ChatEvent.sources(buildSourcesJson(hits))),
                 aiEvents
@@ -159,11 +164,11 @@ public class ChatAppService {
      */
     public String buildSourcesJson(List<KnowledgeSearchResult.Hit> hits) {
         if (hits.isEmpty()) return "[]";
-        List<java.util.Map<String, String>> sources = hits.stream()
+        List<Map<String, String>> sources = hits.stream()
                 .map(h -> {
                     String label = (h.getBreadcrumb() != null && !h.getBreadcrumb().isBlank())
                             ? h.getBreadcrumb() : "文档片段";
-                    return java.util.Map.of(
+                    return Map.of(
                             "docId", h.getDocId() != null ? h.getDocId() : "",
                             "label", label
                     );
@@ -177,26 +182,30 @@ public class ChatAppService {
     }
 
     /**
-     * 流式对话（带预检索 hits），含意图路由。
+     * 流式对话（带预检索 hits），含意图路由，返回 {@link ChatEvent} 流。
      *
      * <p>路由逻辑：
      * <ol>
      *   <li>意图分类（LLM 轻量分类请求）</li>
-     *   <li>TRANSFER_REQUEST / COMPLAINT → 自动入队转人工，返回提示流</li>
+     *   <li>TRANSFER_REQUEST / COMPLAINT → 自动入队转人工，返回 transfer 语义事件</li>
      *   <li>OUT_OF_SCOPE → 返回拒答模板流，不调 LLM</li>
      *   <li>CHITCHAT → 跳过 RAG，直接 LLM 回复</li>
      *   <li>FAQ_QUERY / UNKNOWN → 正常 RAG + LLM 流程</li>
      * </ol>
+     *
+     * <p>原 {@code streamChat()} 返回 {@code Flux<String>}，transfer 事件无法穿透
+     * {@code streamFaq()} 的 {@code .map(ChatEvent::data)} 包装，导致前端收不到语义信号。
+     * 改为返回 {@code Flux<ChatEvent>} 后，transfer 分支可直接发出 {@link ChatEvent#transfer}。
      */
-    public Flux<String> streamChat(String sessionId, String userMessage,
-                                   List<KnowledgeSearchResult.Hit> hits) {
+    private Flux<ChatEvent> streamChatEvents(String sessionId, String userMessage,
+                                              List<KnowledgeSearchResult.Hit> hits) {
         historyRepository.append(sessionId, ROLE_USER, userMessage);
 
         // 意图分类
         IntentResult intent = intentClassifier.classify(userMessage);
         log.debug("[Chat] sessionId={} intent={} confidence={}", sessionId, intent.intent(), intent.confidence());
 
-        // 路由：需要转人工
+        // 路由：需要转人工 — 发出 transfer 语义事件，前端可据此自动切换 WebSocket 模式
         if (intent.requiresTransfer()) {
             try {
                 sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
@@ -208,13 +217,19 @@ public class ChatAppService {
                     ? "非常抱歉给您带来了不好的体验，我已为您转接人工客服，请稍候。"
                     : "好的，我已为您转接人工客服，请稍候。";
             historyRepository.append(sessionId, ROLE_ASSISTANT, reply);
-            return Flux.just(reply);
+            try {
+                String transferJson = objectMapper.writeValueAsString(new TransferPayload("faq_transfer", reply));
+                return Flux.just(ChatEvent.transfer(transferJson));
+            } catch (JsonProcessingException e) {
+                log.warn("[Chat] FAQ transfer payload 序列化失败 sessionId={}", sessionId, e);
+                return Flux.just(ChatEvent.data(reply));
+            }
         }
 
         // 路由：超出业务范围
         if (intent.intent() == IntentType.OUT_OF_SCOPE) {
             historyRepository.append(sessionId, ROLE_ASSISTANT, OUT_OF_SCOPE_REPLY);
-            return Flux.just(OUT_OF_SCOPE_REPLY);
+            return Flux.just(ChatEvent.data(OUT_OF_SCOPE_REPLY));
         }
 
         // 路由：闲聊 → 跳过 RAG
@@ -227,10 +242,10 @@ public class ChatAppService {
         return aiClient.streamChat(aiPrompt, systemPrompt)
                 .map(content -> {
                     assistantReply.append(content);
-                    return content;
+                    return ChatEvent.data(content);
                 })
                 .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
-                .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"))
+                .onErrorResume(e -> Flux.just(ChatEvent.data("抱歉，AI 服务暂时不可用，请稍后重试。")))
                 .doFinally(signal -> {
                     if (!assistantReply.isEmpty()) {
                         historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
@@ -242,7 +257,9 @@ public class ChatAppService {
      * 流式对话（自动检索），内部调用 {@link #searchHits} 后委托带 hits 的重载。
      */
     public Flux<String> streamChat(String sessionId, String userMessage) {
-        return streamChat(sessionId, userMessage, searchHits(userMessage));
+        return streamChatEvents(sessionId, userMessage, searchHits(userMessage))
+                .filter(e -> e.eventType() == null) // 只取普通文字 token，丢弃语义事件
+                .map(ChatEvent::data);
     }
 
     /**
@@ -254,7 +271,7 @@ public class ChatAppService {
      */
     public Flux<ChatEvent> streamChatWithDomain(String sessionId, String userMessage,
                                                  String domainCode,
-                                                 java.util.Map<String, Object> sessionCtx) {
+                                                 Map<String, Object> sessionCtx) {
         return Mono.fromCallable(() -> {
                     // 以下均为阻塞操作，必须在 boundedElastic 线程上执行
                     historyRepository.append(sessionId, ROLE_USER, userMessage);
@@ -318,7 +335,7 @@ public class ChatAppService {
      */
     private Flux<ChatEvent> buildDomainEventStream(String sessionId, String userMessage,
                                                     RouteResult route,
-                                                    java.util.Map<String, Object> sessionCtx) {
+                                                    Map<String, Object> sessionCtx) {
         if (route instanceof RouteResult.TransferResult r) {
             try {
                 sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
@@ -368,7 +385,7 @@ public class ChatAppService {
                         String systemPrompt = (String) arr[1];
 
                         // 构造工具调用状态事件（使用 Payload 记录类，消除 Map.of() 魔法值）
-                        List<ChatEvent> toolEvents = new java.util.ArrayList<>();
+                        List<ChatEvent> toolEvents = new ArrayList<>();
                         for (ToolCallResult tr : toolResults) {
                             try {
                                 toolEvents.add(ChatEvent.toolCall(objectMapper.writeValueAsString(

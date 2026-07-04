@@ -80,9 +80,10 @@ public class DitPipeline {
         }
 
         // 自动转人工：优先使用意图配置的 fallback_reply，兜底默认文案
+        // StringUtils.isNotBlank 已处理 null，无需额外判断 != null
         if (intentConfig.autoTransfer()) {
             log.info("[DIT] 意图需要转人工 sessionId={} intent={}", sessionId, intentConfig.code());
-            String transferReply = (intentConfig.fallbackReply() != null && StringUtils.isNotBlank(intentConfig.fallbackReply()))
+            String transferReply = StringUtils.isNotBlank(intentConfig.fallbackReply())
                     ? intentConfig.fallbackReply()
                     : "好的，已为您转接人工客服，请稍候。";
             return RouteResult.transfer(transferReply, intentConfig.code());

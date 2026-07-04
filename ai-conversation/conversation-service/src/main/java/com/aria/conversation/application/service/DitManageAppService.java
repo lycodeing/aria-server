@@ -126,16 +126,26 @@ public class DitManageAppService {
         return slot;
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public void updateSlot(IntentSlotDO slot) {
-        if (slotMapper.updateById(slot) == 0)
+        // 先查出已有记录获取 intentId，updateById 不含 intentId 时缓存失效会拿到 null
+        IntentSlotDO existing = slotMapper.selectById(slot.getId());
+        if (existing == null) {
             throw new BusinessException(NOT_FOUND, "槽位不存在: " + slot.getId());
-        log.info("更新槽位: id={}", slot.getId());
-        evictDomainByIntentId(slot.getIntentId());
+        }
+        if (slotMapper.updateById(slot) == 0) {
+            throw new BusinessException(NOT_FOUND, "槽位更新失败: " + slot.getId());
+        }
+        log.info("更新槽位: id={}, intentId={}", slot.getId(), existing.getIntentId());
+        evictDomainByIntentId(existing.getIntentId());
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public void deleteSlot(Long slotId) {
         IntentSlotDO slotDO = slotMapper.selectById(slotId);
-        if (slotDO == null) throw new BusinessException(NOT_FOUND, "槽位不存在: " + slotId);
+        if (slotDO == null) {
+            throw new BusinessException(NOT_FOUND, "槽位不存在: " + slotId);
+        }
         slotMapper.deleteById(slotId);
         log.info("删除槽位: id={}", slotId);
         evictDomainByIntentId(slotDO.getIntentId());
@@ -153,12 +163,15 @@ public class DitManageAppService {
         return tool;
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public void updateTool(ToolDO tool) {
-        if (toolMapper.updateById(tool) == 0)
+        if (toolMapper.updateById(tool) == 0) {
             throw new BusinessException(NOT_FOUND, "工具不存在: " + tool.getId());
+        }
         log.info("更新工具: id={}", tool.getId());
     }
 
+    @Transactional(rollbackFor = Exception.class)
     public void deleteTool(Long toolId) {
         toolMapper.deleteById(toolId);
         log.info("删除工具: id={}", toolId);

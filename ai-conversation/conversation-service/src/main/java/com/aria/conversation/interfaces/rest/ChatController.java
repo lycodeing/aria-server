@@ -66,7 +66,10 @@ public class ChatController {
         String sessionId = resolveSessionId(req.getSessionId());
         if (sessionId == null) {
             return Flux.concat(
-                    Flux.just(ServerSentEvent.<String>builder().event("error").data("非法的 sessionId 格式").build()),
+                    Flux.just(ServerSentEvent.<String>builder()
+                            .event(ChatEvent.EventType.ERROR)
+                            .data("非法的 sessionId 格式")
+                            .build()),
                     doneStream()
             );
         }
@@ -155,7 +158,10 @@ public class ChatController {
 
     /** 终止 SSE 流的 done 事件。 */
     private Flux<ServerSentEvent<String>> doneStream() {
-        return Flux.just(ServerSentEvent.<String>builder().event("done").data("[DONE]").build());
+        return Flux.just(ServerSentEvent.<String>builder()
+                .event(ChatEvent.EventType.DONE)
+                .data("[DONE]")
+                .build());
     }
 
     // ---- Request / Response 类 ----
