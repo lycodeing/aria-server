@@ -10,7 +10,7 @@ import lombok.Setter;
 
 @Getter
 @Setter
-@TableName(value = "cs_conversation.cs_intent_tool", autoResultMap = true)
+@TableName(value = "cs_intent_tool", autoResultMap = true)
 public class IntentToolDO {
 
     @TableId(type = IdType.AUTO)

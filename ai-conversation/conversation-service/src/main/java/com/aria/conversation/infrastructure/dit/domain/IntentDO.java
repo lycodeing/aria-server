@@ -10,7 +10,7 @@ import lombok.Setter;
 
 @Getter
 @Setter
-@TableName(value = "cs_conversation.cs_intent", autoResultMap = true)
+@TableName(value = "cs_intent", autoResultMap = true)
 public class IntentDO {
 
     @TableId(type = IdType.AUTO)

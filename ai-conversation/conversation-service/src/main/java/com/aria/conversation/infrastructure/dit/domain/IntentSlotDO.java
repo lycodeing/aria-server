@@ -10,7 +10,7 @@ import lombok.Setter;
 
 @Getter
 @Setter
-@TableName(value = "cs_conversation.cs_intent_slot", autoResultMap = true)
+@TableName(value = "cs_intent_slot", autoResultMap = true)
 public class IntentSlotDO {
 
     @TableId(type = IdType.AUTO)

@@ -10,7 +10,7 @@ import java.time.LocalDateTime;
 
 @Getter
 @Setter
-@TableName("cs_conversation.cs_domain")
+@TableName("cs_domain")
 public class DomainDO {
 
     @TableId(type = IdType.AUTO)

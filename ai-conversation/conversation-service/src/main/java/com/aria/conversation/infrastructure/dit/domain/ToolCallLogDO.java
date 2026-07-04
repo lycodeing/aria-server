@@ -12,7 +12,7 @@ import java.time.LocalDateTime;
 
 @Getter
 @Setter
-@TableName(value = "cs_conversation.cs_tool_call_log", autoResultMap = true)
+@TableName(value = "cs_tool_call_log", autoResultMap = true)
 public class ToolCallLogDO {
 
     @TableId(type = IdType.AUTO)
