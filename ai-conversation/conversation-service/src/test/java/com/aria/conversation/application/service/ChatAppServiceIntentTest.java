@@ -7,6 +7,8 @@ import com.aria.conversation.infrastructure.ai.IntentType;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
+import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
+import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -30,13 +32,14 @@ class ChatAppServiceIntentTest {
     @Mock private KnowledgeClient knowledgeClient;
     @Mock private IntentClassifier intentClassifier;
     @Mock private SessionQueueService sessionQueueService;
+    @Mock private DitPipeline ditPipeline;
 
     private ChatAppService service;
 
     @BeforeEach
     void setUp() {
         service = new ChatAppService(aiClient, historyRepository, knowledgeClient,
-                intentClassifier, sessionQueueService);
+                intentClassifier, sessionQueueService, ditPipeline);
         // lenient: 转人工/拒答路径不走 findAll，允许该 stub 未被使用
         lenient().when(historyRepository.findAll(anyString())).thenReturn(List.of());
     }

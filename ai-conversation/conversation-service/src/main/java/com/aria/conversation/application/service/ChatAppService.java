@@ -6,6 +6,8 @@ import com.aria.conversation.infrastructure.ai.DynamicAiClient;
 import com.aria.conversation.infrastructure.ai.IntentClassifier;
 import com.aria.conversation.infrastructure.ai.IntentResult;
 import com.aria.conversation.infrastructure.ai.IntentType;
+import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
+import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
@@ -44,17 +46,20 @@ public class ChatAppService {
     private final KnowledgeClient knowledgeClient;
     private final IntentClassifier intentClassifier;
     private final SessionQueueService sessionQueueService;
+    private final DitPipeline ditPipeline;
 
     public ChatAppService(DynamicAiClient aiClient,
                           ConversationHistoryRepository historyRepository,
                           KnowledgeClient knowledgeClient,
                           IntentClassifier intentClassifier,
-                          SessionQueueService sessionQueueService) {
+                          SessionQueueService sessionQueueService,
+                          DitPipeline ditPipeline) {
         this.aiClient            = aiClient;
         this.historyRepository   = historyRepository;
         this.knowledgeClient     = knowledgeClient;
         this.intentClassifier    = intentClassifier;
         this.sessionQueueService = sessionQueueService;
+        this.ditPipeline         = ditPipeline;
     }
 
     // -------------------------------------------------------
@@ -139,6 +144,80 @@ public class ChatAppService {
     }
 
     /**
+     * 领域感知流式对话（DIT Pipeline）。
+     *
+     * <p>当前端传入 {@code domainCode} 时走此路径，Steps 1-3 由 {@link DitPipeline} 处理：
+     * <ul>
+     *   <li>FallbackResult → 降级走通用 FAQ 流程</li>
+     *   <li>TransferResult → 自动转人工</li>
+     *   <li>PendingResult  → 返回槽位询问/候选项提示</li>
+     *   <li>ExecuteResult  → 工具调用（P3 实现）+ LLM 回答</li>
+     * </ul>
+     *
+     * @param sessionId   会话 ID
+     * @param userMessage 用户消息
+     * @param domainCode  领域标识（如 "ecommerce"）
+     * @param sessionCtx  会话上下文（登录用户信息等）
+     */
+    public Flux<String> streamChatWithDomain(String sessionId, String userMessage,
+                                              String domainCode,
+                                              java.util.Map<String, Object> sessionCtx) {
+        historyRepository.append(sessionId, ROLE_USER, userMessage);
+
+        List<ChatMessage> recentHistory = toAiPrompt(historyRepository.findAll(sessionId));
+        RouteResult route = ditPipeline.route(sessionId, userMessage, domainCode,
+                recentHistory, sessionCtx);
+
+        return switch (route) {
+            case RouteResult.TransferResult r -> {
+                try {
+                    sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
+                } catch (Exception e) {
+                    log.warn("[DIT] 自动转人工失败 sessionId={}", sessionId, e);
+                }
+                historyRepository.append(sessionId, ROLE_ASSISTANT, r.replyMessage());
+                yield Flux.just(r.replyMessage());
+            }
+            case RouteResult.PendingResult r -> {
+                historyRepository.append(sessionId, ROLE_ASSISTANT, r.promptMessage());
+                yield Flux.just(r.promptMessage());
+            }
+            case RouteResult.ExecuteResult r -> {
+                // P3 实现工具调用；当前直接走 RAG + LLM
+                List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
+                String systemPrompt = buildSystemPromptWithAddon(hits, r.systemPromptAddon());
+                List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
+                StringBuilder assistantReply = new StringBuilder();
+                yield aiClient.streamChat(aiPrompt, systemPrompt)
+                        .map(content -> { assistantReply.append(content); return content; })
+                        .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
+                        .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"))
+                        .doFinally(signal -> {
+                            if (!assistantReply.isEmpty()) {
+                                historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
+                            }
+                        });
+            }
+            case RouteResult.FallbackResult r -> {
+                // 降级：走通用 FAQ 流程，可携带领域 system prompt addon
+                List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
+                String systemPrompt = buildSystemPromptWithAddon(hits, r.systemPromptAddon());
+                List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
+                StringBuilder assistantReply = new StringBuilder();
+                yield aiClient.streamChat(aiPrompt, systemPrompt)
+                        .map(content -> { assistantReply.append(content); return content; })
+                        .doOnError(e -> log.warn("[AI] 流式对话失败（降级）sessionId={}", sessionId, e))
+                        .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"))
+                        .doFinally(signal -> {
+                            if (!assistantReply.isEmpty()) {
+                                historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
+                            }
+                        });
+            }
+        };
+    }
+
+    /**
      * 非流式对话，返回完整回复文本。
      */
     public String chat(String sessionId, String userMessage) {
@@ -196,8 +275,22 @@ public class ChatAppService {
      * 有命中结果时在基础 prompt 前注入【参考资料】块；无命中时返回基础 prompt。
      */
     private String buildSystemPrompt(List<KnowledgeSearchResult.Hit> hits) {
-        if (hits.isEmpty()) {
-            return BASE_SYSTEM_PROMPT;
+        return buildSystemPromptWithAddon(hits, null);
+    }
+
+    /**
+     * 构建含知识上下文和领域专属说明的 system prompt。
+     *
+     * @param hits            RAG 检索命中结果
+     * @param systemPromptAddon 领域专属 prompt 追加内容（null 时忽略）
+     */
+    private String buildSystemPromptWithAddon(List<KnowledgeSearchResult.Hit> hits,
+                                               String systemPromptAddon) {
+        String base = (systemPromptAddon != null && !systemPromptAddon.isBlank())
+                ? systemPromptAddon + "\n" + BASE_SYSTEM_PROMPT
+                : BASE_SYSTEM_PROMPT;
+        if (hits == null || hits.isEmpty()) {
+            return base;
         }
         StringBuilder ref = new StringBuilder("【参考资料】（请优先依据以下内容回答，无需在回答中标注来源编号）\n\n");
         for (int i = 0; i < hits.size(); i++) {
@@ -208,6 +301,6 @@ public class ChatAppService {
             ref.append("[").append(i + 1).append("] ").append(label).append("\n")
                .append(content).append("\n\n");
         }
-        return ref.append("---\n").append(BASE_SYSTEM_PROMPT).toString();
+        return ref.append("---\n").append(base).toString();
     }
 }
