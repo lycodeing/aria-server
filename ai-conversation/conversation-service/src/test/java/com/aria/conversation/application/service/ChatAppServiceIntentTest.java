@@ -5,7 +5,6 @@ import com.aria.conversation.infrastructure.ai.IntentClassifier;
 import com.aria.conversation.infrastructure.ai.IntentResult;
 import com.aria.conversation.infrastructure.ai.IntentType;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
-import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
 import com.aria.conversation.infrastructure.dit.pipeline.ToolExecutor;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
@@ -45,6 +44,8 @@ class ChatAppServiceIntentTest {
                 intentClassifier, sessionQueueService, ditPipeline, toolExecutor, new ObjectMapper());
         // lenient: 转人工/拒答路径不走 findAll，允许该 stub 未被使用
         lenient().when(historyRepository.findAll(anyString())).thenReturn(List.of());
+        // lenient: 大多数路径不需要 RAG 命中，默认返回空列表
+        lenient().when(knowledgeClient.search(anyString())).thenReturn(List.of());
     }
 
     @Test
@@ -55,7 +56,8 @@ class ChatAppServiceIntentTest {
         when(aiClient.streamChat(anyList(), anyString()))
                 .thenReturn(Flux.just("这是", "回答"));
 
-        Flux<String> result = service.streamChat("s1", "退款政策是什么？", List.of());
+        // 使用 2-arg 重载；3-arg 重载（直接传 hits）已移除，由 streamChatEvents 内部统一调用 knowledgeClient
+        Flux<String> result = service.streamChat("s1", "退款政策是什么？");
 
         StepVerifier.create(result)
                 .expectNext("这是", "回答")
@@ -70,7 +72,8 @@ class ChatAppServiceIntentTest {
         when(intentClassifier.classify(anyString()))
                 .thenReturn(new IntentResult(IntentType.TRANSFER_REQUEST, 0.95));
 
-        Flux<String> result = service.streamChat("s2", "我要找真人客服", List.of());
+        // streamChat(deprecated) 从 transfer payload.message 提取文字，不返回空 Flux
+        Flux<String> result = service.streamChat("s2", "我要找真人客服");
 
         StepVerifier.create(result)
                 .expectNextMatches(msg -> msg.contains("人工客服"))
@@ -85,7 +88,7 @@ class ChatAppServiceIntentTest {
         when(intentClassifier.classify(anyString()))
                 .thenReturn(new IntentResult(IntentType.COMPLAINT, 0.93));
 
-        Flux<String> result = service.streamChat("s3", "你们服务太差了，我要投诉", List.of());
+        Flux<String> result = service.streamChat("s3", "你们服务太差了，我要投诉");
 
         StepVerifier.create(result)
                 .expectNextMatches(msg -> msg.contains("抱歉") && msg.contains("人工客服"))
@@ -100,7 +103,7 @@ class ChatAppServiceIntentTest {
         when(intentClassifier.classify(anyString()))
                 .thenReturn(new IntentResult(IntentType.OUT_OF_SCOPE, 0.88));
 
-        Flux<String> result = service.streamChat("s4", "帮我解一道微积分题", List.of());
+        Flux<String> result = service.streamChat("s4", "帮我解一道微积分题");
 
         StepVerifier.create(result)
                 .expectNextMatches(msg -> msg.contains("只能回答业务相关"))
@@ -115,13 +118,16 @@ class ChatAppServiceIntentTest {
                 .thenReturn(new IntentResult(IntentType.CHITCHAT, 0.9));
         when(aiClient.streamChat(anyList(), anyString()))
                 .thenReturn(Flux.just("你好！"));
+        // 模拟 knowledgeClient 返回一个命中，但 CHITCHAT 路径应跳过 RAG 不使用它
         KnowledgeSearchResult.Hit hit = mock(KnowledgeSearchResult.Hit.class);
+        when(knowledgeClient.search(anyString())).thenReturn(List.of(hit));
 
-        Flux<String> result = service.streamChat("s5", "你好", List.of(hit));
+        Flux<String> result = service.streamChat("s5", "你好");
 
         StepVerifier.create(result)
                 .expectNext("你好！")
                 .verifyComplete();
+        // skipRag=true 时 systemPrompt 不拼入参考资料
         verify(aiClient).streamChat(anyList(), argThat(prompt -> !prompt.contains("【参考资料】")));
     }
 
@@ -133,7 +139,7 @@ class ChatAppServiceIntentTest {
         when(aiClient.streamChat(anyList(), anyString()))
                 .thenReturn(Flux.just("正常回答"));
 
-        Flux<String> result = service.streamChat("s6", "随便问个问题", List.of());
+        Flux<String> result = service.streamChat("s6", "随便问个问题");
 
         StepVerifier.create(result)
                 .expectNext("正常回答")
@@ -149,7 +155,7 @@ class ChatAppServiceIntentTest {
         doThrow(new RuntimeException("Redis 不可用"))
                 .when(sessionQueueService).enqueue(any(), any(), any(), any());
 
-        Flux<String> result = service.streamChat("s7", "转人工", List.of());
+        Flux<String> result = service.streamChat("s7", "转人工");
 
         StepVerifier.create(result)
                 .expectNextMatches(msg -> msg.contains("人工客服"))
