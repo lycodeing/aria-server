@@ -92,7 +92,18 @@ public class ChatController {
             );
         }
 
-        // 提前检索知识块，避免在 AI 流式链中重复检索
+        // 有 domainCode → 走 DIT Pipeline（领域感知意图识别 + 槽位解析）
+        if (req.getDomainCode() != null && !req.getDomainCode().isBlank()) {
+            Flux<ServerSentEvent<String>> ditStream = chatService
+                    .streamChatWithDomain(sessionId, req.getMessage(),
+                            req.getDomainCode(), java.util.Map.of())
+                    .map(chunk -> ServerSentEvent.<String>builder().data(chunk).build())
+                    .concatWith(Flux.just(
+                            ServerSentEvent.<String>builder().event("done").data("[DONE]").build()));
+            return ditStream;
+        }
+
+        // 无 domainCode → 原有通用流程
         List<KnowledgeSearchResult.Hit> hits = chatService.searchHits(req.getMessage());
 
         Flux<ServerSentEvent<String>> aiStream = chatService.streamChat(sessionId, req.getMessage(), hits)
@@ -210,6 +221,11 @@ public class ChatController {
          * 用户消息内容
          */
         private String message;
+        /**
+         * 领域标识（可选）。传入时走 DIT Pipeline，支持意图识别和工具调用。
+         * 如 "ecommerce"、"finance"、"travel"。
+         */
+        private String domainCode;
     }
 
     @Data
