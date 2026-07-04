@@ -340,7 +340,8 @@ public class ChatAppService {
             return Flux.just(ChatEvent.slotAsk(r.promptMessage()));
         }
         if (route instanceof RouteResult.ExecuteResult r) {
-            // 阻塞操作（工具调用 + RAG 检索）切换到 boundedElastic，避免在 reactor-http-nio 线程崩溃
+            // 外层 streamChatWithDomain 已通过 subscribeOn(boundedElastic) 保证当前线程安全，
+            // 此处无需再次 subscribeOn，直接在继承的 boundedElastic 线程上执行工具调用和 RAG 检索
             return Mono.fromCallable(() -> {
                         List<ToolCallResult> toolResults = toolExecutor.executeRequired(
                                 r.intentConfig(), r.resolvedSlots(), sessionCtx);
@@ -350,7 +351,6 @@ public class ChatAppService {
                         return new Object[]{toolResults, buildSystemPromptWithToolContext(
                                 hits, r.systemPromptAddon(), toolContext)};
                     })
-                    .subscribeOn(Schedulers.boundedElastic())
                     .flatMapMany(arr -> {
                         @SuppressWarnings("unchecked")
                         List<ToolCallResult> toolResults = (List<ToolCallResult>) arr[0];
