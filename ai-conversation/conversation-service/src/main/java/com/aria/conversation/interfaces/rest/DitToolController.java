@@ -19,7 +19,7 @@ import java.util.List;
  * DELETE /admin/dit/tools/{id}   → 删除工具
  */
 @RestController
-@RequestMapping("/admin/dit/tools")
+@RequestMapping("/api/v1/admin/dit/tools")
 @RequiredArgsConstructor
 public class DitToolController {
 

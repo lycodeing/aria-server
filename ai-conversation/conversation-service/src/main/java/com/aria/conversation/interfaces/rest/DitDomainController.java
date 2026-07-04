@@ -20,7 +20,7 @@ import java.util.List;
  * DELETE /admin/dit/domains/{id}     → 删除领域
  */
 @RestController
-@RequestMapping("/admin/dit/domains")
+@RequestMapping("/api/v1/admin/dit/domains")
 @RequiredArgsConstructor
 public class DitDomainController {
 

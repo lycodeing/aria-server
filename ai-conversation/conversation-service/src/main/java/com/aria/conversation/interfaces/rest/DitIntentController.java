@@ -21,7 +21,7 @@ import java.util.List;
  * 绑定：  GET/POST /admin/dit/bindings?intentId= DELETE /admin/dit/bindings/{id}
  */
 @RestController
-@RequestMapping("/admin/dit")
+@RequestMapping("/api/v1/admin/dit")
 @RequiredArgsConstructor
 public class DitIntentController {
 
