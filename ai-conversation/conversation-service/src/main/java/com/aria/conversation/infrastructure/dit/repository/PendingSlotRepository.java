@@ -34,11 +34,11 @@ public class PendingSlotRepository {
     public void save(PendingSlotState state) {
         try {
             String json = objectMapper.writeValueAsString(state);
-            cache.set(KEY_PREFIX + state.sessionId(), json, TTL);
+            cache.set(KEY_PREFIX + state.getSessionId(), json, TTL);
             log.debug("[DIT] 保存挂起状态 sessionId={} slot={} type={} retry={}",
-                    state.sessionId(), state.pendingSlot(), state.pendingType(), state.retryCount());
+                    state.getSessionId(), state.getPendingSlot(), state.getPendingType(), state.getRetryCount());
         } catch (Exception e) {
-            log.error("[DIT] 保存挂起状态失败 sessionId={}", state.sessionId(), e);
+            log.error("[DIT] 保存挂起状态失败 sessionId={}", state.getSessionId(), e);
         }
     }
 
