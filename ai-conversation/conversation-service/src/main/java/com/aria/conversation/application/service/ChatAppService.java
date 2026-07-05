@@ -1,7 +1,6 @@
 package com.aria.conversation.application.service;
 
 import com.aria.conversation.application.service.payload.TransferPayload;
-import com.aria.conversation.application.service.route.RouteResultHandler;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.service.DomainRoutingService;
@@ -12,8 +11,6 @@ import com.aria.conversation.domain.model.IntentType;
 import com.aria.conversation.domain.service.IntentService;
 import com.aria.conversation.infrastructure.dit.domain.DomainSwitchRecord;
 import com.aria.conversation.infrastructure.dit.domain.SwitchType;
-import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
-import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
@@ -36,6 +33,9 @@ import java.util.Optional;
  * 对话应用服务。
  * 编排多轮对话历史维护（委托给 ConversationHistoryRepository）、
  * 知识库检索（RAG）和 AI 回复生成。
+ *
+ * <p>域对话（有 domainCode）委托给 {@link DomainAgentService}，
+ * 通用 FAQ 流程（无 domainCode）在本类内部完成。
  */
 @Slf4j
 @Service
@@ -64,35 +64,32 @@ public class ChatAppService {
     private final KnowledgeClient knowledgeClient;
     private final IntentService intentClassifier;
     private final SessionQueueService sessionQueueService;
-    private final DitPipeline ditPipeline;
     private final ObjectMapper objectMapper;
     private final SessionDomainRepository sessionDomainRepo;
     private final SessionDomainSwitchRepository domainSwitchRepo;
     private final DomainRoutingService domainRoutingService;
-    private final List<RouteResultHandler> routeHandlers;
+    private final DomainAgentService domainAgentService;
 
     public ChatAppService(DynamicModelFactory aiClient,
                           ConversationHistoryRepository historyRepository,
                           KnowledgeClient knowledgeClient,
                           IntentService intentClassifier,
                           SessionQueueService sessionQueueService,
-                          DitPipeline ditPipeline,
                           ObjectMapper objectMapper,
                           SessionDomainRepository sessionDomainRepo,
                           SessionDomainSwitchRepository domainSwitchRepo,
                           DomainRoutingService domainRoutingService,
-                          List<RouteResultHandler> routeHandlers) {
+                          DomainAgentService domainAgentService) {
         this.aiClient            = aiClient;
         this.historyRepository   = historyRepository;
         this.knowledgeClient     = knowledgeClient;
         this.intentClassifier    = intentClassifier;
         this.sessionQueueService = sessionQueueService;
-        this.ditPipeline         = ditPipeline;
         this.objectMapper        = objectMapper;
         this.sessionDomainRepo   = sessionDomainRepo;
         this.domainSwitchRepo    = domainSwitchRepo;
         this.domainRoutingService = domainRoutingService;
-        this.routeHandlers       = routeHandlers;
+        this.domainAgentService  = domainAgentService;
     }
 
     // -------------------------------------------------------
@@ -102,7 +99,7 @@ public class ChatAppService {
     /**
      * 统一流式对话入口，返回 {@link ChatEvent} 流供 Controller 转换为 SSE。
      *
-     * <p>所有路由决策（人工接入判断、DIT Pipeline、通用 FAQ）全部在此方法内完成，
+     * <p>所有路由决策（人工接入判断、DomainAgent、通用 FAQ）全部在此方法内完成，
      * Controller 只负责格式转换，不含任何业务判断。
      *
      * @param sessionId  会话 ID
@@ -116,9 +113,9 @@ public class ChatAppService {
             return Flux.just(ChatEvent.data(AGENT_HINT_MSG));
         }
 
-        // 有 domainCode → 域路由 + DIT Pipeline
+        // 有 domainCode → 域路由 + DomainAgentService
         if (StringUtils.isNotBlank(domainCode)) {
-            // 所有阻塞操作（Redis、小模型路由）均在 boundedElastic 线程完成，flatMapMany 再进入 DIT Pipeline
+            // 所有阻塞操作（Redis、小模型路由）均在 boundedElastic 线程完成
             return Mono.fromCallable(() -> {
                         // 1. 读取/写入 session 激活域（首次进入写入 INITIAL 记录）
                         Optional<String> existingDomain = sessionDomainRepo.find(sessionId);
@@ -139,7 +136,6 @@ public class ChatAppService {
                                 domainRoutingService.route(message, activeDomain, recentHistory);
                         if (routing.shouldSwitch()) {
                             String newDomain = routing.suggestedDomain();
-                            // NOTE: PendingSlotRepository 在 DitPipeline 内部管理，Phase 5 统一处理
                             sessionDomainRepo.save(sessionId, newDomain);
                             domainSwitchRepo.record(new DomainSwitchRecord(
                                     sessionId, activeDomain, newDomain,
@@ -149,9 +145,9 @@ public class ChatAppService {
                         return activeDomain;
                     })
                     .subscribeOn(Schedulers.boundedElastic())
-                    // 3. 进入 DIT Pipeline（Phase 5 将替换为 DomainAgentService）
+                    // 3. DomainAgentService — LangChain4j function-calling
                     .flatMapMany(activeDomain ->
-                            streamChatWithDomain(sessionId, message, activeDomain, Map.of()));
+                            domainAgentService.streamChat(sessionId, activeDomain, message));
         }
 
         // 通用 FAQ 流程：RAG + 意图路由 + LLM，含 sources event
@@ -187,14 +183,9 @@ public class ChatAppService {
     /**
      * 通用 FAQ 流程：RAG + 意图路由 + LLM，包含 sources event。
      * 返回 {@link ChatEvent} 流，知识库命中时先发 sources 再发 AI token。
-     *
-     * <p>所有阻塞操作（Redis 历史写入、HTTP 知识库检索、LLM 意图分类）通过
-     * {@code Mono.fromCallable + subscribeOn(boundedElastic)} 整体切换到 IO 线程池，
-     * 与 {@link #streamChatWithDomain} 的线程模型保持一致，避免阻塞 reactor-http-nio 线程。
      */
     private Flux<ChatEvent> streamFaq(String sessionId, String message) {
         return Mono.fromCallable(() -> {
-                    // 以下均为阻塞操作，必须在 boundedElastic 线程上执行
                     historyRepository.append(sessionId, ROLE_USER, message);
                     List<KnowledgeSearchResult.Hit> hits = searchHits(message);
                     IntentResult intent = intentClassifier.classify(message);
@@ -208,8 +199,6 @@ public class ChatAppService {
 
     /**
      * 将 FAQ 路由数据转换为 SSE 事件流。
-     * 调用前所有阻塞操作已完成（由 {@link #streamFaq} 的 boundedElastic 保证），
-     * 此方法只组装 Flux，不执行任何阻塞 I/O。
      */
     private Flux<ChatEvent> buildFaqEventStream(String sessionId, String message, FaqRouteData route) {
         IntentResult intent = route.intent();
@@ -282,12 +271,11 @@ public class ChatAppService {
         });
     }
 
-    /** FAQ 路由阶段的中间结果，携带 hits 和意图分类结果，通过 Mono.fromCallable 在 boundedElastic 上计算。 */
+    /** FAQ 路由阶段的中间结果，携带 hits 和意图分类结果。 */
     private record FaqRouteData(List<KnowledgeSearchResult.Hit> hits, IntentResult intent) {}
 
     /**
      * 将 hits 序列化为 JSON 数组，格式：[{"docId":"...","label":"..."}]。
-     * 序列化失败时返回空数组，不阻断 SSE 流。
      */
     public String buildSourcesJson(List<KnowledgeSearchResult.Hit> hits) {
         if (hits.isEmpty()) return "[]";
@@ -307,74 +295,6 @@ public class ChatAppService {
             log.warn("[Chat] sources JSON 序列化失败，降级返回空数组", e);
             return "[]";
         }
-    }
-
-    /**
-     * 流式对话（带预检索 hits），含意图路由，返回 {@link ChatEvent} 流。已废弃，由 {@link #streamFaq} 取代。
-     *
-     * @deprecated 阻塞操作（historyRepository、intentClassifier）现已移至 streamFaq 的 boundedElastic 线程块。
-     *             此方法保留仅供向后兼容，内部直接委托 streamFaq 实现。
-     */
-    @Deprecated
-    private Flux<ChatEvent> streamChatEvents(String sessionId, String userMessage,
-                                              List<KnowledgeSearchResult.Hit> hits) {
-        // 直接委托给新实现；hits 参数保留供测试桩使用（测试中直接注入 knowledgeClient mock）
-        return buildFaqEventStream(sessionId, userMessage, new FaqRouteData(hits,
-                intentClassifier.classify(userMessage)));
-    }
-
-    /**
-     * 流式对话（自动检索），内部委托 {@link #streamChatEvents}。
-     *
-     * <p><b>降级策略</b>：当路由结果为转人工时，{@code streamChatEvents} 发出
-     * {@link ChatEvent#transfer} 语义事件，此方法会从 payload 中提取 message 字段
-     * 作为文字回复返回，保证调用方不会收到空 Flux。其他语义事件（sources/error 等）被丢弃。
-     *
-     * @deprecated 新代码应直接调用 {@link #stream}，可获取完整语义事件流。
-     *             本方法仅保留用于非 SSE 场景（如内部调用）的向后兼容。
-     */
-    @Deprecated
-    public Flux<String> streamChat(String sessionId, String userMessage) {
-        return streamChatEvents(sessionId, userMessage, searchHits(userMessage))
-                .flatMap(e -> {
-                    if (e.eventType() == null) {
-                        // 普通 AI 文字 token
-                        return Flux.just(e.data());
-                    }
-                    if (ChatEvent.EventType.TRANSFER.equals(e.eventType())) {
-                        // transfer 场景：从 payload 提取 message 作为降级文字，避免返回空 Flux
-                        try {
-                            TransferPayload payload = objectMapper.readValue(e.data(), TransferPayload.class);
-                            return Flux.just(payload.message() != null ? payload.message() : e.data());
-                        } catch (Exception ex) {
-                            log.warn("[Chat] transfer payload 解析失败，降级返回原始 data", ex);
-                            return Flux.just(e.data());
-                        }
-                    }
-                    // 其他语义事件（sources/error 等）在此上下文无意义，跳过
-                    return Flux.empty();
-                });
-    }
-
-    /**
-     * 领域感知流式对话（DIT Pipeline），返回 {@link ChatEvent} 流含语义事件类型。
-     *
-     * <p>整个 Route 阶段（DB 查询 + Redis + LLM 意图识别 + DISCOVER HTTP 调用）均为阻塞操作，
-     * 通过 {@code subscribeOn(Schedulers.boundedElastic())} 整体切换到 IO 线程池，
-     * 避免在 reactor-http-nio 线程上调用阻塞操作导致死锁。
-     */
-    public Flux<ChatEvent> streamChatWithDomain(String sessionId, String userMessage,
-                                                 String domainCode,
-                                                 Map<String, Object> sessionCtx) {
-        return Mono.fromCallable(() -> {
-                    // 以下均为阻塞操作，必须在 boundedElastic 线程上执行
-                    historyRepository.append(sessionId, ROLE_USER, userMessage);
-                    List<ChatMessage> recentHistory = toAiPrompt(historyRepository.findAll(sessionId));
-                    return ditPipeline.route(sessionId, userMessage, domainCode,
-                            recentHistory, sessionCtx);
-                })
-                .subscribeOn(Schedulers.boundedElastic())
-                .flatMapMany(route -> buildDomainEventStream(sessionId, userMessage, route, sessionCtx));
     }
 
     /**
@@ -422,17 +342,27 @@ public class ChatAppService {
     // -------------------------------------------------------
 
     /**
-     * DIT 路由结果处理，委托给 {@link RouteResultHandler} 策略链（开闭原则）。
+     * @deprecated 新代码应直接调用 {@link #stream}。
+     *             本方法仅保留用于非 SSE 场景（如内部调用）的向后兼容。
      */
-    private Flux<ChatEvent> buildDomainEventStream(String sessionId, String userMessage,
-                                                    RouteResult route,
-                                                    Map<String, Object> sessionCtx) {
-        return routeHandlers.stream()
-                .filter(h -> h.supports(route))
-                .findFirst()
-                .orElseThrow(() -> new IllegalStateException(
-                        "No handler for RouteResult: " + route.getClass().getSimpleName()))
-                .handle(sessionId, userMessage, route, sessionCtx);
+    @Deprecated
+    public Flux<String> streamChat(String sessionId, String userMessage) {
+        return streamFaq(sessionId, userMessage)
+                .flatMap(e -> {
+                    if (e.eventType() == null) {
+                        return Flux.just(e.data());
+                    }
+                    if (ChatEvent.EventType.TRANSFER.equals(e.eventType())) {
+                        try {
+                            TransferPayload payload = objectMapper.readValue(e.data(), TransferPayload.class);
+                            return Flux.just(payload.message() != null ? payload.message() : e.data());
+                        } catch (Exception ex) {
+                            log.warn("[Chat] transfer payload 解析失败，降级返回原始 data", ex);
+                            return Flux.just(e.data());
+                        }
+                    }
+                    return Flux.empty();
+                });
     }
 
     private List<ChatMessage> toAiPrompt(List<ConversationMessage> history) {
@@ -443,25 +373,10 @@ public class ChatAppService {
 
     /**
      * 构建含知识上下文的 system prompt。
-     * 有命中结果时在基础 prompt 前注入【参考资料】块；无命中时返回基础 prompt。
      */
     private String buildSystemPrompt(List<KnowledgeSearchResult.Hit> hits) {
-        return buildSystemPromptWithAddon(hits, null);
-    }
-
-    /**
-     * 构建含知识上下文和领域专属说明的 system prompt。
-     *
-     * @param hits            RAG 检索命中结果
-     * @param systemPromptAddon 领域专属 prompt 追加内容（null 时忽略）
-     */
-    private String buildSystemPromptWithAddon(List<KnowledgeSearchResult.Hit> hits,
-                                               String systemPromptAddon) {
-        String base = (systemPromptAddon != null && !systemPromptAddon.isBlank())
-                ? systemPromptAddon + "\n" + BASE_SYSTEM_PROMPT
-                : BASE_SYSTEM_PROMPT;
         if (hits == null || hits.isEmpty()) {
-            return base;
+            return BASE_SYSTEM_PROMPT;
         }
         StringBuilder ref = new StringBuilder("【参考资料】（请优先依据以下内容回答，无需在回答中标注来源编号）\n\n");
         for (int i = 0; i < hits.size(); i++) {
@@ -472,6 +387,6 @@ public class ChatAppService {
             ref.append("[").append(i + 1).append("] ").append(label).append("\n")
                .append(content).append("\n\n");
         }
-        return ref.append("---\n").append(base).toString();
+        return ref.append("---\n").append(BASE_SYSTEM_PROMPT).toString();
     }
 }
