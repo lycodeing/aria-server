@@ -52,22 +52,18 @@ public class DynamicModelFactory {
      * Converts project ChatMessage + systemPrompt to LangChain4j types internally.
      */
     public Flux<String> streamChat(List<ChatMessage> messages, String systemPrompt) {
-        AiModelConfig cfg = configProvider.getActive();
-        StreamingChatModel model = getStreamingChatModel();
-        log.debug("[AI] streamChat model={} protocol={}", cfg.modelName(), cfg.apiProtocol());
-
         List<dev.langchain4j.data.message.ChatMessage> lc4jMessages =
                 toLangChain4jMessages(messages, systemPrompt);
 
         Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
-        model.chat(lc4jMessages, new StreamingChatResponseHandler() {
+        getStreamingChatModel().chat(lc4jMessages, new StreamingChatResponseHandler() {
             @Override
             public void onPartialResponse(String token) { sink.tryEmitNext(token); }
             @Override
             public void onCompleteResponse(ChatResponse response) { sink.tryEmitComplete(); }
             @Override
             public void onError(Throwable error) {
-                log.warn("[AI] 流式对话错误 model={}", cfg.modelName(), error);
+                log.warn("[AI] 流式对话错误", error);
                 sink.tryEmitError(error);
             }
         });
@@ -79,8 +75,6 @@ public class DynamicModelFactory {
      * ⚠️ Must be called on boundedElastic thread only.
      */
     public String chat(List<ChatMessage> messages, String systemPrompt) {
-        AiModelConfig cfg = configProvider.getActive();
-        log.debug("[AI] chat model={} protocol={}", cfg.modelName(), cfg.apiProtocol());
         return getChatModel().chat(toLangChain4jMessages(messages, systemPrompt))
                 .aiMessage().text();
     }

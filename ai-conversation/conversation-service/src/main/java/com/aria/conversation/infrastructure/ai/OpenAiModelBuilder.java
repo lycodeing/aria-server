@@ -5,10 +5,12 @@ import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.openai.OpenAiChatModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import java.time.Duration;
 
 /** Handles OpenAI and all compatible protocols (DeepSeek/Moonshot/Qianwen etc). Fallback implementation. */
+@Order(2)
 @Component
 public class OpenAiModelBuilder implements LlmModelBuilder {
 

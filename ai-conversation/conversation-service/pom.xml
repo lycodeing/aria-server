@@ -72,11 +72,26 @@
             <artifactId>spring-boot-starter-aop</artifactId>
         </dependency>
         <!-- LangChain4j 1.1.0 核心依赖 -->
-        <dependency><groupId>dev.langchain4j</groupId><artifactId>langchain4j</artifactId></dependency>
-        <dependency><groupId>dev.langchain4j</groupId><artifactId>langchain4j-open-ai</artifactId></dependency>
-        <dependency><groupId>dev.langchain4j</groupId><artifactId>langchain4j-anthropic</artifactId></dependency>
-        <dependency><groupId>dev.langchain4j</groupId><artifactId>langchain4j-reactor</artifactId></dependency>
-        <dependency><groupId>com.github.ben-manes.caffeine</groupId><artifactId>caffeine</artifactId></dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-open-ai</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-anthropic</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-reactor</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.springframework.boot</groupId>
