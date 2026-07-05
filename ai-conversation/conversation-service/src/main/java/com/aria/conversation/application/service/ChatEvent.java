@@ -37,7 +37,9 @@ public record ChatEvent(String eventType, String data) {
          */
         public static final String TRANSFER   = "transfer";
         /** 业务错误，data 为错误描述字符串 */
-        public static final String ERROR      = "error";
+        public static final String ERROR         = "error";
+        /** 域切换信号，data 为目标域 code */
+        public static final String DOMAIN_SWITCH = "domain_switch";
 
         /**
          * SSE 流结束信号，data 固定为 "[DONE]"。
@@ -94,5 +96,15 @@ public record ChatEvent(String eventType, String data) {
      */
     public static ChatEvent transfer(String json) {
         return new ChatEvent(EventType.TRANSFER, json);
+    }
+
+    /** 业务错误信号 */
+    public static ChatEvent error(String message) {
+        return new ChatEvent(EventType.ERROR, message);
+    }
+
+    /** 域切换信号，data 为目标域 code */
+    public static ChatEvent domainSwitch(String targetDomain) {
+        return new ChatEvent(EventType.DOMAIN_SWITCH, targetDomain);
     }
 }
