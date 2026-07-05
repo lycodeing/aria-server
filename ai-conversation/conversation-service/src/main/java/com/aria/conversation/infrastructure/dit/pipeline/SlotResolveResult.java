@@ -36,6 +36,9 @@ public record SlotResolveResult(
         return status == Status.DISCOVERED || status == Status.MISSING;
     }
 
+    /**
+     * 重试超过阈值，触发兜底转人工
+     */
     public boolean isGiveUp() {
         return status == Status.GIVE_UP;
     }

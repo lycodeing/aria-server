@@ -1,8 +1,7 @@
 package com.aria.conversation.application.service;
 
-import com.aria.conversation.application.service.payload.ToolCallPayload;
-import com.aria.conversation.application.service.payload.ToolDonePayload;
 import com.aria.conversation.application.service.payload.TransferPayload;
+import com.aria.conversation.application.service.route.RouteResultHandler;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.service.DomainRoutingService;
@@ -15,8 +14,6 @@ import com.aria.conversation.infrastructure.dit.domain.DomainSwitchRecord;
 import com.aria.conversation.infrastructure.dit.domain.SwitchType;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
-import com.aria.conversation.infrastructure.dit.pipeline.ToolCallResult;
-import com.aria.conversation.infrastructure.dit.pipeline.ToolExecutor;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
@@ -31,7 +28,6 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -69,11 +65,11 @@ public class ChatAppService {
     private final IntentService intentClassifier;
     private final SessionQueueService sessionQueueService;
     private final DitPipeline ditPipeline;
-    private final ToolExecutor toolExecutor;
     private final ObjectMapper objectMapper;
     private final SessionDomainRepository sessionDomainRepo;
     private final SessionDomainSwitchRepository domainSwitchRepo;
     private final DomainRoutingService domainRoutingService;
+    private final List<RouteResultHandler> routeHandlers;
 
     public ChatAppService(DynamicModelFactory aiClient,
                           ConversationHistoryRepository historyRepository,
@@ -81,22 +77,22 @@ public class ChatAppService {
                           IntentService intentClassifier,
                           SessionQueueService sessionQueueService,
                           DitPipeline ditPipeline,
-                          ToolExecutor toolExecutor,
                           ObjectMapper objectMapper,
                           SessionDomainRepository sessionDomainRepo,
                           SessionDomainSwitchRepository domainSwitchRepo,
-                          DomainRoutingService domainRoutingService) {
+                          DomainRoutingService domainRoutingService,
+                          List<RouteResultHandler> routeHandlers) {
         this.aiClient            = aiClient;
         this.historyRepository   = historyRepository;
         this.knowledgeClient     = knowledgeClient;
         this.intentClassifier    = intentClassifier;
         this.sessionQueueService = sessionQueueService;
         this.ditPipeline         = ditPipeline;
-        this.toolExecutor        = toolExecutor;
         this.objectMapper        = objectMapper;
         this.sessionDomainRepo   = sessionDomainRepo;
         this.domainSwitchRepo    = domainSwitchRepo;
         this.domainRoutingService = domainRoutingService;
+        this.routeHandlers       = routeHandlers;
     }
 
     // -------------------------------------------------------
@@ -289,9 +285,6 @@ public class ChatAppService {
     /** FAQ 路由阶段的中间结果，携带 hits 和意图分类结果，通过 Mono.fromCallable 在 boundedElastic 上计算。 */
     private record FaqRouteData(List<KnowledgeSearchResult.Hit> hits, IntentResult intent) {}
 
-    /** ExecuteResult 阶段工具调用 + system prompt 的计算结果，替代 Object[] 裸数组桥接。 */
-    private record ExecutePrepareData(List<ToolCallResult> toolResults, String systemPrompt) {}
-
     /**
      * 将 hits 序列化为 JSON 数组，格式：[{"docId":"...","label":"..."}]。
      * 序列化失败时返回空数组，不阻断 SSE 流。
@@ -429,154 +422,19 @@ public class ChatAppService {
     // -------------------------------------------------------
 
     /**
-     * DIT 路由结果处理，返回语义事件流 {@link ChatEvent}（Java 17 instanceof 链）。
-     *
-     * <p>PendingResult → 发 {@code slot_ask} 或 {@code candidates} 语义事件
-     * <p>ExecuteResult → 发 {@code tool_call}/{@code tool_done} + AI token 流
+     * DIT 路由结果处理，委托给 {@link RouteResultHandler} 策略链（开闭原则）。
      */
     private Flux<ChatEvent> buildDomainEventStream(String sessionId, String userMessage,
                                                     RouteResult route,
                                                     Map<String, Object> sessionCtx) {
-        if (route instanceof RouteResult.TransferResult r) {
-            try {
-                sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
-            } catch (Exception e) {
-                log.warn("[DIT] 自动转人工失败 sessionId={}", sessionId, e);
-            }
-            historyRepository.append(sessionId, ROLE_ASSISTANT, r.replyMessage());
-            try {
-                // 合并提示文字与语义信号为单一 transfer 事件，前端一次处理即可
-                String transferJson = objectMapper.writeValueAsString(
-                        new TransferPayload(r.reason(), r.replyMessage()));
-                return Flux.just(ChatEvent.transfer(transferJson));
-            } catch (JsonProcessingException e) {
-                log.warn("[DIT] transfer payload 序列化失败 sessionId={}", sessionId, e);
-                return Flux.just(ChatEvent.data(r.replyMessage())); // 降级：只发文字
-            }
-        }
-        if (route instanceof RouteResult.PendingResult r) {
-            historyRepository.append(sessionId, ROLE_ASSISTANT, r.promptMessage());
-            // 有候选项 → 只发 candidates 语义事件；无候选项 → 只发 slot_ask 语义事件
-            // 前端从语义事件的 data 字段读取 promptMessage，不额外发 ChatEvent.data() 避免重复渲染
-            if (r.candidates() != null && !r.candidates().isEmpty()) {
-                try {
-                    String candidatesJson = objectMapper.writeValueAsString(r.candidates());
-                    return Flux.just(ChatEvent.candidates(candidatesJson));
-                } catch (Exception e) {
-                    log.warn("[DIT] candidates 序列化失败 sessionId={}", sessionId, e);
-                }
-            }
-            return Flux.just(ChatEvent.slotAsk(r.promptMessage()));
-        }
-        if (route instanceof RouteResult.ExecuteResult r) {
-            // 外层 streamChatWithDomain 已通过 subscribeOn(boundedElastic) 保证当前线程安全，
-            // 此处无需再次 subscribeOn，直接在继承的 boundedElastic 线程上执行工具调用和 RAG 检索
-            return Mono.fromCallable(() -> {
-                        List<ToolCallResult> toolResults = toolExecutor.executeRequired(
-                                r.intentConfig(), r.resolvedSlots(), sessionCtx);
-                        String toolContext = buildToolContext(toolResults);
-                        List<KnowledgeSearchResult.Hit> hits = r.intentConfig().skipRag()
-                                ? List.of() : knowledgeClient.search(userMessage);
-                        String systemPrompt = buildSystemPromptWithToolContext(
-                                hits, r.systemPromptAddon(), toolContext);
-                        // 使用类型安全的 record 替代 Object[] 裸数组桥接
-                        return new ExecutePrepareData(toolResults, systemPrompt);
-                    })
-                    .flatMapMany(prepared -> {
-                        List<ToolCallResult> toolResults = prepared.toolResults();
-                        String systemPrompt = prepared.systemPrompt();
-
-                        // 构造工具调用状态事件（使用 Payload 记录类，消除 Map.of() 魔法值）
-                        List<ChatEvent> toolEvents = new ArrayList<>();
-                        for (ToolCallResult tr : toolResults) {
-                            try {
-                                toolEvents.add(ChatEvent.toolCall(objectMapper.writeValueAsString(
-                                        ToolCallPayload.running(tr.getToolCode()))));
-                                toolEvents.add(ChatEvent.toolDone(objectMapper.writeValueAsString(
-                                        ToolDonePayload.from(tr))));
-                            } catch (Exception e) {
-                                log.warn("[DIT] 工具事件序列化失败 tool={}", tr.getToolCode(), e);
-                            }
-                        }
-
-                        List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
-                        StringBuilder assistantReply = new StringBuilder();
-                        Flux<ChatEvent> aiStream = aiClient.streamChat(aiPrompt, systemPrompt)
-                                .map(content -> { assistantReply.append(content); return ChatEvent.data(content); })
-                                .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
-                                .onErrorResume(e -> Flux.just(ChatEvent.data("抱歉，AI 服务暂时不可用，请稍后重试。")))
-                                .doFinally(signal -> {
-                                    if (!assistantReply.isEmpty()) {
-                                        historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
-                                    }
-                                });
-
-                        return toolEvents.isEmpty()
-                                ? aiStream
-                                : Flux.concat(Flux.fromIterable(toolEvents), aiStream);
-                    });
-        }
-        // FallbackResult 或未知类型 → 降级通用流程
-        String addon = route instanceof RouteResult.FallbackResult fr ? fr.systemPromptAddon() : null;
-        return buildAiStream(sessionId, userMessage, addon).map(ChatEvent::data);
+        return routeHandlers.stream()
+                .filter(h -> h.supports(route))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "No handler for RouteResult: " + route.getClass().getSimpleName()))
+                .handle(sessionId, userMessage, route, sessionCtx);
     }
 
-    /** 将工具调用结果格式化为注入 LLM Prompt 的 context 字符串。 */
-    private String buildToolContext(List<ToolCallResult> results) {
-        if (results == null || results.isEmpty()) return "";
-        StringBuilder sb = new StringBuilder();
-        for (ToolCallResult r : results) {
-            if (r.isSuccess() && r.getResponse() != null && !r.getResponse().isBlank()) {
-                sb.append("【").append(r.getToolCode()).append("查询结果】\n")
-                  .append(r.getResponse()).append("\n\n");
-            }
-        }
-        return sb.toString().trim();
-    }
-
-    /** 构建含工具结果、知识库内容和领域说明的 system prompt。 */
-    private String buildSystemPromptWithToolContext(List<KnowledgeSearchResult.Hit> hits,
-                                                    String systemPromptAddon,
-                                                    String toolContext) {
-        StringBuilder sb = new StringBuilder();
-        if (toolContext != null && !toolContext.isBlank()) {
-            sb.append("【实时查询数据】（请优先依据以下数据回答）\n\n")
-              .append(toolContext).append("\n---\n");
-        }
-        if (hits != null && !hits.isEmpty()) {
-            sb.append("【参考资料】（请优先依据以下内容回答，无需在回答中标注来源编号）\n\n");
-            for (int i = 0; i < hits.size(); i++) {
-                KnowledgeSearchResult.Hit hit = hits.get(i);
-                String label = (hit.getBreadcrumb() != null && !hit.getBreadcrumb().isBlank())
-                        ? hit.getBreadcrumb() : "文档片段";
-                sb.append("[").append(i + 1).append("] ").append(label).append("\n")
-                  .append(hit.getContent() != null ? hit.getContent() : "").append("\n\n");
-            }
-            sb.append("---\n");
-        }
-        if (systemPromptAddon != null && !systemPromptAddon.isBlank()) {
-            sb.append(systemPromptAddon).append("\n");
-        }
-        sb.append(BASE_SYSTEM_PROMPT);
-        return sb.toString();
-    }
-
-    /** 构建 RAG + LLM 流式回答（带领域 system prompt addon）。 */
-    private Flux<String> buildAiStream(String sessionId, String userMessage, String systemPromptAddon) {
-        List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
-        String systemPrompt = buildSystemPromptWithAddon(hits, systemPromptAddon);
-        List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
-        StringBuilder assistantReply = new StringBuilder();
-        return aiClient.streamChat(aiPrompt, systemPrompt)
-                .map(content -> { assistantReply.append(content); return content; })
-                .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
-                .onErrorResume(e -> Flux.just("抱歉，AI 服务暂时不可用，请稍后重试。"))
-                .doFinally(signal -> {
-                    if (!assistantReply.isEmpty()) {
-                        historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
-                    }
-                });
-    }
     private List<ChatMessage> toAiPrompt(List<ConversationMessage> history) {
         return history.stream()
                 .map(m -> new ChatMessage(m.role(), m.content()))

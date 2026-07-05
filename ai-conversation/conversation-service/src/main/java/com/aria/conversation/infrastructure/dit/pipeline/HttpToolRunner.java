@@ -11,10 +11,12 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.Duration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * 通用 HTTP 工具执行器。
@@ -39,10 +41,15 @@ public class HttpToolRunner {
     private final WebClient.Builder webClientBuilder;
     /** baseUrl → WebClient 缓存 */
     private final ConcurrentHashMap<String, WebClient> clientCache = new ConcurrentHashMap<>();
+    private final Map<String, HttpAuthStrategy> authStrategyMap;
 
-    public HttpToolRunner(ObjectMapper objectMapper, WebClient.Builder webClientBuilder) {
+    public HttpToolRunner(ObjectMapper objectMapper,
+                          WebClient.Builder webClientBuilder,
+                          List<HttpAuthStrategy> authStrategies) {
         this.objectMapper = objectMapper;
         this.webClientBuilder = webClientBuilder;
+        this.authStrategyMap = authStrategies.stream()
+                .collect(Collectors.toMap(HttpAuthStrategy::authType, s -> s));
     }
 
     /**
@@ -184,31 +191,13 @@ public class HttpToolRunner {
 
     private HttpHeaders buildHeaders(ToolConfig tool, Map<String, Object> params) {
         HttpHeaders headers = new HttpHeaders();
-        // 认证头
+        // 认证头（策略模式，新增认证方式只需添加 HttpAuthStrategy 实现）
         // 注意：authConfig 中的 token / api_key_value 字段当前以明文存储。
         // 生产部署前需接入加密存储（如 KMS/AES），并在此处调用解密服务后再使用。
-        if ("BEARER".equals(tool.authType()) && tool.authConfig() != null) {
-            try {
-                JsonNode auth = objectMapper.readTree(tool.authConfig());
-                // 字段名 token_encrypted 为历史遗留，当前实际存储的是明文 token
-                // TODO: 生产前替换为解密调用
-                String token = auth.path("token_encrypted").asText("");
-                if (!token.isBlank()) headers.setBearerAuth(token);
-            } catch (Exception e) {
-                log.warn("[DIT] BEARER 认证头配置解析失败 tool={} authType={}", tool.code(), tool.authType(), e);
-            }
-        } else if ("API_KEY".equals(tool.authType()) && tool.authConfig() != null) {
-            try {
-                JsonNode auth = objectMapper.readTree(tool.authConfig());
-                String headerName = auth.path("header").asText("X-API-Key");
-                // 字段名 value_encrypted 为历史遗留，当前实际存储的是明文值
-                // TODO: 生产前替换为解密调用
-                String value = auth.path("value_encrypted").asText("");
-                if (!value.isBlank()) headers.set(headerName, value);
-            } catch (Exception e) {
-                log.warn("[DIT] API_KEY 认证头配置解析失败 tool={} authType={}", tool.code(), tool.authType(), e);
-            }
-        }
+        authStrategyMap.getOrDefault(
+                tool.authType() != null ? tool.authType() : "NONE",
+                authStrategyMap.getOrDefault("NONE", new NoAuthStrategy()))
+            .apply(headers, tool.authConfig(), objectMapper);
         // 自定义请求头
         if (tool.headersTemplate() != null && !tool.headersTemplate().isBlank()) {
             try {
