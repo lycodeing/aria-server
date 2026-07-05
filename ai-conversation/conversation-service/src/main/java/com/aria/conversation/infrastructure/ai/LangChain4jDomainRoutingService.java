@@ -2,7 +2,7 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.service.DomainRoutingService;
-import com.aria.conversation.infrastructure.dit.config.DomainConfig;
+import com.aria.conversation.infrastructure.dit.domain.DomainDO;
 import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,7 +32,7 @@ public class LangChain4jDomainRoutingService implements DomainRoutingService {
     public RouteResult route(String userMessage, String currentDomain,
                              List<ConversationMessage> recentHistory) {
         try {
-            List<DomainConfig> enabledDomains = domainRepository.findAllEnabled();
+            List<DomainDO> enabledDomains = domainRepository.findAllEnabledSummary();
 
             // 只有一个域，无需路由
             if (enabledDomains.size() <= 1) {
@@ -44,8 +44,8 @@ public class LangChain4jDomainRoutingService implements DomainRoutingService {
 
             // 校验小模型返回值是否为合法域 code（大小写不敏感）
             Optional<String> matchedCode = enabledDomains.stream()
-                    .filter(d -> d.code().equalsIgnoreCase(response))
-                    .map(DomainConfig::code)
+                    .filter(d -> d.getCode().equalsIgnoreCase(response))
+                    .map(DomainDO::getCode)
                     .findFirst();
 
             if (matchedCode.isEmpty()) {
@@ -67,14 +67,14 @@ public class LangChain4jDomainRoutingService implements DomainRoutingService {
 
     private String buildPrompt(String userMessage, String currentDomain,
                                 List<ConversationMessage> recentHistory,
-                                List<DomainConfig> enabledDomains) {
+                                List<DomainDO> enabledDomains) {
         StringBuilder sb = new StringBuilder();
         sb.append("你是一个客服对话域路由器，根据用户消息判断应该由哪个服务域处理。\n\n");
         sb.append("可用服务域：\n");
-        for (DomainConfig d : enabledDomains) {
-            sb.append("- ").append(d.code());
-            if (d.description() != null && !d.description().isBlank()) {
-                sb.append("：").append(d.description());
+        for (DomainDO d : enabledDomains) {
+            sb.append("- ").append(d.getCode());
+            if (d.getDescription() != null && !d.getDescription().isBlank()) {
+                sb.append("：").append(d.getDescription());
             }
             sb.append("\n");
         }

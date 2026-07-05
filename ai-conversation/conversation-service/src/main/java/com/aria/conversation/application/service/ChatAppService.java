@@ -11,6 +11,7 @@ import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.domain.model.IntentResult;
 import com.aria.conversation.domain.model.IntentType;
 import com.aria.conversation.domain.service.IntentService;
+import com.aria.conversation.infrastructure.dit.domain.DomainSwitchRecord;
 import com.aria.conversation.infrastructure.dit.domain.SwitchType;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
@@ -33,6 +34,7 @@ import reactor.core.scheduler.Schedulers;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * 对话应用服务。
@@ -123,12 +125,17 @@ public class ChatAppService {
             // 所有阻塞操作（Redis、小模型路由）均在 boundedElastic 线程完成，flatMapMany 再进入 DIT Pipeline
             return Mono.fromCallable(() -> {
                         // 1. 读取/写入 session 激活域（首次进入写入 INITIAL 记录）
-                        String activeDomain = sessionDomainRepo.find(sessionId).orElseGet(() -> {
+                        Optional<String> existingDomain = sessionDomainRepo.find(sessionId);
+                        String activeDomain;
+                        if (existingDomain.isPresent()) {
+                            activeDomain = existingDomain.get();
+                        } else {
                             sessionDomainRepo.save(sessionId, domainCode);
-                            domainSwitchRepo.record(sessionId, null, domainCode,
-                                    SwitchType.INITIAL, message, "用户进入服务入口", null);
-                            return domainCode;
-                        });
+                            domainSwitchRepo.record(new DomainSwitchRecord(
+                                    sessionId, null, domainCode,
+                                    SwitchType.INITIAL, message, "用户进入服务入口", null));
+                            activeDomain = domainCode;
+                        }
 
                         // 2. ROUTER 小模型域路由（~50-200ms，失败时降级保持当前域）
                         List<ConversationMessage> recentHistory = historyRepository.findAll(sessionId);
@@ -138,8 +145,9 @@ public class ChatAppService {
                             String newDomain = routing.suggestedDomain();
                             // NOTE: PendingSlotRepository 在 DitPipeline 内部管理，Phase 5 统一处理
                             sessionDomainRepo.save(sessionId, newDomain);
-                            domainSwitchRepo.record(sessionId, activeDomain, newDomain,
-                                    SwitchType.ROUTER_MODEL, message, "小模型检测切换", null);
+                            domainSwitchRepo.record(new DomainSwitchRecord(
+                                    sessionId, activeDomain, newDomain,
+                                    SwitchType.ROUTER_MODEL, message, "小模型检测切换", null));
                             return newDomain;
                         }
                         return activeDomain;

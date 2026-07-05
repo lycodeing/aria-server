@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.dit.repository;
 
+import com.aria.conversation.infrastructure.dit.domain.DomainSwitchRecord;
 import com.aria.conversation.infrastructure.dit.domain.SessionDomainSwitchDO;
 import com.aria.conversation.infrastructure.dit.domain.SwitchType;
 import com.aria.conversation.infrastructure.dit.mapper.SessionDomainSwitchMapper;
@@ -32,8 +33,9 @@ class SessionDomainSwitchRepositoryTest {
         ArgumentCaptor<SessionDomainSwitchDO> captor =
                 ArgumentCaptor.forClass(SessionDomainSwitchDO.class);
 
-        repository.record("session-001", "ecommerce", "finance",
-                SwitchType.ROUTER_MODEL, "我要查基金", "小模型检测切换", 42L);
+        repository.record(new DomainSwitchRecord(
+                "session-001", "ecommerce", "finance",
+                SwitchType.ROUTER_MODEL, "我要查基金", "小模型检测切换", 42L));
 
         verify(switchMapper).insert((SessionDomainSwitchDO) captor.capture());
         SessionDomainSwitchDO saved = captor.getValue();
@@ -53,7 +55,8 @@ class SessionDomainSwitchRepositoryTest {
         doThrow(new RuntimeException("DB down")).when(switchMapper).insert(any(SessionDomainSwitchDO.class));
 
         assertDoesNotThrow(() ->
-                repository.record("session-002", null, "ecommerce",
-                        SwitchType.INITIAL, "进入服务", "用户进入服务入口", null));
+                repository.record(new DomainSwitchRecord(
+                        "session-002", null, "ecommerce",
+                        SwitchType.INITIAL, "进入服务", "用户进入服务入口", null)));
     }
 }

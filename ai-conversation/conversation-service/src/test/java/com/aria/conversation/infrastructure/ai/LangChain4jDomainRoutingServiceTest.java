@@ -2,7 +2,7 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.service.DomainRoutingService.RouteResult;
-import com.aria.conversation.infrastructure.dit.config.DomainConfig;
+import com.aria.conversation.infrastructure.dit.domain.DomainDO;
 import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.mock.ChatModelMock;
@@ -25,8 +25,12 @@ class LangChain4jDomainRoutingServiceTest {
 
     private LangChain4jDomainRoutingService service;
 
-    private static DomainConfig domainConfig(String code, String description) {
-        return new DomainConfig(code, code + "_name", description, null, null, List.of());
+    private static DomainDO domainDO(String code, String description) {
+        DomainDO d = new DomainDO();
+        d.setCode(code);
+        d.setName(code + "_name");
+        d.setDescription(description);
+        return d;
     }
 
     private static ConversationMessage msg(String role, String content) {
@@ -44,9 +48,9 @@ class LangChain4jDomainRoutingServiceTest {
     void route_sameDomain_noSwitch() {
         ChatModel mock = ChatModelMock.thatAlwaysResponds("ecommerce");
         when(modelFactory.getRouterModel()).thenReturn(mock);
-        when(domainRepository.findAllEnabled()).thenReturn(List.of(
-                domainConfig("ecommerce", "电商服务"),
-                domainConfig("finance", "金融服务")));
+        when(domainRepository.findAllEnabledSummary()).thenReturn(List.of(
+                domainDO("ecommerce", "电商服务"),
+                domainDO("finance", "金融服务")));
 
         RouteResult result = service.route("我要查订单", "ecommerce", List.of());
 
@@ -59,9 +63,9 @@ class LangChain4jDomainRoutingServiceTest {
     void route_differentDomain_switchTrue() {
         ChatModel mock = ChatModelMock.thatAlwaysResponds("finance");
         when(modelFactory.getRouterModel()).thenReturn(mock);
-        when(domainRepository.findAllEnabled()).thenReturn(List.of(
-                domainConfig("ecommerce", "电商服务"),
-                domainConfig("finance", "金融服务")));
+        when(domainRepository.findAllEnabledSummary()).thenReturn(List.of(
+                domainDO("ecommerce", "电商服务"),
+                domainDO("finance", "金融服务")));
 
         RouteResult result = service.route("我想买基金", "ecommerce",
                 List.of(msg("user", "你好"), msg("assistant", "您好，请问有什么可以帮您？")));
@@ -75,9 +79,9 @@ class LangChain4jDomainRoutingServiceTest {
     void route_illegalCode_fallbackToCurrentDomain() {
         ChatModel mock = ChatModelMock.thatAlwaysResponds("invalid_domain_xyz");
         when(modelFactory.getRouterModel()).thenReturn(mock);
-        when(domainRepository.findAllEnabled()).thenReturn(List.of(
-                domainConfig("ecommerce", "电商服务"),
-                domainConfig("finance", "金融服务")));
+        when(domainRepository.findAllEnabledSummary()).thenReturn(List.of(
+                domainDO("ecommerce", "电商服务"),
+                domainDO("finance", "金融服务")));
 
         RouteResult result = service.route("随便说点什么", "ecommerce", List.of());
 
@@ -88,8 +92,8 @@ class LangChain4jDomainRoutingServiceTest {
     @Test
     @DisplayName("route: 只有一个域时直接返回，不调用模型")
     void route_singleDomain_noSwitch() {
-        when(domainRepository.findAllEnabled()).thenReturn(
-                List.of(domainConfig("ecommerce", "电商服务")));
+        when(domainRepository.findAllEnabledSummary()).thenReturn(
+                List.of(domainDO("ecommerce", "电商服务")));
 
         RouteResult result = service.route("随便问个问题", "ecommerce", List.of());
 

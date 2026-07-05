@@ -1,7 +1,7 @@
 package com.aria.conversation.infrastructure.dit.repository;
 
+import com.aria.conversation.infrastructure.dit.domain.DomainSwitchRecord;
 import com.aria.conversation.infrastructure.dit.domain.SessionDomainSwitchDO;
-import com.aria.conversation.infrastructure.dit.domain.SwitchType;
 import com.aria.conversation.infrastructure.dit.mapper.SessionDomainSwitchMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,32 +25,24 @@ public class SessionDomainSwitchRepository {
     /**
      * 记录一次域切换事件。
      *
-     * @param sessionId      会话 ID
-     * @param fromDomain     切换前域 code（初始进入时为 null）
-     * @param toDomain       切换后域 code
-     * @param switchType     切换类型，见 {@link SwitchType}
-     * @param triggerMessage 触发切换的用户消息原文
-     * @param reason         切换原因
-     * @param msgSeq         关联消息 seq（可为 null）
+     * @param cmd 域切换命令对象，见 {@link DomainSwitchRecord}
      */
-    public void record(String sessionId, String fromDomain, String toDomain,
-                       String switchType, String triggerMessage, String reason, Long msgSeq) {
+    public void record(DomainSwitchRecord cmd) {
         try {
             SessionDomainSwitchDO switchDO = new SessionDomainSwitchDO();
-            switchDO.setSessionId(sessionId);
-            switchDO.setFromDomain(fromDomain);
-            switchDO.setToDomain(toDomain);
-            switchDO.setSwitchType(switchType);
-            switchDO.setTriggerMessage(triggerMessage);
-            switchDO.setReason(reason);
-            switchDO.setMsgSeq(msgSeq);
+            switchDO.setSessionId(cmd.sessionId());
+            switchDO.setFromDomain(cmd.fromDomain());
+            switchDO.setToDomain(cmd.toDomain());
+            switchDO.setSwitchType(cmd.switchType());
+            switchDO.setTriggerMessage(cmd.triggerMessage());
+            switchDO.setReason(cmd.reason());
+            switchDO.setMsgSeq(cmd.msgSeq());
             switchDO.setCreatedAt(OffsetDateTime.now());
             switchMapper.insert(switchDO);
-            log.debug("[Domain] 记录域切换 sessionId={} from={} to={} type={}",
-                    sessionId, fromDomain, toDomain, switchType);
+            log.info("[Domain] 记录域切换 sessionId={} {}→{} type={}",
+                    cmd.sessionId(), cmd.fromDomain(), cmd.toDomain(), cmd.switchType());
         } catch (Exception e) {
-            log.error("[Domain] 域切换历史写入失败 sessionId={} from={} to={} type={}",
-                    sessionId, fromDomain, toDomain, switchType, e);
+            log.error("[Domain] 记录域切换失败 sessionId={}", cmd.sessionId(), e);
         }
     }
 

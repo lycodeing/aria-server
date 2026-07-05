@@ -5,8 +5,8 @@ import com.aria.conversation.infrastructure.dit.domain.DomainDO;
 import com.aria.conversation.infrastructure.dit.domain.IntentDO;
 import com.aria.conversation.infrastructure.dit.domain.IntentSlotDO;
 import com.aria.conversation.infrastructure.dit.domain.IntentToolDO;
-import com.aria.conversation.infrastructure.dit.domain.SessionDomainSwitchDO;
 import com.aria.conversation.infrastructure.dit.domain.ToolDO;
+import com.aria.conversation.application.service.payload.SessionDomainSwitchVO;
 import com.aria.conversation.infrastructure.dit.mapper.DomainMapper;
 import com.aria.conversation.infrastructure.dit.mapper.IntentMapper;
 import com.aria.conversation.infrastructure.dit.mapper.IntentSlotMapper;
@@ -220,10 +220,12 @@ public class DitManageAppService {
      * 查询会话的域切换历史（按时间升序）。
      *
      * @param sessionId 会话 ID
-     * @return 切换历史列表
+     * @return 切换历史 VO 列表
      */
-    public List<SessionDomainSwitchDO> getSessionDomainHistory(String sessionId) {
-        return domainSwitchRepo.findHistory(sessionId);
+    public List<SessionDomainSwitchVO> getSessionDomainHistory(String sessionId) {
+        return domainSwitchRepo.findHistory(sessionId).stream()
+                .map(SessionDomainSwitchVO::from)
+                .toList();
     }
 
     // ---- 内部工具 ----

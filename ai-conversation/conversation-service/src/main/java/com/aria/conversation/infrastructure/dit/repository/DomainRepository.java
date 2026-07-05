@@ -109,6 +109,16 @@ public class DomainRepository {
     }
 
     /**
+     * 查询所有启用域的摘要信息（仅 code + description），用于域路由判断。
+     * 不加载意图/槽位/工具等完整配置，避免 N+1 查询。
+     *
+     * @return 所有 enabled=true 的域摘要列表（只含 id/code/name/description），按 id 升序
+     */
+    public List<DomainDO> findAllEnabledSummary() {
+        return domainMapper.findAllEnabledSummary();
+    }
+
+    /**
      * 主动失效领域配置缓存（管理后台修改配置后调用）。
      *
      * @param domainCode 领域标识

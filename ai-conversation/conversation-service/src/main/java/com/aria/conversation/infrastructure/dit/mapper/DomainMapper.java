@@ -16,4 +16,7 @@ public interface DomainMapper extends BaseMapper<DomainDO> {
 
     @Select("SELECT * FROM cs_conversation.cs_domain WHERE enabled = TRUE ORDER BY id ASC")
     List<DomainDO> findAllEnabled();
+
+    @Select("SELECT id, code, name, description FROM cs_conversation.cs_domain WHERE enabled = TRUE ORDER BY id ASC")
+    List<DomainDO> findAllEnabledSummary();
 }
