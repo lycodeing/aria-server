@@ -32,6 +32,8 @@ import java.util.regex.Pattern;
 public class HttpToolRunner {
 
     private static final Pattern PLACEHOLDER = Pattern.compile("\\{([^}]+)}");
+    /** 匹配数组索引片段，如 current_condition[0] 或 [0] */
+    private static final Pattern ARRAY_INDEX = Pattern.compile("^([^\\[]*)?\\[(\\d+)]$");
 
     private final ObjectMapper objectMapper;
     private final WebClient.Builder webClientBuilder;
@@ -135,20 +137,44 @@ public class HttpToolRunner {
     }
 
     /**
-     * 从响应体中按简单 JSONPath 提取值。
-     * 只支持 "$.field" 和 "$.nested.field" 格式，不支持数组索引。
+     * 从响应体中按 JSONPath 提取值。
+     * 支持格式：
+     *   $.field
+     *   $.nested.field
+     *   $.array[0]
+     *   $.array[0].field
+     *   $.field[0].nested[1].value
+     * 不支持通配符（*）和过滤表达式（?()）。
      * 为 null 或格式不支持时返回原始响应。
      */
-    String extractByJsonPath(String responseBody, String jsonPath) {
+    public String extractByJsonPath(String responseBody, String jsonPath) {
         if (responseBody == null) return "";
         if (jsonPath == null || jsonPath.isBlank() || "$".equals(jsonPath)) return responseBody;
         try {
             JsonNode node = objectMapper.readTree(responseBody);
-            // 去掉 "$." 前缀，按 "." 分割路径
-            String path = jsonPath.startsWith("$.") ? jsonPath.substring(2) : jsonPath;
-            for (String part : path.split("\\.")) {
-                node = node.path(part);
-                if (node.isMissingNode()) return responseBody;
+            // 去掉 "$." 或 "$" 前缀
+            String path = jsonPath.startsWith("$.") ? jsonPath.substring(2)
+                        : jsonPath.startsWith("$") ? jsonPath.substring(1)
+                        : jsonPath;
+            if (path.isBlank()) return responseBody;
+
+            // 按 "." 分割路径段，每段再检查数组下标
+            for (String segment : path.split("\\.")) {
+                Matcher m = ARRAY_INDEX.matcher(segment);
+                if (m.matches()) {
+                    // 如 "current_condition[0]" 或 "[0]"
+                    String fieldName = m.group(1);
+                    int idx = Integer.parseInt(m.group(2));
+                    if (fieldName != null && !fieldName.isEmpty()) {
+                        node = node.path(fieldName);
+                        if (node.isMissingNode()) return responseBody;
+                    }
+                    if (!node.isArray() || idx >= node.size()) return responseBody;
+                    node = node.get(idx);
+                } else {
+                    node = node.path(segment);
+                }
+                if (node == null || node.isMissingNode()) return responseBody;
             }
             return node.isTextual() ? node.asText() : node.toString();
         } catch (Exception e) {
