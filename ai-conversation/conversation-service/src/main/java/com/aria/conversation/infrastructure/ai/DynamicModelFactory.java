@@ -40,6 +40,8 @@ public class DynamicModelFactory {
             .maximumSize(10).expireAfterAccess(30, TimeUnit.MINUTES).build();
     private final Cache<String, StreamingChatModel> streamingCache = Caffeine.newBuilder()
             .maximumSize(10).expireAfterAccess(30, TimeUnit.MINUTES).build();
+    private final Cache<String, ChatModel> routerCache = Caffeine.newBuilder()
+            .maximumSize(5).expireAfterAccess(30, TimeUnit.MINUTES).build();
 
     public DynamicModelFactory(AiModelConfigProvider configProvider,
                                 List<LlmModelBuilder> builders) {
@@ -102,8 +104,17 @@ public class DynamicModelFactory {
         return configHash(configProvider.getActive());
     }
 
-    // NOTE: getRouterModel() is NOT implemented here — it depends on
-    // AiModelConfigProvider.getActiveRouter() which is added in Phase 2.
+    /**
+     * ROUTER 小模型（用于 DomainRoutingService 域路由判断）。
+     * Caffeine 缓存，routerCache 最多 5 个实例。
+     */
+    public ChatModel getRouterModel() {
+        AiModelConfig cfg = configProvider.getActiveRouter();
+        return routerCache.get(configHash(cfg), k -> {
+            log.info("[AI] Building RouterModel protocol={} model={}", cfg.apiProtocol(), cfg.modelName());
+            return resolveBuilder(cfg).buildChatModel(cfg);
+        });
+    }
 
     private LlmModelBuilder resolveBuilder(AiModelConfig cfg) {
         return builders.stream()

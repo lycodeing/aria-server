@@ -168,6 +168,19 @@ public class AiModelConfigService {
     }
 
     /**
+     * 查询当前默认 ROUTER 配置（域路由小模型，供 conversation-service 拉取）。
+     * 返回 null 表示无激活配置。
+     */
+    public AiModelConfigDO getActiveRouterConfig() {
+        return mapper.selectOne(
+                new LambdaQueryWrapper<AiModelConfigDO>()
+                        .eq(AiModelConfigDO::getModelType, "ROUTER")
+                        .eq(AiModelConfigDO::getIsDefault, true)
+                        .eq(AiModelConfigDO::getIsEnabled, true)
+                        .isNull(AiModelConfigDO::getDeletedAt));
+    }
+
+    /**
      * 解密 API Key，支持 PLAINTEXT: 和 AES: 两种格式。
      * <ul>
      *   <li>{@code PLAINTEXT:{raw}}  — 开发环境明文存储，直接返回原始值</li>
