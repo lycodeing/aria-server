@@ -2165,9 +2165,166 @@ public interface RouteResultHandler {
 
 - [ ] **Step 2: 实现 `TransferRouteHandler`、`PendingRouteHandler`、`FallbackRouteHandler`**
 
-各自只包含对应 RouteResult 类型的处理逻辑，从 `ChatAppService.buildDomainEventStream()` 中剥离。每个文件约 30-40 行，结构与 `AiProtocolHandler` 实现类一致。
+```java
+// application/service/route/TransferRouteHandler.java
+package com.aria.conversation.application.service.route;
 
-（实现代码参见设计文档 Section 11.4）
+import com.aria.conversation.application.service.ChatEvent;
+import com.aria.conversation.application.service.SessionQueueService;
+import com.aria.conversation.application.service.payload.TransferPayload;
+import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
+import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import java.util.Map;
+
+@Slf4j @Component @RequiredArgsConstructor
+public class TransferRouteHandler implements RouteResultHandler {
+
+    private static final String TRANSFER_AUTO_REASON  = "系统识别到用户需要人工服务";
+    private static final String TRANSFER_DEFAULT_TAG  = "咨询";
+    private static final String ROLE_ASSISTANT        = "assistant";
+
+    private final SessionQueueService sessionQueueService;
+    private final ConversationHistoryRepository historyRepository;
+    private final ObjectMapper objectMapper;
+
+    @Override
+    public boolean supports(RouteResult route) { return route instanceof RouteResult.TransferResult; }
+
+    @Override
+    public Flux<ChatEvent> handle(String sessionId, String userMessage,
+                                   RouteResult route, Map<String, Object> sessionCtx) {
+        RouteResult.TransferResult r = (RouteResult.TransferResult) route;
+        try {
+            sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
+        } catch (Exception e) {
+            log.warn("[DIT] 自动转人工失败 sessionId={}", sessionId, e);
+        }
+        historyRepository.append(sessionId, ROLE_ASSISTANT, r.replyMessage());
+        try {
+            String json = objectMapper.writeValueAsString(new TransferPayload(r.reason(), r.replyMessage()));
+            return Flux.just(ChatEvent.transfer(json));
+        } catch (JsonProcessingException e) {
+            log.warn("[DIT] transfer payload 序列化失败 sessionId={}", sessionId, e);
+            return Flux.just(ChatEvent.data(r.replyMessage()));
+        }
+    }
+}
+```
+
+```java
+// application/service/route/PendingRouteHandler.java
+package com.aria.conversation.application.service.route;
+
+import com.aria.conversation.application.service.ChatEvent;
+import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
+import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import java.util.Map;
+
+@Slf4j @Component @RequiredArgsConstructor
+public class PendingRouteHandler implements RouteResultHandler {
+
+    private static final String ROLE_ASSISTANT = "assistant";
+
+    private final ConversationHistoryRepository historyRepository;
+    private final ObjectMapper objectMapper;
+
+    @Override
+    public boolean supports(RouteResult route) { return route instanceof RouteResult.PendingResult; }
+
+    @Override
+    public Flux<ChatEvent> handle(String sessionId, String userMessage,
+                                   RouteResult route, Map<String, Object> sessionCtx) {
+        RouteResult.PendingResult r = (RouteResult.PendingResult) route;
+        historyRepository.append(sessionId, ROLE_ASSISTANT, r.promptMessage());
+        if (r.candidates() != null && !r.candidates().isEmpty()) {
+            try {
+                String json = objectMapper.writeValueAsString(r.candidates());
+                return Flux.just(ChatEvent.candidates(json));
+            } catch (Exception e) {
+                log.warn("[DIT] candidates 序列化失败 sessionId={}", sessionId, e);
+            }
+        }
+        return Flux.just(ChatEvent.slotAsk(r.promptMessage()));
+    }
+}
+```
+
+```java
+// application/service/route/FallbackRouteHandler.java
+package com.aria.conversation.application.service.route;
+
+import com.aria.conversation.application.service.ChatEvent;
+import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
+import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
+import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
+import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
+import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
+import com.aria.conversation.infrastructure.ai.ChatMessage;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import java.util.List;
+import java.util.Map;
+
+@Slf4j @Component @RequiredArgsConstructor
+public class FallbackRouteHandler implements RouteResultHandler {
+
+    private static final String ROLE_ASSISTANT = "assistant";
+    private static final String BASE_SYSTEM_PROMPT = "你是一名专业的智能客服助手。请用简洁、友好的语言回答用户问题。";
+
+    private final DynamicModelFactory modelFactory;
+    private final KnowledgeClient knowledgeClient;
+    private final ConversationHistoryRepository historyRepository;
+
+    @Override
+    public boolean supports(RouteResult route) { return route instanceof RouteResult.FallbackResult; }
+
+    @Override
+    public Flux<ChatEvent> handle(String sessionId, String userMessage,
+                                   RouteResult route, Map<String, Object> sessionCtx) {
+        RouteResult.FallbackResult r = (RouteResult.FallbackResult) route;
+        List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
+        String systemPrompt = buildSystemPrompt(hits, r.systemPromptAddon());
+        List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
+        StringBuilder reply = new StringBuilder();
+        return modelFactory.streamChat(aiPrompt, systemPrompt)
+                .map(content -> { reply.append(content); return ChatEvent.data(content); })
+                .doOnError(e -> log.warn("[AI] 降级对话失败 sessionId={}", sessionId, e))
+                .onErrorResume(e -> Flux.just(ChatEvent.data("抱歉，AI 服务暂时不可用，请稍后重试。")))
+                .doFinally(signal -> {
+                    if (!reply.isEmpty()) historyRepository.append(sessionId, ROLE_ASSISTANT, reply.toString());
+                });
+    }
+
+    private String buildSystemPrompt(List<KnowledgeSearchResult.Hit> hits, String addon) {
+        StringBuilder sb = new StringBuilder();
+        if (hits != null && !hits.isEmpty()) {
+            sb.append("【参考资料】\n");
+            hits.forEach(h -> sb.append(h.getContent()).append("\n"));
+            sb.append("---\n");
+        }
+        if (addon != null && !addon.isBlank()) sb.append(addon).append("\n");
+        sb.append(BASE_SYSTEM_PROMPT);
+        return sb.toString();
+    }
+
+    private List<ChatMessage> toAiPrompt(List<com.aria.conversation.domain.ConversationMessage> history) {
+        return history.stream().map(m -> new ChatMessage(m.role(), m.content())).toList();
+    }
+}
+```
 
 - [ ] **Step 3: 修改 `ChatAppService.buildDomainEventStream()` 为策略 dispatch**
 
@@ -2185,11 +2342,257 @@ private Flux<ChatEvent> buildDomainEventStream(String sessionId, String userMess
 }
 ```
 
-- [ ] **Step 4: 实现 `DomainAgentService`**
+- [ ] **Step 4: 实现 `DomainAgentService.java`**
 
-核心逻辑：per-request 构建 `DomainAssistant`，`ToolProvider` 实时从 DB 加载 `ToolConfig` 转 `ToolSpecification`，委托 `HttpToolRunner.execute()` 执行，`ChatModelListener` 注入 tool/transfer/domain_switch SSE 事件。
+```java
+// src/main/java/com/aria/conversation/application/service/DomainAgentService.java
+package com.aria.conversation.application.service;
 
-（完整实现参见设计文档 Section 4.7）
+import com.aria.conversation.application.service.payload.ToolCallPayload;
+import com.aria.conversation.application.service.payload.ToolDonePayload;
+import com.aria.conversation.application.service.payload.TransferPayload;
+import com.aria.conversation.infrastructure.ai.BuiltinToolNames;
+import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
+import com.aria.conversation.infrastructure.ai.SessionChatMemoryStore;
+import com.aria.conversation.infrastructure.dit.config.DomainConfig;
+import com.aria.conversation.infrastructure.dit.config.ToolConfig;
+import com.aria.conversation.infrastructure.dit.pipeline.HttpToolRunner;
+import com.aria.conversation.infrastructure.dit.pipeline.ToolCallResult;
+import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
+import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
+import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
+import com.aria.conversation.infrastructure.dit.domain.SwitchType;
+import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
+import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.model.chat.listener.ChatModelListener;
+import dev.langchain4j.model.chat.listener.ChatModelResponseContext;
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonStringSchema;
+import dev.langchain4j.service.AiServices;
+import dev.langchain4j.service.MemoryId;
+import dev.langchain4j.service.SystemMessage;
+import dev.langchain4j.service.UserMessage;
+import dev.langchain4j.service.tool.ToolExecutor;
+import dev.langchain4j.service.tool.ToolProvider;
+import dev.langchain4j.service.tool.ToolProviderResult;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * 领域感知对话应用服务（基于 LangChain4j 原生 function calling）。
+ *
+ * <p>替代 {@code DitPipeline} + {@code ToolExecutor} + {@code DomainIntentClassifier}。
+ * 每次请求新建轻量代理（避免 stale RAG / stale tools 问题），底层 model 由 DynamicModelFactory 缓存。
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class DomainAgentService {
+
+    private final DynamicModelFactory modelFactory;
+    private final DomainRepository domainRepo;
+    private final HttpToolRunner httpToolRunner;
+    private final SessionChatMemoryStore memoryStore;
+    private final KnowledgeClient knowledgeClient;
+    private final SessionDomainRepository sessionDomainRepo;
+    private final SessionDomainSwitchRepository domainSwitchRepo;
+    private final ObjectMapper objectMapper;
+
+    /** AI Service 接口（流式），systemPrompt per-request 传入避免闭包捕获 RAG 上下文固化。 */
+    interface DomainAssistant {
+        Flux<String> chat(@MemoryId String sessionId,
+                          @SystemMessage String systemPrompt,
+                          @UserMessage String message);
+    }
+
+    public Flux<ChatEvent> streamChat(String sessionId, String domainCode, String userMessage) {
+        log.debug("[DomainAgent] streamChat start sessionId={} domainCode={}", sessionId, domainCode);
+
+        // 1. per-request system prompt（含 RAG 检索）
+        List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
+        String systemPrompt = buildSystemPrompt(hits, domainCode);
+
+        // 2. per-request Sinks，通过构造注入 listener（避免 ThreadLocal + Reactor 线程问题）
+        Sinks.Many<ChatEvent> toolEventSink = Sinks.many().unicast().onBackpressureBuffer();
+        ChatModelListener toolListener = buildToolEventListener(toolEventSink, sessionId, domainCode, userMessage);
+
+        // 3. 每次请求新建代理（JDK Proxy，model 已在 DynamicModelFactory Caffeine 缓存）
+        DomainAssistant assistant = AiServices.builder(DomainAssistant.class)
+                .streamingChatModel(modelFactory.getStreamingChatModel())
+                .chatMemoryProvider(id -> MessageWindowChatMemory.builder()
+                        .id(id).maxMessages(20).chatMemoryStore(memoryStore).build())
+                .toolProvider(buildToolProvider(domainCode, toolEventSink, userMessage))
+                .listeners(List.of(toolListener))
+                .build();
+
+        // 4. token 流 + tool/transfer/domain_switch 事件流合并
+        Flux<ChatEvent> tokenFlux = assistant.chat(sessionId, systemPrompt, userMessage)
+                .map(ChatEvent::data);
+
+        return Flux.merge(tokenFlux, toolEventSink.asFlux())
+                .doOnError(e -> log.error("[DomainAgent] error sessionId={}", sessionId, e))
+                .onErrorResume(e -> Flux.just(ChatEvent.error(e.getMessage())));
+    }
+
+    private ToolProvider buildToolProvider(String domainCode,
+                                           Sinks.Many<ChatEvent> sink,
+                                           String userMessage) {
+        return (req) -> {
+            List<ToolConfig> tools = domainRepo.loadTools(domainCode);
+            ToolProviderResult.Builder builder = ToolProviderResult.builder();
+
+            // 业务工具（从 DB 实时加载，感知变更）
+            for (ToolConfig tc : tools) {
+                ToolSpecification spec = buildToolSpec(tc);
+                ToolExecutor executor = (toolReq, memId) -> executeHttpTool(tc, toolReq, sink);
+                builder.add(spec, executor);
+            }
+
+            // 内置工具：切换域（大模型兜底，与小模型 DomainRouterService 两层互补）
+            List<com.aria.conversation.infrastructure.dit.config.DomainConfig> allDomains =
+                    domainRepo.findAllEnabled();
+            String domainDesc = allDomains.stream()
+                    .map(d -> d.code() + "(" + d.description() + ")")
+                    .reduce((a, b) -> a + ", " + b).orElse("");
+            builder.add(
+                ToolSpecification.builder()
+                    .name(BuiltinToolNames.SWITCH_DOMAIN)
+                    .description("当用户问题与当前服务域无关时调用，切换到更合适的域。可用域：" + domainDesc)
+                    .parameters(JsonObjectSchema.builder()
+                        .addStringProperty("target_domain_code", "目标域 code")
+                        .addStringProperty("reason", "切换原因")
+                        .required(List.of("target_domain_code"))
+                        .build())
+                    .build(),
+                (toolReq, memId) -> {
+                    try {
+                        Map<String, Object> args = objectMapper.readValue(
+                                toolReq.arguments(), new TypeReference<>() {});
+                        String targetDomain = (String) args.get("target_domain_code");
+                        String reason = (String) args.getOrDefault("reason", "");
+                        log.info("[DomainAgent] switch_domain: {} → {} reason={}", domainCode, targetDomain, reason);
+                        sink.tryEmitNext(ChatEvent.domainSwitch(targetDomain));
+                    } catch (Exception e) {
+                        log.warn("[DomainAgent] switch_domain 参数解析失败", e);
+                    }
+                    return "正在为您切换到对应服务...";
+                }
+            );
+
+            // 内置工具：转人工
+            builder.add(
+                ToolSpecification.builder()
+                    .name(BuiltinToolNames.TRANSFER_TO_AGENT)
+                    .description("当用户明确要求转接人工客服时调用")
+                    .parameters(JsonObjectSchema.builder().build())
+                    .build(),
+                (toolReq, memId) -> {
+                    sink.tryEmitNext(ChatEvent.transfer("{\"intentCode\":\"agent_transfer\"}"));
+                    return "已为您转接人工客服，请稍候。";
+                }
+            );
+
+            return builder.build();
+        };
+    }
+
+    private String executeHttpTool(ToolConfig tc, ToolExecutionRequest toolReq,
+                                   Sinks.Many<ChatEvent> sink) {
+        try {
+            // tool_call 事件：通知前端工具开始执行
+            sink.tryEmitNext(ChatEvent.toolCall(
+                    objectMapper.writeValueAsString(ToolCallPayload.running(tc.code()))));
+
+            Map<String, Object> args = objectMapper.readValue(
+                    toolReq.arguments(), new TypeReference<>() {});
+            ToolCallResult result = httpToolRunner.execute(tc, args, Map.of());
+            log.info("[DomainAgent] tool executed tool={} status={}", tc.code(), result.getStatus());
+
+            // tool_done 事件：通知前端工具执行完毕
+            sink.tryEmitNext(ChatEvent.toolDone(
+                    objectMapper.writeValueAsString(ToolDonePayload.from(result))));
+
+            return result.isSuccess() ? result.getResponse() : "工具执行失败: " + result.getResponse();
+        } catch (Exception e) {
+            log.error("[DomainAgent] tool execution error tool={}", tc.code(), e);
+            return "工具执行失败: " + e.getMessage();
+        }
+    }
+
+    private ChatModelListener buildToolEventListener(Sinks.Many<ChatEvent> sink,
+                                                      String sessionId,
+                                                      String domainCode,
+                                                      String userMessage) {
+        return new ChatModelListener() {
+            @Override
+            public void onResponse(ChatModelResponseContext ctx) {
+                var aiMsg = ctx.chatResponse().aiMessage();
+                if (!aiMsg.hasToolExecutionRequests()) return;
+                for (ToolExecutionRequest req : aiMsg.toolExecutionRequests()) {
+                    if (BuiltinToolNames.SWITCH_DOMAIN.equals(req.name())) continue; // 已在 executor 中处理
+                    if (BuiltinToolNames.TRANSFER_TO_AGENT.equals(req.name())) continue;
+                    // 普通业务工具在 executeHttpTool 中已发出 tool_call/tool_done，此处无需重复
+                }
+            }
+        };
+    }
+
+    private ToolSpecification buildToolSpec(ToolConfig tc) {
+        Map<String, dev.langchain4j.model.chat.request.json.JsonSchemaElement> props =
+                new LinkedHashMap<>();
+        try {
+            if (tc.paramSchema() != null && !tc.paramSchema().isBlank()) {
+                Map<String, Object> schema = objectMapper.readValue(
+                        tc.paramSchema(), new TypeReference<>() {});
+                @SuppressWarnings("unchecked")
+                Map<String, Object> properties =
+                        (Map<String, Object>) schema.getOrDefault("properties", Map.of());
+                properties.forEach((name, def) -> {
+                    String desc = def instanceof Map<?, ?> m
+                            ? String.valueOf(m.getOrDefault("description", "")) : "";
+                    props.put(name, JsonStringSchema.builder().description(desc).build());
+                });
+            }
+        } catch (Exception e) {
+            log.warn("[DomainAgent] paramSchema 解析失败 tool={}", tc.code(), e);
+        }
+        return ToolSpecification.builder()
+                .name(tc.code())
+                .description(tc.description())
+                .parameters(JsonObjectSchema.builder().properties(props).build())
+                .build();
+    }
+
+    private String buildSystemPrompt(List<KnowledgeSearchResult.Hit> hits, String domainCode) {
+        StringBuilder sb = new StringBuilder();
+        if (hits != null && !hits.isEmpty()) {
+            sb.append("【参考资料】（请优先依据以下内容回答）\n\n");
+            for (int i = 0; i < hits.size(); i++) {
+                KnowledgeSearchResult.Hit h = hits.get(i);
+                String label = h.getBreadcrumb() != null && !h.getBreadcrumb().isBlank()
+                        ? h.getBreadcrumb() : "文档片段";
+                sb.append("[").append(i + 1).append("] ").append(label).append("\n")
+                  .append(h.getContent() != null ? h.getContent() : "").append("\n\n");
+            }
+            sb.append("---\n");
+        }
+        sb.append("你是一名专业的智能客服助手。请用简洁、友好的语言回答用户问题。");
+        return sb.toString();
+    }
+}
+```
 
 - [ ] **Step 5: ChatAppService domain 路径切换至 DomainAgentService**
 
