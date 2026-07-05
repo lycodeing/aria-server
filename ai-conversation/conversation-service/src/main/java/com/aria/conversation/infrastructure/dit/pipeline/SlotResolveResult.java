@@ -21,32 +21,6 @@ public record SlotResolveResult(
         List<Map<String, String>> candidates,
         String promptMessage
 ) {
-    public enum Status {
-        /** 所有必填槽位已解析完成，可继续执行 Pipeline */
-        RESOLVED,
-        /** 发现候选项，等待用户选择 */
-        DISCOVERED,
-        /** 槽位缺失，等待用户输入 */
-        MISSING,
-        /** 重试超过阈值，触发兜底转人工 */
-        GIVE_UP
-    }
-
-    public boolean isPending() {
-        return status == Status.DISCOVERED || status == Status.MISSING;
-    }
-
-    /**
-     * 重试超过阈值，触发兜底转人工
-     */
-    public boolean isGiveUp() {
-        return status == Status.GIVE_UP;
-    }
-
-    public boolean isResolved() {
-        return status == Status.RESOLVED;
-    }
-
     public static SlotResolveResult resolved(Map<String, Object> slots) {
         return new SlotResolveResult(Status.RESOLVED, slots, null, null, null, null);
     }
@@ -67,5 +41,42 @@ public record SlotResolveResult(
 
     public static SlotResolveResult giveUp(String prompt) {
         return new SlotResolveResult(Status.GIVE_UP, Map.of(), null, null, null, prompt);
+    }
+
+    /**
+     * 等待用户处理
+     */
+    public boolean isPending() {
+        return status == Status.DISCOVERED || status == Status.MISSING;
+    }
+
+    /**
+     * 重试超过阈值，触发兜底转人工
+     */
+    public boolean isGiveUp() {
+        return status == Status.GIVE_UP;
+    }
+
+    public boolean isResolved() {
+        return status == Status.RESOLVED;
+    }
+
+    public enum Status {
+        /**
+         * 所有必填槽位已解析完成，可继续执行 Pipeline
+         */
+        RESOLVED,
+        /**
+         * 发现候选项，等待用户选择
+         */
+        DISCOVERED,
+        /**
+         * 槽位缺失，等待用户输入
+         */
+        MISSING,
+        /**
+         * 重试超过阈值，触发兜底转人工
+         */
+        GIVE_UP
     }
 }
