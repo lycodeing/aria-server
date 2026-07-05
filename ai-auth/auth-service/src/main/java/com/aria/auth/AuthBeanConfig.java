@@ -17,7 +17,8 @@ public class AuthBeanConfig {
             @Value("${adp.auth.login.max-fail:5}") int maxFail,
             @Value("${adp.auth.login.lock-minutes:30}") long lockMinutes) {
         if (maxFail <= 0) throw new IllegalArgumentException("adp.auth.login.max-fail 必须 > 0，当前值：" + maxFail);
-        if (lockMinutes <= 0) throw new IllegalArgumentException("adp.auth.login.lock-minutes 必须 > 0，当前值：" + lockMinutes);
+        if (lockMinutes <= 0)
+            throw new IllegalArgumentException("adp.auth.login.lock-minutes 必须 > 0，当前值：" + lockMinutes);
         return new LoginAttemptPolicy(maxFail, lockMinutes);
     }
 
@@ -27,7 +28,8 @@ public class AuthBeanConfig {
             @Value("${adp.auth.password.require-upper:true}") boolean requireUpper,
             @Value("${adp.auth.password.require-digit:true}") boolean requireDigit,
             @Value("${adp.auth.password.require-special:true}") boolean requireSpecial) {
-        if (minLength < 6) throw new IllegalArgumentException("adp.auth.password.min-length 最小值为 6，当前值：" + minLength);
+        if (minLength < 6)
+            throw new IllegalArgumentException("adp.auth.password.min-length 最小值为 6，当前值：" + minLength);
         return new PasswordPolicyChecker(minLength, requireUpper, requireDigit, requireSpecial);
     }
 }

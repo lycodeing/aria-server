@@ -8,4 +8,5 @@ public record NotificationChannelsVO(
         Boolean emailEnabled,
         String webhookUrl,
         Boolean webhookEnabled
-) {}
+) {
+}

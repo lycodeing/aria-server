@@ -1,19 +1,18 @@
 package com.aria.auth.infrastructure.persistence.user;
 
-import com.aria.auth.domain.model.user.*;
+import com.aria.auth.application.query.UserPageQuery;
 import com.aria.auth.domain.model.user.*;
 import com.aria.auth.domain.repository.IUserRepository;
 import com.aria.auth.infrastructure.persistence.role.PermissionMapper;
 import com.aria.auth.infrastructure.persistence.role.RoleDO;
 import com.aria.auth.infrastructure.persistence.role.RoleMapper;
-import com.aria.auth.application.query.UserPageQuery;
 import com.aria.common.core.page.PageResult;
 import com.aria.common.core.page.PageUtil;
-import org.springframework.util.StringUtils;
 import com.aria.common.core.util.JsonUtils;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.springframework.stereotype.Repository;
+import org.springframework.util.StringUtils;
 
 import java.time.ZoneOffset;
 import java.util.*;
@@ -32,7 +31,7 @@ public class UserRepositoryImpl implements IUserRepository {
     private final PermissionMapper permissionMapper;
 
     public UserRepositoryImpl(UserMapper mapper, RoleMapper roleMapper,
-                               PermissionMapper permissionMapper) {
+                              PermissionMapper permissionMapper) {
         this.mapper = mapper;
         this.roleMapper = roleMapper;
         this.permissionMapper = permissionMapper;
@@ -64,16 +63,16 @@ public class UserRepositoryImpl implements IUserRepository {
     @Override
     public Optional<User> findByUsername(String username) {
         return Optional.ofNullable(mapper.selectOne(
-                new LambdaQueryWrapper<UserDO>()
-                        .eq(UserDO::getUsername, username)))
+                        new LambdaQueryWrapper<UserDO>()
+                                .eq(UserDO::getUsername, username)))
                 .map(this::toDomain);
     }
 
     @Override
     public Optional<User> findByEmail(String email) {
         return Optional.ofNullable(mapper.selectOne(
-                new LambdaQueryWrapper<UserDO>()
-                        .eq(UserDO::getEmail, email)))
+                        new LambdaQueryWrapper<UserDO>()
+                                .eq(UserDO::getEmail, email)))
                 .map(this::toDomain);
     }
 

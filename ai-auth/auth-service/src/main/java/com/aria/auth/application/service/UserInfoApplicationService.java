@@ -26,26 +26,33 @@ import java.util.List;
 @RequiredArgsConstructor
 public class UserInfoApplicationService {
 
-    /** 超级管理员角色标识 */
+    /**
+     * 超级管理员角色标识
+     */
     private static final String ROLE_SUPER_ADMIN = "super_admin";
 
-    /** 客服角色标识前缀 */
+    /**
+     * 客服角色标识前缀
+     */
     private static final String ROLE_PREFIX_KF = "kf_";
 
-    /** 超级管理员首页路由 */
+    /**
+     * 超级管理员首页路由
+     */
     private static final String HOME_PATH_ANALYTICS = "/dashboard/analysis";
 
-    /** 客服角色首页路由 */
+    /**
+     * 客服角色首页路由
+     */
     private static final String HOME_PATH_CHAT = "/customerservice/chat";
-
+    /**
+     * 默认首页路由（非特殊角色时使用）
+     */
+    private static final String HOME_PATH_DEFAULT = "/";
     private final IUserRepository userRepository;
     private final IRoleRepository roleRepository;
-
     @Value("${adp.auth.default-avatar:https://unpkg.com/@vbenjs/static-source@0.1.7/source/avatar-v2.webp}")
     private String defaultAvatar;
-
-    /** 默认首页路由（非特殊角色时使用） */
-    private static final String HOME_PATH_DEFAULT   = "/";
 
     /**
      * 查询当前用户信息，返回强类型结果对象。

@@ -18,7 +18,9 @@ public class LoginCommand {
 
     private final boolean rememberMe;
 
-    /** 客户端 IP，由 Controller 层从 HttpServletRequest 提取后传入，不允许为 null */
+    /**
+     * 客户端 IP，由 Controller 层从 HttpServletRequest 提取后传入，不允许为 null
+     */
     private final String clientIp;
 
     public LoginCommand(String username, String password,

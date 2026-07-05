@@ -14,4 +14,5 @@ record LoginContext(
         List<String> roleKeys,
         List<String> permissionKeys,
         long timeout,
-        boolean mustChangePassword) {}
+        boolean mustChangePassword) {
+}

@@ -9,7 +9,8 @@ import com.aria.auth.interfaces.rest.vo.UserVO;
  */
 public final class UserAssembler {
 
-    private UserAssembler() {}
+    private UserAssembler() {
+    }
 
     public static UserVO toVO(User user) {
         UserVO vo = new UserVO();

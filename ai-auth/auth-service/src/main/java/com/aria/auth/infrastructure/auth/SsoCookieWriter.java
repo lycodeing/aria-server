@@ -16,7 +16,7 @@ import org.springframework.stereotype.Component;
 @Component
 public class SsoCookieWriter {
 
-    private final String  domain;
+    private final String domain;
     private final boolean secure;
 
     public SsoCookieWriter(
@@ -30,7 +30,7 @@ public class SsoCookieWriter {
      * 写入 Token Cookie，携带 HttpOnly + SameSite=Strict（防 CSRF）。
      */
     public void writeTokenCookie(HttpServletResponse response,
-                                  String tokenName, String tokenValue, int maxAge) {
+                                 String tokenName, String tokenValue, int maxAge) {
         response.addHeader("Set-Cookie", buildCookieHeader(tokenName, tokenValue, maxAge));
     }
 

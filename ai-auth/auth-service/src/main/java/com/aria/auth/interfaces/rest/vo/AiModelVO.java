@@ -10,17 +10,21 @@ import lombok.Data;
 @Data
 @Builder
 public class AiModelVO {
-    private Long    id;
-    private String  name;
-    private String  provider;
-    private String  apiProtocol;
-    private String  baseUrl;
-    /** 模型类型：CHAT=对话大模型，EMBEDDING=向量模型 */
-    private String  modelType;
-    /** 脱敏后的 API Key（格式：前4位****后4位） */
-    private String  maskedApiKey;
-    private String  modelName;
-    private Double  temperature;
+    private Long id;
+    private String name;
+    private String provider;
+    private String apiProtocol;
+    private String baseUrl;
+    /**
+     * 模型类型：CHAT=对话大模型，EMBEDDING=向量模型
+     */
+    private String modelType;
+    /**
+     * 脱敏后的 API Key（格式：前4位****后4位）
+     */
+    private String maskedApiKey;
+    private String modelName;
+    private Double temperature;
     private Integer maxTokens;
     private Integer timeoutSec;
     private Boolean isDefault;

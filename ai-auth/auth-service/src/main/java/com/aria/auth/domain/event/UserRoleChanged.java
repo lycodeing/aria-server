@@ -21,7 +21,15 @@ public class UserRoleChanged extends DomainEvent {
         return String.valueOf(userId.getValue());
     }
 
-    public UserId getUserId() { return userId; }
-    public Set<Long> getOldRoleIds() { return oldRoleIds; }
-    public Set<Long> getNewRoleIds() { return newRoleIds; }
+    public UserId getUserId() {
+        return userId;
+    }
+
+    public Set<Long> getOldRoleIds() {
+        return oldRoleIds;
+    }
+
+    public Set<Long> getNewRoleIds() {
+        return newRoleIds;
+    }
 }

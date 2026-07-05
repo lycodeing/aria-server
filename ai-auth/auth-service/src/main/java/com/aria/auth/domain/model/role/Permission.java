@@ -22,8 +22,19 @@ public class Permission {
         return new Permission(id, permissionKey, permissionName, module);
     }
 
-    public Long getId() { return id; }
-    public String getPermissionKey() { return permissionKey; }
-    public String getPermissionName() { return permissionName; }
-    public String getModule() { return module; }
+    public Long getId() {
+        return id;
+    }
+
+    public String getPermissionKey() {
+        return permissionKey;
+    }
+
+    public String getPermissionName() {
+        return permissionName;
+    }
+
+    public String getModule() {
+        return module;
+    }
 }

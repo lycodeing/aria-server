@@ -1,10 +1,10 @@
 package com.aria.auth.application.service;
 
-import com.aria.auth.interfaces.dto.AiModelRequest;
-import com.aria.common.core.exception.BusinessException;
 import com.aria.auth.infrastructure.event.AiConfigEventPublisher;
 import com.aria.auth.infrastructure.persistence.ai.AiModelConfigDO;
 import com.aria.auth.infrastructure.persistence.ai.AiModelConfigMapper;
+import com.aria.auth.interfaces.dto.AiModelRequest;
+import com.aria.common.core.exception.BusinessException;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -33,11 +33,15 @@ import java.time.LocalDateTime;
 @RequiredArgsConstructor
 public class AiModelConfigService {
 
-    private final AiModelConfigMapper    mapper;
-    /** 配置变更事件发布器，封装 Redis Pub/Sub 细节 */
+    private final AiModelConfigMapper mapper;
+    /**
+     * 配置变更事件发布器，封装 Redis Pub/Sub 细节
+     */
     private final AiConfigEventPublisher eventPublisher;
 
-    /** 分页查询（api_key_enc 原样返回，Controller 层负责脱敏） */
+    /**
+     * 分页查询（api_key_enc 原样返回，Controller 层负责脱敏）
+     */
     public Page<AiModelConfigDO> page(int pageNum, int pageSize, String modelType) {
         Page<AiModelConfigDO> page = new Page<>(pageNum, pageSize);
         com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<AiModelConfigDO> wrapper =
@@ -93,9 +97,9 @@ public class AiModelConfigService {
         if (req.getTemperature() != null) {
             existing.setTemperature(new java.math.BigDecimal(req.getTemperature().toString()));
         }
-        if (req.getMaxTokens() != null)  existing.setMaxTokens(req.getMaxTokens());
+        if (req.getMaxTokens() != null) existing.setMaxTokens(req.getMaxTokens());
         if (req.getTimeoutSec() != null) existing.setTimeoutSec(req.getTimeoutSec());
-        if (req.getIsEnabled() != null)  existing.setIsEnabled(req.getIsEnabled());
+        if (req.getIsEnabled() != null) existing.setIsEnabled(req.getIsEnabled());
         // api_key_enc 为空时保留原值，避免编辑时意外清除 Key
         if (req.getApiKeyEnc() != null && !req.getApiKeyEnc().isBlank()) {
             existing.setApiKeyEnc(req.getApiKeyEnc());
@@ -252,14 +256,14 @@ public class AiModelConfigService {
                 // Embedding 测试：发一条极短文本
                 endpoint = baseUrl + "embeddings";
                 body = String.format(
-                    "{\"model\":\"%s\",\"input\":\"test\"}",
-                    cfg.getModelName());
+                        "{\"model\":\"%s\",\"input\":\"test\"}",
+                        cfg.getModelName());
             } else {
                 // Chat 测试：发一条极简消息，max_tokens=1 降低延迟
                 endpoint = baseUrl + "chat/completions";
                 body = String.format(
-                    "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"stream\":false}",
-                    cfg.getModelName());
+                        "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"stream\":false}",
+                        cfg.getModelName());
             }
 
             HttpRequest req = HttpRequest.newBuilder()
@@ -294,15 +298,17 @@ public class AiModelConfigService {
     }
 
 
-    /** 注册事务提交后回调，确保 DB 变更已持久化再广播，避免下游读到旧数据 */
+    /**
+     * 注册事务提交后回调，确保 DB 变更已持久化再广播，避免下游读到旧数据
+     */
     private void broadcastChangeAfterCommit() {
         TransactionSynchronizationManager.registerSynchronization(
-            new TransactionSynchronization() {
-                @Override
-                public void afterCommit() {
-                    eventPublisher.publishChanged();
+                new TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        eventPublisher.publishChanged();
+                    }
                 }
-            }
         );
     }
 }

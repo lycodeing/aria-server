@@ -8,4 +8,5 @@ public record SsoSettingsVO(
         String bindDn,
         String baseDn,
         String userFilter
-) {}
+) {
+}

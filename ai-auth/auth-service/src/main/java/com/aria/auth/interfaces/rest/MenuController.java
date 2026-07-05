@@ -72,7 +72,7 @@ public class MenuController {
      */
     @PutMapping("/{id}")
     public R<MenuAdminVO> update(@PathVariable Long id,
-                                  @RequestBody UpdateMenuCommand cmd) {
+                                 @RequestBody UpdateMenuCommand cmd) {
         return R.ok(menuService.update(id, cmd));
     }
 

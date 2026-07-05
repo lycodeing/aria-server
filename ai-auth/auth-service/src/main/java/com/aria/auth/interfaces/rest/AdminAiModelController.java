@@ -4,9 +4,9 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.stp.StpUtil;
 import com.aria.auth.application.service.AiModelConfigService;
+import com.aria.auth.infrastructure.persistence.ai.AiModelConfigDO;
 import com.aria.auth.interfaces.dto.AiModelRequest;
 import com.aria.auth.interfaces.rest.vo.AiModelVO;
-import com.aria.auth.infrastructure.persistence.ai.AiModelConfigDO;
 import com.aria.common.web.response.R;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.validation.Valid;
@@ -46,9 +46,9 @@ public class AdminAiModelController {
      */
     @GetMapping
     public R<Page<AiModelVO>> list(
-            @RequestParam(defaultValue = "1")  int pageNum,
+            @RequestParam(defaultValue = "1") int pageNum,
             @RequestParam(defaultValue = "20") int pageSize,
-            @RequestParam(required = false)    String modelType) {
+            @RequestParam(required = false) String modelType) {
         Page<AiModelConfigDO> doPage = service.page(pageNum, pageSize, modelType);
         List<AiModelVO> vos = doPage.getRecords().stream()
                 .map(this::toVO)

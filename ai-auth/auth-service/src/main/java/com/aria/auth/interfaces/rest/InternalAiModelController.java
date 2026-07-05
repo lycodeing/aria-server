@@ -124,8 +124,8 @@ public class InternalAiModelController {
                 service.decryptApiKey(do_.getApiKeyEnc()),
                 do_.getModelName(),
                 do_.getTemperature() != null ? do_.getTemperature().doubleValue() : defaultTemperature,
-                do_.getMaxTokens()   != null ? do_.getMaxTokens()                  : defaultMaxTokens,
-                do_.getTimeoutSec()  != null ? do_.getTimeoutSec()                 : defaultTimeoutSec
+                do_.getMaxTokens() != null ? do_.getMaxTokens() : defaultMaxTokens,
+                do_.getTimeoutSec() != null ? do_.getTimeoutSec() : defaultTimeoutSec
         );
     }
 }

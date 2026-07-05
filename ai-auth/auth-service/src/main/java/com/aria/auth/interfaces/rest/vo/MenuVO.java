@@ -1,6 +1,7 @@
 package com.aria.auth.interfaces.rest.vo;
 
 import lombok.Data;
+
 import java.util.List;
 
 /**
@@ -8,20 +9,20 @@ import java.util.List;
  */
 @Data
 public class MenuVO {
-    private Long    id;
-    private Long    parentId;
-    private String  menuType;
-    private String  menuName;
-    private String  menuKey;
-    private String  path;
-    private String  component;
-    private String  icon;
+    private Long id;
+    private Long parentId;
+    private String menuType;
+    private String menuName;
+    private String menuKey;
+    private String path;
+    private String component;
+    private String icon;
     private Integer sortOrder;
     private Boolean isVisible;
     private Boolean isCache;
     private Boolean isExternal;
-    private String  redirect;
-    private String  permissionKey;
-    private String  status;
+    private String redirect;
+    private String permissionKey;
+    private String status;
     private List<MenuVO> children;
 }

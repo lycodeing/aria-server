@@ -1,9 +1,7 @@
 package com.aria.auth.application.service;
 
 import com.aria.auth.application.command.LoginCommand;
-import com.aria.auth.domain.model.user.Password;
 import com.aria.auth.domain.model.user.User;
-import com.aria.auth.domain.model.user.UserId;
 import com.aria.auth.domain.repository.IUserRepository;
 import com.aria.auth.domain.service.LoginAttemptPolicy;
 import com.aria.auth.infrastructure.security.password.PasswordExpiryChecker;
@@ -57,7 +55,7 @@ public class LoginTransactionService {
         userRepo.save(user);
         domainEventPublisher.publish(user);
 
-        List<String> roleKeys       = userRepo.findRoleKeysByUserId(user.getId().getValue());
+        List<String> roleKeys = userRepo.findRoleKeysByUserId(user.getId().getValue());
         List<String> permissionKeys = userRepo.findPermissionKeysByUserId(user.getId().getValue());
 
         return new LoginContext(

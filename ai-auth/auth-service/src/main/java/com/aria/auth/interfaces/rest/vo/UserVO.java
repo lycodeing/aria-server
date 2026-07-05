@@ -1,4 +1,5 @@
 package com.aria.auth.interfaces.rest.vo;
+
 import lombok.Data;
 
 @Data

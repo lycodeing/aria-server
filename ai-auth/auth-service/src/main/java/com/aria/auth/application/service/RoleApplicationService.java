@@ -1,12 +1,12 @@
 package com.aria.auth.application.service;
 
+import com.aria.auth.application.query.RolePageQuery;
 import com.aria.auth.domain.model.role.Permission;
 import com.aria.auth.domain.model.role.Role;
 import com.aria.auth.domain.repository.IPermissionRepository;
 import com.aria.auth.domain.repository.IRoleRepository;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.common.core.exception.CommonErrorCode;
-import com.aria.auth.application.query.RolePageQuery;
 import com.aria.common.core.page.PageResult;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,10 +24,14 @@ import java.util.List;
 @Service
 public class RoleApplicationService {
 
-    /** 角色启用状态值 */
+    /**
+     * 角色启用状态值
+     */
     private static final String STATUS_ACTIVE = "active";
 
-    /** 角色停用状态值 */
+    /**
+     * 角色停用状态值
+     */
     private static final String STATUS_INACTIVE = "inactive";
 
     private final IRoleRepository roleRepo;

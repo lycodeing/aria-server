@@ -1,12 +1,12 @@
 package com.aria.auth.application.service;
 
+import com.aria.auth.application.query.UserPageQuery;
 import com.aria.auth.domain.model.user.*;
 import com.aria.auth.domain.repository.IUserRepository;
 import com.aria.auth.domain.service.PasswordPolicyChecker;
 import com.aria.common.core.domain.IDomainEventPublisher;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.common.core.exception.CommonErrorCode;
-import com.aria.auth.application.query.UserPageQuery;
 import com.aria.common.core.page.PageResult;
 import com.aria.common.core.util.IdGenerator;
 import org.springframework.stereotype.Service;
@@ -25,7 +25,9 @@ import java.util.Set;
 public class UserApplicationService {
 
     private final IUserRepository userRepo;
-    /** 依赖 Domain 层端口接口，而非具体实现 */
+    /**
+     * 依赖 Domain 层端口接口，而非具体实现
+     */
     private final PasswordHasher passwordHasher;
     private final PasswordPolicyChecker passwordPolicy;
     private final IDomainEventPublisher domainEventPublisher;

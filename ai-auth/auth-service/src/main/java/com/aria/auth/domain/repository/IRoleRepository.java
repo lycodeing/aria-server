@@ -13,7 +13,9 @@ import java.util.Optional;
 public interface IRoleRepository {
 
     Role save(Role role);
+
     Optional<Role> findById(Long id);
+
     boolean existsByRoleKey(String roleKey);
 
     /**
@@ -25,8 +27,12 @@ public interface IRoleRepository {
     PageResult<Role> search(RolePageQuery query);
 
     void delete(Long id);
+
     List<Role> findByUserId(Long userId);
+
     void assignPermissions(Long roleId, List<Long> permissionIds);
+
     String findDataScope(Long roleId);
+
     void upsertDataScope(Long roleId, String scopeType);
 }

@@ -28,24 +28,33 @@ import java.util.stream.Collectors;
 @Service
 public class MenuApplicationService {
 
-    /** 菜单类型：按钮/权限标识 */
+    /**
+     * 菜单类型：按钮/权限标识
+     */
     private static final String MENU_TYPE_BUTTON = "BUTTON";
 
-    /** 根节点父 ID */
+    /**
+     * 根节点父 ID
+     */
     private static final long ROOT_PARENT_ID = 0L;
 
-    /** 路由排序默认值（未配置时兜底） */
+    /**
+     * 路由排序默认值（未配置时兜底）
+     */
     private static final int DEFAULT_SORT_ORDER = 999;
-
+    /**
+     * 最大递归深度，防止环形菜单数据导致 StackOverflowError
+     */
+    private static final int MAX_MENU_DEPTH = 10;
     private final IMenuRepository menuRepo;
-
-    public MenuApplicationService(IMenuRepository menuRepo) {
-        this.menuRepo = menuRepo;
-    }
 
     // -------------------------------------------------------
     // 前端动态路由
     // -------------------------------------------------------
+
+    public MenuApplicationService(IMenuRepository menuRepo) {
+        this.menuRepo = menuRepo;
+    }
 
     /**
      * 一次 DB 查询同时构建路由树和权限码，供登录后菜单初始化使用。
@@ -85,6 +94,10 @@ public class MenuApplicationService {
         return buildRouteNodes(groupByParent, ROOT_PARENT_ID, 0);
     }
 
+    // -------------------------------------------------------
+    // 系统管理：全量菜单树
+    // -------------------------------------------------------
+
     /**
      * 获取当前用户按钮级权限码列表（用于前端按钮显隐）。
      *
@@ -100,10 +113,6 @@ public class MenuApplicationService {
                 .distinct()
                 .collect(Collectors.toList());
     }
-
-    // -------------------------------------------------------
-    // 系统管理：全量菜单树
-    // -------------------------------------------------------
 
     /**
      * 返回全量菜单树（树形结构，含 BUTTON）。
@@ -178,6 +187,10 @@ public class MenuApplicationService {
         return menuRepo.findMenuIdsByRoleId(roleId);
     }
 
+    // -------------------------------------------------------
+    // 内部工具：O(n) 构建路由树
+    // -------------------------------------------------------
+
     /**
      * 给角色重新分配菜单（先删后批量插入）。
      *
@@ -189,10 +202,6 @@ public class MenuApplicationService {
         menuRepo.assignMenusToRole(roleId, menuIds);
     }
 
-    // -------------------------------------------------------
-    // 内部工具：O(n) 构建路由树
-    // -------------------------------------------------------
-
     /**
      * 预先按 parentId 分组，避免递归内层 O(n) 遍历，整体复杂度从 O(n²) 降至 O(n)。
      */
@@ -200,9 +209,6 @@ public class MenuApplicationService {
         return menus.stream().collect(Collectors.groupingBy(
                 menu -> menu.getParentId() != null ? menu.getParentId() : ROOT_PARENT_ID));
     }
-
-    /** 最大递归深度，防止环形菜单数据导致 StackOverflowError */
-    private static final int MAX_MENU_DEPTH = 10;
 
     private List<RouteVO> buildRouteNodes(Map<Long, List<Menu>> groupByParent,
                                           Long parentId, int depth) {
@@ -239,12 +245,12 @@ public class MenuApplicationService {
     }
 
     private List<MenuAdminVO> buildAdminNodes(Map<Long, List<Menu>> groupByParent,
-                                               Long parentId) {
+                                              Long parentId) {
         return buildAdminNodes(groupByParent, parentId, 0);
     }
 
     private List<MenuAdminVO> buildAdminNodes(Map<Long, List<Menu>> groupByParent,
-                                               Long parentId, int depth) {
+                                              Long parentId, int depth) {
         if (depth > MAX_MENU_DEPTH) {
             log.warn("[Menu] 管理树深度超过 {} 层，停止递归 parentId={}", MAX_MENU_DEPTH, parentId);
             return List.of();
@@ -276,5 +282,6 @@ public class MenuApplicationService {
     /**
      * 用户菜单初始化结果（路由树 + 权限码），一次 DB 查询返回。
      */
-    public record UserMenuResult(List<RouteVO> routes, List<String> codes) {}
+    public record UserMenuResult(List<RouteVO> routes, List<String> codes) {
+    }
 }

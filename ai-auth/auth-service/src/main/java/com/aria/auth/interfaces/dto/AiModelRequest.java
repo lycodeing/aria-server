@@ -11,28 +11,32 @@ import lombok.Data;
 @Data
 public class AiModelRequest {
     @NotBlank(message = "配置名称不能为空")
-    private String  name;
+    private String name;
 
     @NotBlank(message = "供应商不能为空")
-    private String  provider;
+    private String provider;
 
     @NotBlank(message = "API 协议不能为空")
-    private String  apiProtocol;
+    private String apiProtocol;
 
-    /** 模型类型：CHAT=对话大模型，EMBEDDING=向量模型 */
+    /**
+     * 模型类型：CHAT=对话大模型，EMBEDDING=向量模型
+     */
     @NotBlank(message = "模型类型不能为空")
-    private String  modelType;
+    private String modelType;
 
     @NotBlank(message = "Base URL 不能为空")
-    private String  baseUrl;
+    private String baseUrl;
 
-    /** api_key 加密串，更新时为空则保留原值 */
-    private String  apiKeyEnc;
+    /**
+     * api_key 加密串，更新时为空则保留原值
+     */
+    private String apiKeyEnc;
 
     @NotBlank(message = "模型名称不能为空")
-    private String  modelName;
+    private String modelName;
 
-    private Double  temperature;
+    private Double temperature;
     private Integer maxTokens;
     private Integer timeoutSec;
 

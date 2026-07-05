@@ -14,4 +14,5 @@ public record InvitationVO(
         String expiresAt,
         String acceptedAt,
         String createdAt
-) {}
+) {
+}

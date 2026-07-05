@@ -38,13 +38,19 @@ import java.util.List;
 @RequiredArgsConstructor
 public class AuthApplicationService {
 
-    /** 记住我时的 Token 超时时长：30 天（秒） */
+    /**
+     * 记住我时的 Token 超时时长：30 天（秒）
+     */
     private static final long TIMEOUT_REMEMBER_ME = 30 * 86400L;
 
-    /** 默认 Token 超时时长：8 小时（秒） */
+    /**
+     * 默认 Token 超时时长：8 小时（秒）
+     */
     private static final long TIMEOUT_DEFAULT = 28800L;
 
-    /** SSO Cookie 名称 */
+    /**
+     * SSO Cookie 名称
+     */
     private static final String COOKIE_NAME_AUTHORIZATION = "Authorization";
 
     private final IUserRepository userRepo;
@@ -96,9 +102,9 @@ public class AuthApplicationService {
         StpUtil.login(ctx.userId(), new SaLoginModel().setTimeout(ctx.timeout()));
         // Redis Session 模式：将用户信息存入 token session，供其他服务跨进程读取
         var session = StpUtil.getTokenSession();
-        session.set("username",    ctx.username());
+        session.set("username", ctx.username());
         session.set("displayName", ctx.displayName());
-        session.set("roles",       ctx.roleKeys());
+        session.set("roles", ctx.roleKeys());
         session.set("permissions", ctx.permissionKeys());
 
         writeSsoCookie(ctx.timeout());
@@ -134,15 +140,15 @@ public class AuthApplicationService {
         Long userId = StpUtil.getLoginIdAsLong();
         User user = userRepo.findById(UserId.of(userId))
                 .orElseThrow(() -> BusinessException.of(CommonErrorCode.UNAUTHORIZED));
-        List<String> roleKeys       = userRepo.findRoleKeysByUserId(userId);
+        List<String> roleKeys = userRepo.findRoleKeysByUserId(userId);
         List<String> permissionKeys = userRepo.findPermissionKeysByUserId(userId);
 
         StpUtil.logout();
         StpUtil.login(userId, new SaLoginModel().setTimeout(TIMEOUT_DEFAULT));
         var session = StpUtil.getTokenSession();
-        session.set("username",    user.getUsername());
+        session.set("username", user.getUsername());
         session.set("displayName", user.getDisplayName());
-        session.set("roles",       roleKeys);
+        session.set("roles", roleKeys);
         session.set("permissions", permissionKeys);
         log.info("Token 刷新成功 userId={}", userId);
         return new TokenRefreshResult(StpUtil.getTokenValue(), TIMEOUT_DEFAULT);

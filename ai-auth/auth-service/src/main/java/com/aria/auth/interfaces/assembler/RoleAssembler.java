@@ -9,7 +9,8 @@ import com.aria.auth.interfaces.rest.vo.RoleVO;
  */
 public final class RoleAssembler {
 
-    private RoleAssembler() {}
+    private RoleAssembler() {
+    }
 
     public static RoleVO toVO(Role role) {
         RoleVO vo = new RoleVO();

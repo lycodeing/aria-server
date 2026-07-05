@@ -4,20 +4,18 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.stp.StpUtil;
 import com.aria.auth.application.command.LoginCommand;
 import com.aria.auth.application.result.LoginResult;
+import com.aria.auth.application.result.TokenRefreshResult;
 import com.aria.auth.application.service.AuthApplicationService;
 import com.aria.auth.application.service.MenuApplicationService;
 import com.aria.auth.interfaces.rest.vo.LoginResultVO;
 import com.aria.auth.interfaces.rest.vo.MeVO;
-import com.aria.auth.application.result.TokenRefreshResult;
 import com.aria.common.web.response.R;
-import com.aria.common.web.util.ControllerUtils;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.Map;
 
 /**
  * 认证接口：登录、登出、刷新 Token、获取权限码。

@@ -15,6 +15,11 @@ public class TokenRefreshResult {
         this.expiresIn = expiresIn;
     }
 
-    public String getTokenValue() { return tokenValue; }
-    public long getExpiresIn() { return expiresIn; }
+    public String getTokenValue() {
+        return tokenValue;
+    }
+
+    public long getExpiresIn() {
+        return expiresIn;
+    }
 }

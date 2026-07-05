@@ -11,11 +11,25 @@ public class UserLoginSucceeded extends DomainEvent {
     private final Instant loginAt;
 
     public UserLoginSucceeded(UserId userId, String ip, Instant loginAt) {
-        this.userId = userId; this.ip = ip; this.loginAt = loginAt;
+        this.userId = userId;
+        this.ip = ip;
+        this.loginAt = loginAt;
     }
 
-    @Override public String getAggregateId() { return String.valueOf(userId.getValue()); }
-    public UserId getUserId() { return userId; }
-    public String getIp() { return ip; }
-    public Instant getLoginAt() { return loginAt; }
+    @Override
+    public String getAggregateId() {
+        return String.valueOf(userId.getValue());
+    }
+
+    public UserId getUserId() {
+        return userId;
+    }
+
+    public String getIp() {
+        return ip;
+    }
+
+    public Instant getLoginAt() {
+        return loginAt;
+    }
 }

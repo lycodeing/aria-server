@@ -15,13 +15,9 @@ import java.util.List;
  */
 public final class DataScopeContext {
 
-    private DataScopeContext() {}
-
     private static final ThreadLocal<List<Long>> DEPT_IDS = new ThreadLocal<>();
 
-    /** AOP 切面调用：设置当前请求的可见部门 ID 列表 */
-    public static void setDeptIds(List<Long> deptIds) {
-        DEPT_IDS.set(deptIds);
+    private DataScopeContext() {
     }
 
     /**
@@ -32,12 +28,23 @@ public final class DataScopeContext {
         return DEPT_IDS.get();
     }
 
-    /** AOP 切面调用：请求结束后清理，防止 ThreadLocal 内存泄漏 */
+    /**
+     * AOP 切面调用：设置当前请求的可见部门 ID 列表
+     */
+    public static void setDeptIds(List<Long> deptIds) {
+        DEPT_IDS.set(deptIds);
+    }
+
+    /**
+     * AOP 切面调用：请求结束后清理，防止 ThreadLocal 内存泄漏
+     */
     public static void clear() {
         DEPT_IDS.remove();
     }
 
-    /** 判断当前是否需要进行数据范围过滤 */
+    /**
+     * 判断当前是否需要进行数据范围过滤
+     */
     public static boolean isFiltered() {
         return DEPT_IDS.get() != null;
     }
