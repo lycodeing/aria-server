@@ -7,16 +7,21 @@ ALTER TABLE cs_auth.ai_model_config
     ADD CONSTRAINT ai_model_config_model_type_check
     CHECK (model_type IN ('CHAT', 'EMBEDDING', 'ROUTER'));
 
+-- 更新 model_type 列注释，补充 ROUTER 类型说明
+COMMENT ON COLUMN cs_auth.ai_model_config.model_type
+    IS 'CHAT=对话大模型, EMBEDDING=向量模型, ROUTER=域路由小模型';
+
 -- ② 插入默认 ROUTER 模型（本地 Ollama，可在后台修改）
 INSERT INTO cs_auth.ai_model_config
     (name, provider, api_protocol, model_type, base_url, api_key_enc,
      model_name, temperature, max_tokens, timeout_sec, is_default, is_enabled)
 VALUES ('Qwen2.5-0.5B (域路由)', 'Ollama', 'OPENAI_COMPATIBLE', 'ROUTER',
         'http://localhost:11434/v1', 'PLAINTEXT:none',
-        'qwen2.5:0.5b', 0.0, 32, 5, true, true);
+        'qwen2.5:0.5b', 0.0, 32, 5, true, true)
+ON CONFLICT DO NOTHING;
 
 -- ③ 会话域切换历史表
-CREATE TABLE cs_conversation.cs_session_domain_switch (
+CREATE TABLE IF NOT EXISTS cs_conversation.cs_session_domain_switch (
     id              BIGSERIAL    PRIMARY KEY,
     session_id      VARCHAR(100) NOT NULL,
     from_domain     VARCHAR(64),
@@ -27,8 +32,8 @@ CREATE TABLE cs_conversation.cs_session_domain_switch (
     msg_seq         BIGINT,
     created_at      TIMESTAMPTZ  DEFAULT NOW()
 );
-CREATE INDEX idx_cs_session_domain_switch_session_id ON cs_conversation.cs_session_domain_switch(session_id);
-CREATE INDEX idx_cs_session_domain_switch_created_at ON cs_conversation.cs_session_domain_switch(created_at);
+CREATE INDEX IF NOT EXISTS idx_cs_session_domain_switch_session_id ON cs_conversation.cs_session_domain_switch(session_id);
+CREATE INDEX IF NOT EXISTS idx_cs_session_domain_switch_created_at ON cs_conversation.cs_session_domain_switch(created_at);
 COMMENT ON TABLE cs_conversation.cs_session_domain_switch
     IS '会话领域切换历史表，记录每次 session 跨域切换事件，供运营分析';
 COMMENT ON COLUMN cs_conversation.cs_session_domain_switch.switch_type
