@@ -890,5 +890,234 @@ Flux.merge(tokenFlux, toolEventSink.asFlux())  ← 合并输出到 SSE
 
 ---
 
-*文档版本 v2.0 — 2026-07-05*  
+## 11. 策略模式应用
+
+参考项目已有的 `AiProtocolHandler`（`DynamicAiClient` 中的范本），对以下五处 if/switch 分支统一应用策略模式，消除开闭原则违反。
+
+---
+
+### 11.1 `LlmModelBuilder` — 替换 `DynamicModelFactory` 中的 protocol switch
+
+**问题：** `buildChatModel()` / `buildStreamingModel()` 中 `switch(apiProtocol)`，新增 Gemini / Mistral 等 provider 需要改这个方法。
+
+**策略接口：**
+
+```java
+// infrastructure/ai/LlmModelBuilder.java
+public interface LlmModelBuilder {
+    boolean supports(String apiProtocol);
+    ChatLanguageModel buildChatModel(AiModelConfig cfg);
+    StreamingChatLanguageModel buildStreamingModel(AiModelConfig cfg);
+}
+```
+
+**实现：** `OpenAiModelBuilder`（兜底，处理所有 OpenAI-compat 协议）、`AnthropicModelBuilder`，均为 `@Component`，Spring 自动发现。
+
+**`DynamicModelFactory` dispatch 变为：**
+
+```java
+private final List<LlmModelBuilder> builders; // Spring 注入全部实现
+
+private LlmModelBuilder resolveBuilder(AiModelConfig cfg) {
+    return builders.stream()
+            .filter(b -> b.supports(cfg.apiProtocol()))
+            .findFirst()
+            .orElseThrow(() -> new IllegalStateException("No builder for: " + cfg.apiProtocol()));
+}
+```
+
+新增 provider 只需加一个 `@Component`，`DynamicModelFactory` 完全不改。
+
+---
+
+### 11.2 `HttpAuthStrategy` — 替换 `HttpToolRunner.buildHeaders()` 中的 authType if/else
+
+**问题：** `if("BEARER") / else if("API_KEY")` 链，新增 OAuth2 / HMAC 要修改 `HttpToolRunner`。
+
+**策略接口：**
+
+```java
+// infrastructure/dit/pipeline/HttpAuthStrategy.java
+public interface HttpAuthStrategy {
+    String authType(); // 对应 ToolConfig.authType()
+    void apply(HttpHeaders headers, String authConfig, ObjectMapper mapper);
+}
+```
+
+**实现：** `BearerAuthStrategy`、`ApiKeyAuthStrategy`、`NoAuthStrategy`，均为 `@Component`。
+
+**`HttpToolRunner` buildHeaders() 简化：**
+
+```java
+// 构造时注入，key = authType()
+private final Map<String, HttpAuthStrategy> authStrategyMap;
+
+private HttpHeaders buildHeaders(ToolConfig tool, Map<String, Object> params) {
+    HttpHeaders headers = new HttpHeaders();
+    authStrategyMap.getOrDefault(tool.authType(), noAuthStrategy)
+                   .apply(headers, tool.authConfig(), objectMapper);
+    // 自定义 headersTemplate 逻辑不变...
+    return headers;
+}
+```
+
+---
+
+### 11.3 `SlotResolutionStrategy` — 替换 `SlotResolver` 中的 strategy switch
+
+**问题：** `switch("EXTRACT"/"SESSION"/"DISCOVER"/"ASK_USER")` 中 `DISCOVER` case 混合了 HTTP 调用、Redis 写入、多种返回路径，难以独立测试。
+
+**策略接口与结果类型：**
+
+```java
+// infrastructure/dit/pipeline/SlotResolutionStrategy.java
+public interface SlotResolutionStrategy {
+    String strategyCode();
+    SlotStrategyOutcome apply(SlotConfig slot, SlotResolutionContext ctx);
+}
+
+// 密封类型，三种结果
+public sealed interface SlotStrategyOutcome
+        permits SlotStrategyOutcome.Resolved,
+                SlotStrategyOutcome.NotResolved,
+                SlotStrategyOutcome.Pending {
+    record Resolved(Object value)             implements SlotStrategyOutcome {}
+    record NotResolved()                      implements SlotStrategyOutcome {}
+    record Pending(SlotResolveResult result)  implements SlotStrategyOutcome {}
+}
+
+// 上下文对象，替代 SlotResolver.resolve() 的散参数
+public record SlotResolutionContext(
+    String sessionId, String domainCode, String intentCode,
+    String userMessage, List<ChatMessage> recentHistory,
+    Map<String, Object> sessionCtx, Map<String, Object> resolved,
+    PendingSlotState existingPending
+) {}
+```
+
+**四个实现：** `ExtractSlotStrategy`、`SessionSlotStrategy`、`DiscoverSlotStrategy`、`AskUserSlotStrategy`，均为 `@Component`。
+
+**`SlotResolver` 核心循环变为：**
+
+```java
+// 无任何 switch/if-else 类型判断
+for (SlotConfig slot : requiredSlots) {
+    if (resolved.containsKey(slot.slotName())) continue;
+    for (String code : getStrategies(slot)) {
+        SlotResolutionStrategy strategy = strategyMap.get(code);
+        if (strategy == null) { log.warn("未知策略: {}", code); continue; }
+
+        switch (strategy.apply(slot, ctx)) {
+            case Resolved r  -> { resolved.put(slot.slotName(), r.value()); }
+            case Pending p   -> { return p.result(); }  // 立即挂起
+            case NotResolved ignored -> {}              // 尝试下一个策略
+        }
+        if (resolved.containsKey(slot.slotName())) break;
+    }
+}
+```
+
+---
+
+### 11.4 `RouteResultHandler` — 替换 `ChatAppService.buildDomainEventStream()` instanceof 链
+
+**问题：** `buildDomainEventStream()` 约 80 行，混合路由判断、业务操作、事件构造、AI 流处理四种职责。每增加一种 `RouteResult` 子类型要修改这个方法。
+
+**策略接口：**
+
+```java
+// application/service/route/RouteResultHandler.java
+public interface RouteResultHandler {
+    boolean supports(RouteResult route);
+    Flux<ChatEvent> handle(String sessionId, String userMessage,
+                           RouteResult route, Map<String, Object> sessionCtx);
+}
+```
+
+**四个实现及各自职责：**
+
+| 实现类 | 职责 | 处理的 RouteResult |
+|--------|------|-------------------|
+| `TransferRouteHandler` | 转人工入队 + 发 `transfer` 事件 | `TransferResult` |
+| `PendingRouteHandler` | 追问 slot + 发 `slot_ask` / `candidates` 事件 | `PendingResult` |
+| `ExecuteRouteHandler` | 执行工具 + RAG + 构建 AI 流 | `ExecuteResult` |
+| `FallbackRouteHandler` | 降级通用 LLM 回答 | `FallbackResult` |
+
+**包结构：**
+
+```
+application/service/
+  ChatAppService.java          ← 薄调度，只负责路由 dispatch
+  route/
+    RouteResultHandler.java    ← 策略接口
+    TransferRouteHandler.java
+    PendingRouteHandler.java
+    ExecuteRouteHandler.java   ← Phase 5 后随 DitPipeline 一起删除
+    FallbackRouteHandler.java
+```
+
+**`ChatAppService.buildDomainEventStream()` 压缩为 8 行：**
+
+```java
+private final List<RouteResultHandler> routeHandlers; // Spring 注入
+
+private Flux<ChatEvent> buildDomainEventStream(String sessionId, String userMessage,
+                                                RouteResult route, Map<String, Object> sessionCtx) {
+    return routeHandlers.stream()
+            .filter(h -> h.supports(route))
+            .findFirst()
+            .orElseThrow(() -> new IllegalStateException("No handler: " + route.getClass().getSimpleName()))
+            .handle(sessionId, userMessage, route, sessionCtx);
+}
+```
+
+> **注意：** `ExecuteRouteHandler` 在 Phase 5（`DomainAgentService` 替换 `DitPipeline`）后整体删除。其余三个 Handler 在新架构中继续保留。
+
+---
+
+### 11.5 `WebSocketParticipant` — 替换 `ChatWebSocketHandler` 中的 role if/else
+
+**问题：** `if("chat") / else` 在连接建立、消息处理、断开连接、错误处理四处重复，新增 supervisor 角色需改四处。
+
+**策略接口：**
+
+```java
+// infrastructure/websocket/WebSocketParticipant.java
+public interface WebSocketParticipant {
+    boolean supports(String role);
+    void onConnected(WebSocketSession session, String sessionId);
+    void onMessage(WebSocketSession session, String sessionId, String payload);
+    void onDisconnected(WebSocketSession session, String sessionId);
+    void onError(WebSocketSession session, String sessionId, Throwable error);
+}
+```
+
+**实现：** `VisitorParticipant`、`AgentParticipant`，均为 `@Component`。
+
+**`ChatWebSocketHandler` 在连接时解析一次，后续全部委托：**
+
+```java
+// afterConnectionEstablished 时解析并存入 session attributes
+WebSocketParticipant participant = participants.stream()
+        .filter(p -> p.supports(role)).findFirst()
+        .orElseThrow(() -> new IllegalArgumentException("Unknown role: " + role));
+session.getAttributes().put("participant", participant);
+
+// 后续三个 lifecycle 方法各一行
+participant.onMessage(session, sessionId, message.getPayload());
+participant.onDisconnected(session, sessionId);
+participant.onError(session, sessionId, exception);
+```
+
+---
+
+### 11.6 各策略改造时机
+
+| 策略 | 改造时机 |
+|------|---------|
+| `LlmModelBuilder` | Phase 1（`DynamicModelFactory` 实现时）|
+| `HttpAuthStrategy` | Phase 5（`HttpToolRunner` 保留期间同步重构）|
+| `SlotResolutionStrategy` | Phase 5（`DitPipeline` 重构时同步，但 Phase 5 后 SlotResolver 被 LangChain4j 取代，可提前在单独 PR 重构）|
+| `RouteResultHandler` | Phase 5（`ChatAppService` 改造时，`ExecuteRouteHandler` 同步删除）|
+| `WebSocketParticipant` | 独立 PR，与 LangChain4j 迁移无关 |  
 *变更摘要：新增 ROUTER 模型类型 / DomainRouterService 会话域切换 / cs_session_domain_switch 历史表 / __system__ 域意图动态化 / AiModelConfigProvider 扩展 / Phase 重新分层为 6 个*
