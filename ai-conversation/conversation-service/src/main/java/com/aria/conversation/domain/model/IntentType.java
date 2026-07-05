@@ -1,4 +1,4 @@
-package com.aria.conversation.infrastructure.ai;
+package com.aria.conversation.domain.model;
 
 /**
  * 用户意图枚举。

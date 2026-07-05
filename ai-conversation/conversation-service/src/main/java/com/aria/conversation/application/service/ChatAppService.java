@@ -7,9 +7,9 @@ import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
-import com.aria.conversation.infrastructure.ai.IntentClassifier;
-import com.aria.conversation.infrastructure.ai.IntentResult;
-import com.aria.conversation.infrastructure.ai.IntentType;
+import com.aria.conversation.domain.model.IntentResult;
+import com.aria.conversation.domain.model.IntentType;
+import com.aria.conversation.domain.service.IntentService;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
 import com.aria.conversation.infrastructure.dit.pipeline.ToolCallResult;
@@ -60,7 +60,7 @@ public class ChatAppService {
     private final DynamicModelFactory aiClient;
     private final ConversationHistoryRepository historyRepository;
     private final KnowledgeClient knowledgeClient;
-    private final IntentClassifier intentClassifier;
+    private final IntentService intentClassifier;
     private final SessionQueueService sessionQueueService;
     private final DitPipeline ditPipeline;
     private final ToolExecutor toolExecutor;
@@ -69,7 +69,7 @@ public class ChatAppService {
     public ChatAppService(DynamicModelFactory aiClient,
                           ConversationHistoryRepository historyRepository,
                           KnowledgeClient knowledgeClient,
-                          IntentClassifier intentClassifier,
+                          IntentService intentClassifier,
                           SessionQueueService sessionQueueService,
                           DitPipeline ditPipeline,
                           ToolExecutor toolExecutor,

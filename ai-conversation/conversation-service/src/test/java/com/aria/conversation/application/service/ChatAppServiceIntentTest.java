@@ -2,9 +2,9 @@ package com.aria.conversation.application.service;
 
 import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
-import com.aria.conversation.infrastructure.ai.IntentClassifier;
-import com.aria.conversation.infrastructure.ai.IntentResult;
-import com.aria.conversation.infrastructure.ai.IntentType;
+import com.aria.conversation.domain.model.IntentResult;
+import com.aria.conversation.domain.model.IntentType;
+import com.aria.conversation.domain.service.IntentService;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
 import com.aria.conversation.infrastructure.dit.pipeline.ToolExecutor;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
@@ -38,7 +38,7 @@ class ChatAppServiceIntentTest {
     @Mock private DynamicModelFactory aiClient;
     @Mock private ConversationHistoryRepository historyRepository;
     @Mock private KnowledgeClient knowledgeClient;
-    @Mock private IntentClassifier intentClassifier;
+    @Mock private IntentService intentClassifier;
     @Mock private SessionQueueService sessionQueueService;
     @Mock private DitPipeline ditPipeline;
     @Mock private ToolExecutor toolExecutor;

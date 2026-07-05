@@ -1,6 +1,8 @@
 package com.aria.conversation.infrastructure.ai;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.aria.conversation.domain.model.IntentResult;
+import com.aria.conversation.domain.model.IntentType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

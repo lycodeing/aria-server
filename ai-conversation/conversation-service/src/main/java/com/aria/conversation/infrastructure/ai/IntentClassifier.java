@@ -1,5 +1,7 @@
 package com.aria.conversation.infrastructure.ai;
 
+import com.aria.conversation.domain.model.IntentResult;
+import com.aria.conversation.domain.model.IntentType;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;

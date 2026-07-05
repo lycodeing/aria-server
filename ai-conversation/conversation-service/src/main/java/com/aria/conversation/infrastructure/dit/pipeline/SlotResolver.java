@@ -1,6 +1,7 @@
 package com.aria.conversation.infrastructure.dit.pipeline;
 
 import com.aria.conversation.infrastructure.ai.ChatMessage;
+import com.aria.conversation.domain.service.SlotService;
 import com.aria.conversation.infrastructure.dit.config.IntentConfig;
 import com.aria.conversation.infrastructure.dit.config.SlotConfig;
 import com.aria.conversation.infrastructure.dit.config.ToolConfig;
@@ -44,7 +45,7 @@ public class SlotResolver {
     private static final List<String> DEFAULT_STRATEGY =
             List.of("EXTRACT", "SESSION", "DISCOVER", "ASK_USER");
 
-    private final SlotExtractService extractService;
+    private final SlotService extractService;
     private final PendingSlotRepository pendingSlotRepo;
     private final HttpToolRunner httpToolRunner;
     private final ToolMapper toolMapper;

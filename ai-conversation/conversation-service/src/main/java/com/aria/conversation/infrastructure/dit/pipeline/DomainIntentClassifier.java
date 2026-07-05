@@ -2,8 +2,8 @@ package com.aria.conversation.infrastructure.dit.pipeline;
 
 import com.aria.conversation.infrastructure.ai.DynamicAiClient;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
-import com.aria.conversation.infrastructure.ai.IntentResult;
-import com.aria.conversation.infrastructure.ai.IntentType;
+import com.aria.conversation.domain.model.IntentResult;
+import com.aria.conversation.domain.model.IntentType;
 import com.aria.conversation.infrastructure.dit.config.IntentConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
