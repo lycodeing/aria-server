@@ -183,15 +183,30 @@ DynamicModelFactory
 
 ### 4.1 常量类
 
+> **C1/C2 修复：** `IntentResult`、`IntentType` 移至 `domain/` 层；`DomainCodes` 常量类放在 `domain/model/`，不再放在基础设施实现类上。
+
 ```java
-// infrastructure/ai/AiProtocol.java
+// ─── 领域层常量（domain/model/DomainCodes.java）──────────────────────────
+package com.aria.conversation.domain.model;
+
+/** 领域相关常量，禁止在代码中使用字符串字面量（阿里规范 §1.4）。 */
+public final class DomainCodes {
+    /** DIT 系统保留域 code，存储 FAQ 路径通用意图，由运营维护 */
+    public static final String SYSTEM_DOMAIN = "__system__";
+    private DomainCodes() {}
+}
+
+// ─── infrastructure/ai/AiProtocol.java ──────────────────────────────────
+package com.aria.conversation.infrastructure.ai;
+
+/** AI 协议标识常量。所有值统一小写，与 DB 数据保持一致（阿里规范 §1.4）。 */
 public final class AiProtocol {
-    public static final String OPENAI    = "openai";
-    public static final String DEEPSEEK  = "deepseek";
-    public static final String MOONSHOT  = "moonshot";
-    public static final String QIANWEN   = "qianwen";
-    public static final String ANTHROPIC = "anthropic";
-    public static final String OPENAI_COMPATIBLE = "OPENAI_COMPATIBLE";
+    public static final String OPENAI            = "openai";
+    public static final String OPENAI_COMPATIBLE = "openai_compatible";  // 统一小写
+    public static final String DEEPSEEK          = "deepseek";
+    public static final String MOONSHOT          = "moonshot";
+    public static final String QIANWEN           = "qianwen";
+    public static final String ANTHROPIC         = "anthropic";
     private AiProtocol() {}
 }
 
@@ -219,13 +234,15 @@ public final class SwitchType {
 **位置：** `conversation-service/infrastructure/ai/`  
 **职责：** 提供三类 LangChain4j model 实例（CHAT / STREAMING / ROUTER），Caffeine 有界缓存支持热切换
 
+> **C3 修复：** `buildChatModel()` 内部不使用 `switch(apiProtocol)`，改为通过 `LlmModelBuilder` 策略列表 dispatch（详见 §11.1）。新增 LLM provider 只需新增 `@Component`，工厂完全不改。
+
 ```java
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class DynamicModelFactory {
 
     private final AiModelConfigProvider configProvider;
+    private final List<LlmModelBuilder> builders; // Spring 注入所有策略实现
 
     // 三套独立 Caffeine 缓存，各自按 config hash 管理
     private final Cache<String, ChatLanguageModel> chatCache = Caffeine.newBuilder()
@@ -235,12 +252,18 @@ public class DynamicModelFactory {
     private final Cache<String, ChatLanguageModel> routerCache = Caffeine.newBuilder()
             .maximumSize(5).expireAfterAccess(30, TimeUnit.MINUTES).build();
 
+    public DynamicModelFactory(AiModelConfigProvider configProvider,
+                                List<LlmModelBuilder> builders) {
+        this.configProvider = configProvider;
+        this.builders = builders;
+    }
+
     /** CHAT 大模型（用于 FAQ、IntentService、SlotService） */
     public ChatLanguageModel getChatModel() {
         AiModelConfig cfg = configProvider.getActive();
         return chatCache.get(configHash(cfg), k -> {
             log.info("[AI] Building ChatModel protocol={} model={}", cfg.apiProtocol(), cfg.modelName());
-            return buildChatModel(cfg);
+            return resolveBuilder(cfg).buildChatModel(cfg);
         });
     }
 
@@ -249,7 +272,7 @@ public class DynamicModelFactory {
         AiModelConfig cfg = configProvider.getActive();
         return streamingCache.get(configHash(cfg), k -> {
             log.info("[AI] Building StreamingChatModel protocol={} model={}", cfg.apiProtocol(), cfg.modelName());
-            return buildStreamingModel(cfg);
+            return resolveBuilder(cfg).buildStreamingModel(cfg);
         });
     }
 
@@ -258,7 +281,7 @@ public class DynamicModelFactory {
         AiModelConfig cfg = configProvider.getActiveRouter();
         return routerCache.get(configHash(cfg), k -> {
             log.info("[AI] Building RouterModel protocol={} model={}", cfg.apiProtocol(), cfg.modelName());
-            return buildChatModel(cfg); // 复用相同构建逻辑
+            return resolveBuilder(cfg).buildChatModel(cfg);
         });
     }
 
@@ -267,22 +290,14 @@ public class DynamicModelFactory {
         return configHash(configProvider.getActive());
     }
 
-    private ChatLanguageModel buildChatModel(AiModelConfig cfg) {
-        return switch (cfg.apiProtocol()) {
-            case AiProtocol.ANTHROPIC -> AnthropicChatModel.builder()
-                    .baseUrl(cfg.baseUrl()).apiKey(cfg.apiKey())
-                    .modelName(cfg.modelName()).maxTokens(cfg.maxTokens())
-                    .temperature(cfg.temperature())
-                    .timeout(Duration.ofSeconds(cfg.timeoutSec())).build();
-            default -> OpenAiChatModel.builder()
-                    .baseUrl(cfg.baseUrl()).apiKey(cfg.apiKey())
-                    .modelName(cfg.modelName()).maxCompletionTokens(cfg.maxTokens())
-                    .temperature(cfg.temperature())
-                    .timeout(Duration.ofSeconds(cfg.timeoutSec())).build();
-        };
+    /** 通过 LlmModelBuilder 策略列表选择对应构建器，无 switch/if-else */
+    private LlmModelBuilder resolveBuilder(AiModelConfig cfg) {
+        return builders.stream()
+                .filter(b -> b.supports(cfg.apiProtocol()))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "[AI] No LlmModelBuilder for protocol: " + cfg.apiProtocol()));
     }
-
-    // buildStreamingModel 结构同 buildChatModel，使用对应 Streaming 实现类
 
     private String configHash(AiModelConfig cfg) {
         // SHA-256，非加密用途，仅做 cache key（阿里规范 §6.10 禁止 MD5）
@@ -489,7 +504,8 @@ public class SessionChatMemoryStore implements ChatMemoryStore {
 @Slf4j @Component @RequiredArgsConstructor
 public class LangChain4jIntentService implements IntentService {
 
-    static final String SYSTEM_DOMAIN_CODE = "__system__";
+    // I8 修复：常量移至领域层 DomainCodes，不应定义在 infrastructure 实现类上
+    // 使用 DomainCodes.SYSTEM_DOMAIN，保持领域概念集中管理
 
     private final DynamicModelFactory modelFactory;
     private final DomainRepository domainRepo;
@@ -498,7 +514,7 @@ public class LangChain4jIntentService implements IntentService {
     public IntentResult classify(String userMessage) {
         try {
             // 从 __system__ 域读取意图列表，动态构建 prompt
-            List<IntentConfig> intents = domainRepo.loadIntents(SYSTEM_DOMAIN_CODE);
+            List<IntentConfig> intents = domainRepo.loadIntents(DomainCodes.SYSTEM_DOMAIN);
             String systemPrompt = buildClassifyPrompt(intents);
 
             List<ChatMessage> messages = List.of(SystemMessage.from(systemPrompt), UserMessage.from(userMessage));
@@ -664,9 +680,11 @@ CREATE TABLE cs_conversation.cs_session_domain_switch (
     created_at      TIMESTAMPTZ  DEFAULT NOW()
 );
 
-CREATE INDEX idx_session_domain_switch_session ON cs_conversation.cs_session_domain_switch(session_id);
-CREATE INDEX idx_session_domain_switch_created ON cs_conversation.cs_session_domain_switch(created_at);
-
+-- I3/I4 修复：索引命名规范 idx_表名_字段名；补充 COMMENT ON TABLE
+CREATE INDEX idx_cs_session_domain_switch_session_id ON cs_conversation.cs_session_domain_switch(session_id);
+CREATE INDEX idx_cs_session_domain_switch_created_at ON cs_conversation.cs_session_domain_switch(created_at);
+COMMENT ON TABLE cs_conversation.cs_session_domain_switch
+    IS '会话领域切换历史表，记录每次 session 跨域切换事件，供运营分析';
 COMMENT ON COLUMN cs_conversation.cs_session_domain_switch.switch_type
     IS 'INITIAL=初始进入, ROUTER_MODEL=小模型检测切换, LLM_TOOL=大模型工具触发, USER_SELECTED=用户手动选择';
 COMMENT ON COLUMN cs_conversation.cs_session_domain_switch.trigger_message
@@ -680,8 +698,10 @@ COMMENT ON COLUMN cs_conversation.cs_session_domain_switch.msg_seq
 FAQ 路径的通用意图描述存入 DIT，由运营维护，不再硬编码：
 
 ```sql
+-- I7 修复：所有 INSERT 添加 ON CONFLICT DO NOTHING，保证 migration 脚本可重复执行
 INSERT INTO cs_conversation.cs_domain (code, name, description, enabled)
-VALUES ('__system__', '系统通用', 'FAQ 路径路由意图，系统保留域，勿删', true);
+VALUES ('__system__', '系统通用', 'FAQ 路径路由意图，系统保留域，勿删', true)
+ON CONFLICT (code) DO NOTHING;
 
 INSERT INTO cs_conversation.cs_intent (domain_id, code, name, description, enabled)
 SELECT d.id, v.code, v.name, v.description, true
@@ -694,7 +714,8 @@ FROM cs_conversation.cs_domain d,
         ('OUT_OF_SCOPE',     '超出范围',   '与本业务完全无关的话题'),
         ('UNKNOWN',          '未知',       '无法判断意图')
      ) AS v(code, name, description)
-WHERE d.code = '__system__';
+WHERE d.code = '__system__'
+ON CONFLICT (domain_id, code) DO NOTHING;
 ```
 
 ## 6. 依赖与接口变更
