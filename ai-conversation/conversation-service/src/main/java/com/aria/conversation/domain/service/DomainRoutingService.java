@@ -9,6 +9,11 @@ import java.util.List;
  */
 public interface DomainRoutingService {
 
+    /**
+     * 路由结果。
+     * @param suggestedDomain 建议的领域
+     * @param shouldSwitch 是否切换领域
+     */
     record RouteResult(String suggestedDomain, boolean shouldSwitch) {}
 
     RouteResult route(String userMessage, String currentDomain,
