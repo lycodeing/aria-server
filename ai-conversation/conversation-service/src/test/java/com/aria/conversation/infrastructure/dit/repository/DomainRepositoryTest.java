@@ -45,7 +45,7 @@ class DomainRepositoryTest {
     @Test
     @DisplayName("findByCode: Redis HIT，直接返回缓存，不查 DB")
     void findByCode_cacheHit_noDbCall() throws Exception {
-        DomainConfig config = new DomainConfig("ecommerce", "电商", null, null, List.of());
+        DomainConfig config = new DomainConfig("ecommerce", "电商", null, null, null, List.of());
         String json = new ObjectMapper().writeValueAsString(config);
         when(cache.get("dit:domain:ecommerce")).thenReturn(json);
 

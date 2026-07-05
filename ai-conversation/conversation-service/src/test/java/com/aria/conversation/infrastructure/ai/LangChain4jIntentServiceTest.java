@@ -46,7 +46,7 @@ class LangChain4jIntentServiceTest {
         when(modelFactory.getChatModel()).thenReturn(mock);
 
         DomainConfig domain = new DomainConfig(
-                DomainCodes.SYSTEM_DOMAIN, "系统域", null, null,
+                DomainCodes.SYSTEM_DOMAIN, "系统域", null, null, null,
                 List.of(intentConfig("FAQ_QUERY", "用户咨询产品服务问题"),
                         intentConfig("TRANSFER_REQUEST", "用户要求转人工")));
         when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN)).thenReturn(Optional.of(domain));
@@ -64,7 +64,7 @@ class LangChain4jIntentServiceTest {
         when(modelFactory.getChatModel()).thenReturn(mock);
 
         DomainConfig domain = new DomainConfig(
-                DomainCodes.SYSTEM_DOMAIN, "系统域", null, null,
+                DomainCodes.SYSTEM_DOMAIN, "系统域", null, null, null,
                 List.of(intentConfig("FAQ_QUERY", "知识问答")));
         when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN)).thenReturn(Optional.of(domain));
 

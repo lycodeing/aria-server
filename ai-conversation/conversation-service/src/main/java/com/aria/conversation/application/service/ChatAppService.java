@@ -5,15 +5,19 @@ import com.aria.conversation.application.service.payload.ToolDonePayload;
 import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.SessionQueueItem;
+import com.aria.conversation.domain.service.DomainRoutingService;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.domain.model.IntentResult;
 import com.aria.conversation.domain.model.IntentType;
 import com.aria.conversation.domain.service.IntentService;
+import com.aria.conversation.infrastructure.dit.domain.SwitchType;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
 import com.aria.conversation.infrastructure.dit.pipeline.ToolCallResult;
 import com.aria.conversation.infrastructure.dit.pipeline.ToolExecutor;
+import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
+import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
@@ -65,6 +69,9 @@ public class ChatAppService {
     private final DitPipeline ditPipeline;
     private final ToolExecutor toolExecutor;
     private final ObjectMapper objectMapper;
+    private final SessionDomainRepository sessionDomainRepo;
+    private final SessionDomainSwitchRepository domainSwitchRepo;
+    private final DomainRoutingService domainRoutingService;
 
     public ChatAppService(DynamicModelFactory aiClient,
                           ConversationHistoryRepository historyRepository,
@@ -73,7 +80,10 @@ public class ChatAppService {
                           SessionQueueService sessionQueueService,
                           DitPipeline ditPipeline,
                           ToolExecutor toolExecutor,
-                          ObjectMapper objectMapper) {
+                          ObjectMapper objectMapper,
+                          SessionDomainRepository sessionDomainRepo,
+                          SessionDomainSwitchRepository domainSwitchRepo,
+                          DomainRoutingService domainRoutingService) {
         this.aiClient            = aiClient;
         this.historyRepository   = historyRepository;
         this.knowledgeClient     = knowledgeClient;
@@ -82,6 +92,9 @@ public class ChatAppService {
         this.ditPipeline         = ditPipeline;
         this.toolExecutor        = toolExecutor;
         this.objectMapper        = objectMapper;
+        this.sessionDomainRepo   = sessionDomainRepo;
+        this.domainSwitchRepo    = domainSwitchRepo;
+        this.domainRoutingService = domainRoutingService;
     }
 
     // -------------------------------------------------------
@@ -105,9 +118,36 @@ public class ChatAppService {
             return Flux.just(ChatEvent.data(AGENT_HINT_MSG));
         }
 
-        // 有 domainCode → DIT Pipeline（直接返回 Flux<ChatEvent>，含语义事件）
+        // 有 domainCode → 域路由 + DIT Pipeline
         if (StringUtils.isNotBlank(domainCode)) {
-            return streamChatWithDomain(sessionId, message, domainCode, Map.of());
+            // 所有阻塞操作（Redis、小模型路由）均在 boundedElastic 线程完成，flatMapMany 再进入 DIT Pipeline
+            return Mono.fromCallable(() -> {
+                        // 1. 读取/写入 session 激活域（首次进入写入 INITIAL 记录）
+                        String activeDomain = sessionDomainRepo.find(sessionId).orElseGet(() -> {
+                            sessionDomainRepo.save(sessionId, domainCode);
+                            domainSwitchRepo.record(sessionId, null, domainCode,
+                                    SwitchType.INITIAL, message, "用户进入服务入口", null);
+                            return domainCode;
+                        });
+
+                        // 2. ROUTER 小模型域路由（~50-200ms，失败时降级保持当前域）
+                        List<ConversationMessage> recentHistory = historyRepository.findAll(sessionId);
+                        DomainRoutingService.RouteResult routing =
+                                domainRoutingService.route(message, activeDomain, recentHistory);
+                        if (routing.shouldSwitch()) {
+                            String newDomain = routing.suggestedDomain();
+                            // NOTE: PendingSlotRepository 在 DitPipeline 内部管理，Phase 5 统一处理
+                            sessionDomainRepo.save(sessionId, newDomain);
+                            domainSwitchRepo.record(sessionId, activeDomain, newDomain,
+                                    SwitchType.ROUTER_MODEL, message, "小模型检测切换", null);
+                            return newDomain;
+                        }
+                        return activeDomain;
+                    })
+                    .subscribeOn(Schedulers.boundedElastic())
+                    // 3. 进入 DIT Pipeline（Phase 5 将替换为 DomainAgentService）
+                    .flatMapMany(activeDomain ->
+                            streamChatWithDomain(sessionId, message, activeDomain, Map.of()));
         }
 
         // 通用 FAQ 流程：RAG + 意图路由 + LLM，含 sources event

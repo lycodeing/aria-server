@@ -96,6 +96,19 @@ public class DomainRepository {
     }
 
     /**
+     * 查询所有启用的领域配置（供域路由判断使用）。
+     * 列表查询不走 Redis 缓存，每次直接读 DB，避免缓存一致性复杂度。
+     *
+     * @return 所有 enabled=true 的领域配置列表，按 id 升序
+     */
+    public List<DomainConfig> findAllEnabled() {
+        List<DomainDO> domains = domainMapper.findAllEnabled();
+        return domains.stream()
+                .map(this::buildDomainConfig)
+                .toList();
+    }
+
+    /**
      * 主动失效领域配置缓存（管理后台修改配置后调用）。
      *
      * @param domainCode 领域标识
@@ -130,6 +143,7 @@ public class DomainRepository {
         return new DomainConfig(
                 domain.getCode(),
                 domain.getName(),
+                domain.getDescription(),
                 domain.getSystemPromptAddon(),
                 domain.getKnowledgeBaseId(),
                 intents

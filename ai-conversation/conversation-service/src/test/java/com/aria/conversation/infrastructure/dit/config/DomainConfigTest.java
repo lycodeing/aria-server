@@ -30,7 +30,7 @@ class DomainConfigTest {
     @DisplayName("findIntent: 存在时返回对应意图")
     void findIntent_found() {
         IntentConfig intent = makeIntent("query_order", false, true, List.of());
-        DomainConfig domain = new DomainConfig("ecommerce", "电商", null, null, List.of(intent));
+        DomainConfig domain = new DomainConfig("ecommerce", "电商", null, null, null, List.of(intent));
 
         Optional<IntentConfig> result = domain.findIntent("query_order");
 
@@ -41,7 +41,7 @@ class DomainConfigTest {
     @Test
     @DisplayName("findIntent: 不存在时返回 empty")
     void findIntent_notFound() {
-        DomainConfig domain = new DomainConfig("ecommerce", "电商", null, null, List.of());
+        DomainConfig domain = new DomainConfig("ecommerce", "电商", null, null, null, List.of());
         assertTrue(domain.findIntent("no_such_intent").isEmpty());
     }
 

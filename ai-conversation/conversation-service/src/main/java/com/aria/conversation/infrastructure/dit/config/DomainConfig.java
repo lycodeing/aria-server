@@ -9,6 +9,7 @@ import java.util.Optional;
  *
  * @param code              领域标识，如 "ecommerce"
  * @param name              领域名称
+ * @param description       领域描述（供域路由 prompt 使用）
  * @param systemPromptAddon 追加到 system prompt 的专属说明
  * @param knowledgeBaseId   专属知识库 ID，null 使用全局
  * @param intents           意图列表（按 sort_order 排序）
@@ -16,6 +17,7 @@ import java.util.Optional;
 public record DomainConfig(
         String code,
         String name,
+        String description,
         String systemPromptAddon,
         Long knowledgeBaseId,
         List<IntentConfig> intents

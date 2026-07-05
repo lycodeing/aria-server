@@ -5,6 +5,7 @@ import com.aria.conversation.infrastructure.dit.domain.DomainDO;
 import com.aria.conversation.infrastructure.dit.domain.IntentDO;
 import com.aria.conversation.infrastructure.dit.domain.IntentSlotDO;
 import com.aria.conversation.infrastructure.dit.domain.IntentToolDO;
+import com.aria.conversation.infrastructure.dit.domain.SessionDomainSwitchDO;
 import com.aria.conversation.infrastructure.dit.domain.ToolDO;
 import com.aria.conversation.infrastructure.dit.mapper.DomainMapper;
 import com.aria.conversation.infrastructure.dit.mapper.IntentMapper;
@@ -12,6 +13,7 @@ import com.aria.conversation.infrastructure.dit.mapper.IntentSlotMapper;
 import com.aria.conversation.infrastructure.dit.mapper.IntentToolMapper;
 import com.aria.conversation.infrastructure.dit.mapper.ToolMapper;
 import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
+import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,6 +39,7 @@ public class DitManageAppService {
     private final ToolMapper toolMapper;
     private final IntentToolMapper intentToolMapper;
     private final DomainRepository domainRepository; // 用于缓存失效
+    private final SessionDomainSwitchRepository domainSwitchRepo;
 
     // ---- 领域 ----
 
@@ -209,6 +212,18 @@ public class DitManageAppService {
         intentToolMapper.deleteById(bindingId);
         log.info("删除绑定: id={}", bindingId);
         evictDomainByIntentId(bindingDO.getIntentId());
+    }
+
+    // ---- 会话域历史 ----
+
+    /**
+     * 查询会话的域切换历史（按时间升序）。
+     *
+     * @param sessionId 会话 ID
+     * @return 切换历史列表
+     */
+    public List<SessionDomainSwitchDO> getSessionDomainHistory(String sessionId) {
+        return domainSwitchRepo.findHistory(sessionId);
     }
 
     // ---- 内部工具 ----

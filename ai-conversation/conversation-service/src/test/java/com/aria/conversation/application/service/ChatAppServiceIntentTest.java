@@ -4,9 +4,12 @@ import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.domain.model.IntentResult;
 import com.aria.conversation.domain.model.IntentType;
+import com.aria.conversation.domain.service.DomainRoutingService;
 import com.aria.conversation.domain.service.IntentService;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
 import com.aria.conversation.infrastructure.dit.pipeline.ToolExecutor;
+import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
+import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
@@ -42,6 +45,9 @@ class ChatAppServiceIntentTest {
     @Mock private SessionQueueService sessionQueueService;
     @Mock private DitPipeline ditPipeline;
     @Mock private ToolExecutor toolExecutor;
+    @Mock private SessionDomainRepository sessionDomainRepo;
+    @Mock private SessionDomainSwitchRepository domainSwitchRepo;
+    @Mock private DomainRoutingService domainRoutingService;
 
     private ChatAppService service;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -49,7 +55,8 @@ class ChatAppServiceIntentTest {
     @BeforeEach
     void setUp() {
         service = new ChatAppService(aiClient, historyRepository, knowledgeClient,
-                intentClassifier, sessionQueueService, ditPipeline, toolExecutor, objectMapper);
+                intentClassifier, sessionQueueService, ditPipeline, toolExecutor, objectMapper,
+                sessionDomainRepo, domainSwitchRepo, domainRoutingService);
         // 大多数路径不需要 RAG 命中，默认返回空列表
         lenient().when(knowledgeClient.search(anyString())).thenReturn(List.of());
         // 转人工/拒答路径不走 findAll，允许该 stub 未被使用
