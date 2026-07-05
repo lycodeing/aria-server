@@ -28,7 +28,7 @@
         <pdfbox.version>3.0.3</pdfbox.version>
         <jsoup.version>1.18.3</jsoup.version>
         <poi.version>5.3.0</poi.version>
-        <langchain4j.version>0.36.2</langchain4j.version>
+        <langchain4j.version>1.1.0</langchain4j.version>
         <resilience4j.version>2.2.0</resilience4j.version>
         <okhttp.version>4.12.0</okhttp.version>
 
@@ -148,8 +148,10 @@
             <!-- ===== AI / 熔断 ===== -->
             <dependency>
                 <groupId>dev.langchain4j</groupId>
-                <artifactId>langchain4j-spring-boot-starter</artifactId>
+                <artifactId>langchain4j-bom</artifactId>
                 <version>${langchain4j.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
             <dependency>
                 <groupId>io.github.resilience4j</groupId>

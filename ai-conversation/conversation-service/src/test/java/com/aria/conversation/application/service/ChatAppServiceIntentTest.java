@@ -1,7 +1,7 @@
 package com.aria.conversation.application.service;
 
 import com.aria.conversation.application.service.payload.TransferPayload;
-import com.aria.conversation.infrastructure.ai.DynamicAiClient;
+import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.infrastructure.ai.IntentClassifier;
 import com.aria.conversation.infrastructure.ai.IntentResult;
 import com.aria.conversation.infrastructure.ai.IntentType;
@@ -35,7 +35,7 @@ import static org.mockito.Mockito.*;
 @DisplayName("ChatAppService 意图路由")
 class ChatAppServiceIntentTest {
 
-    @Mock private DynamicAiClient aiClient;
+    @Mock private DynamicModelFactory aiClient;
     @Mock private ConversationHistoryRepository historyRepository;
     @Mock private KnowledgeClient knowledgeClient;
     @Mock private IntentClassifier intentClassifier;

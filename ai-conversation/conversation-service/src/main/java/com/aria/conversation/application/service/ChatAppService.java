@@ -6,7 +6,7 @@ import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
-import com.aria.conversation.infrastructure.ai.DynamicAiClient;
+import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.infrastructure.ai.IntentClassifier;
 import com.aria.conversation.infrastructure.ai.IntentResult;
 import com.aria.conversation.infrastructure.ai.IntentType;
@@ -57,7 +57,7 @@ public class ChatAppService {
             回答要简明扼要，避免冗长说明。
             """;
 
-    private final DynamicAiClient aiClient;
+    private final DynamicModelFactory aiClient;
     private final ConversationHistoryRepository historyRepository;
     private final KnowledgeClient knowledgeClient;
     private final IntentClassifier intentClassifier;
@@ -66,7 +66,7 @@ public class ChatAppService {
     private final ToolExecutor toolExecutor;
     private final ObjectMapper objectMapper;
 
-    public ChatAppService(DynamicAiClient aiClient,
+    public ChatAppService(DynamicModelFactory aiClient,
                           ConversationHistoryRepository historyRepository,
                           KnowledgeClient knowledgeClient,
                           IntentClassifier intentClassifier,
