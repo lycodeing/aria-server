@@ -2,6 +2,7 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.domain.service.SlotService;
 import com.aria.conversation.infrastructure.dit.config.SlotConfig;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.mock.ChatModelMock;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,7 +32,7 @@ class LangChain4jSlotServiceTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        service = new LangChain4jSlotService(modelFactory);
+        service = new LangChain4jSlotService(modelFactory, new ObjectMapper());
     }
 
     @Test

@@ -27,9 +27,8 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class LangChain4jSlotService implements SlotService {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-
     private final DynamicModelFactory modelFactory;
+    private final ObjectMapper objectMapper;
 
     @Override
     public Map<String, Object> extract(String userMessage,
@@ -77,12 +76,14 @@ public class LangChain4jSlotService implements SlotService {
             String systemPrompt) {
         List<dev.langchain4j.data.message.ChatMessage> result = new ArrayList<>();
         result.add(SystemMessage.from(systemPrompt));
-        // Take up to last 6 messages (3 turns) for context
-        int start = Math.max(0, history.size() - 6);
-        for (ChatMessage m : history.subList(start, history.size())) {
-            result.add("assistant".equals(m.role())
-                    ? AiMessage.from(m.content())
-                    : UserMessage.from(m.content()));
+        if (history != null && !history.isEmpty()) {
+            // Take up to last 6 messages (3 turns) for context
+            int start = Math.max(0, history.size() - 6);
+            for (ChatMessage m : history.subList(start, history.size())) {
+                result.add("assistant".equals(m.role())
+                        ? AiMessage.from(m.content())
+                        : UserMessage.from(m.content()));
+            }
         }
         result.add(UserMessage.from(userMessage));
         return result;
@@ -92,12 +93,12 @@ public class LangChain4jSlotService implements SlotService {
         if (response == null || response.isBlank()) return Map.of();
         String json = response.trim();
         if (json.startsWith("```")) {
-            int s = json.indexOf('{'), e = json.lastIndexOf('}');
-            if (s >= 0 && e >= s) json = json.substring(s, e + 1);
+            int startIdx = json.indexOf('{'), endIdx = json.lastIndexOf('}');
+            if (startIdx >= 0 && endIdx >= startIdx) json = json.substring(startIdx, endIdx + 1);
         }
         if (!json.startsWith("{")) return Map.of();
         try {
-            Map<String, Object> result = MAPPER.readValue(json, new TypeReference<>() {});
+            Map<String, Object> result = objectMapper.readValue(json, new TypeReference<>() {});
             // Filter out blank / null values
             result.entrySet().removeIf(entry ->
                     entry.getValue() == null
