@@ -158,6 +158,12 @@ public class DitManageAppService {
         return toolMapper.selectList(null);
     }
 
+    public ToolDO getToolById(Long id) {
+        ToolDO tool = toolMapper.selectById(id);
+        if (tool == null) throw new BusinessException(NOT_FOUND, "工具不存在: " + id);
+        return tool;
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public ToolDO createTool(ToolDO tool) {
         toolMapper.insert(tool);
