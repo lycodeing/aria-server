@@ -175,6 +175,9 @@ public class DitManageAppService {
 
     @Transactional(rollbackFor = Exception.class)
     public void deleteTool(Long toolId) {
+        if (toolMapper.selectById(toolId) == null) {
+            throw new BusinessException(NOT_FOUND, "工具不存在: " + toolId);
+        }
         toolMapper.deleteById(toolId);
         log.info("删除工具: id={}", toolId);
     }

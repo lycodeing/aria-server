@@ -109,6 +109,9 @@ public class ChatController {
     public R<List<ConversationMessage>> history(
             @RequestParam String sessionId,
             @RequestParam(required = false, defaultValue = "0") long sinceSeq) {
+        if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {
+            return R.fail(400, "非法的 sessionId 格式");
+        }
         if (sinceSeq > 0L) {
             return R.ok(chatService.getHistorySince(sessionId, sinceSeq));
         }
@@ -120,6 +123,9 @@ public class ChatController {
      */
     @DeleteMapping("/history")
     public R<Map<String, String>> clearHistory(@RequestParam String sessionId) {
+        if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {
+            return R.fail(400, "非法的 sessionId 格式");
+        }
         chatService.clearHistory(sessionId);
         return R.ok(Map.of("message", "会话历史已清除", "sessionId", sessionId));
     }

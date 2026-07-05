@@ -110,6 +110,7 @@ public class ToolExecutor {
                         "properties", schema
                 ));
             } catch (Exception e) {
+                log.warn("[DIT] paramSchema 解析失败 tool={}，降级使用空参数结构", tool.code(), e);
                 def.put("parameters", Map.of("type", "object", "properties", Map.of()));
             }
             defs.add(def);

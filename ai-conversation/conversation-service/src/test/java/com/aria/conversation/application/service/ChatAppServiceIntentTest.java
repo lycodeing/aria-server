@@ -1,5 +1,6 @@
 package com.aria.conversation.application.service;
 
+import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.infrastructure.ai.DynamicAiClient;
 import com.aria.conversation.infrastructure.ai.IntentClassifier;
 import com.aria.conversation.infrastructure.ai.IntentResult;
@@ -21,9 +22,15 @@ import reactor.test.StepVerifier;
 
 import java.util.List;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+/**
+ * ChatAppService 意图路由单元测试。
+ * 使用 service.stream(sessionId, message, null) 触发 FAQ 路径，
+ * 验证返回的 {@link ChatEvent} 语义事件类型和内容。
+ */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("ChatAppService 意图路由")
 class ChatAppServiceIntentTest {
@@ -37,99 +44,144 @@ class ChatAppServiceIntentTest {
     @Mock private ToolExecutor toolExecutor;
 
     private ChatAppService service;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
         service = new ChatAppService(aiClient, historyRepository, knowledgeClient,
-                intentClassifier, sessionQueueService, ditPipeline, toolExecutor, new ObjectMapper());
-        // lenient: 转人工/拒答路径不走 findAll，允许该 stub 未被使用
-        lenient().when(historyRepository.findAll(anyString())).thenReturn(List.of());
-        // lenient: 大多数路径不需要 RAG 命中，默认返回空列表
+                intentClassifier, sessionQueueService, ditPipeline, toolExecutor, objectMapper);
+        // 大多数路径不需要 RAG 命中，默认返回空列表
         lenient().when(knowledgeClient.search(anyString())).thenReturn(List.of());
+        // 转人工/拒答路径不走 findAll，允许该 stub 未被使用
+        lenient().when(historyRepository.findAll(anyString())).thenReturn(List.of());
     }
 
+    // -------------------------------------------------------
+    // 正常 AI 回复路径
+    // -------------------------------------------------------
+
     @Test
-    @DisplayName("FAQ_QUERY: 正常调用 LLM 流式回复")
-    void faqQuery_callsAiStream() {
+    @DisplayName("FAQ_QUERY: 返回 ChatEvent.data token 流，调用 LLM")
+    void faqQuery_returnsDataEvents() {
         when(intentClassifier.classify(anyString()))
                 .thenReturn(new IntentResult(IntentType.FAQ_QUERY, 0.9));
         when(aiClient.streamChat(anyList(), anyString()))
                 .thenReturn(Flux.just("这是", "回答"));
 
-        // 使用 2-arg 重载；3-arg 重载（直接传 hits）已移除，由 streamChatEvents 内部统一调用 knowledgeClient
-        Flux<String> result = service.streamChat("s1", "退款政策是什么？");
+        Flux<ChatEvent> result = service.stream("s1", "退款政策是什么？", null);
 
         StepVerifier.create(result)
-                .expectNext("这是", "回答")
+                .assertNext(e -> {
+                    assertThat(e.eventType()).isNull();  // 普通数据 token
+                    assertThat(e.data()).isEqualTo("这是");
+                })
+                .assertNext(e -> assertThat(e.data()).isEqualTo("回答"))
                 .verifyComplete();
         verify(aiClient).streamChat(anyList(), anyString());
         verify(sessionQueueService, never()).enqueue(any(), any(), any(), any());
     }
 
+    // -------------------------------------------------------
+    // 转人工路径：验证 transfer 语义事件
+    // -------------------------------------------------------
+
     @Test
-    @DisplayName("TRANSFER_REQUEST: 自动入队转人工，返回提示文本，不调 LLM")
-    void transferRequest_enqueuedAndNoAi() {
+    @DisplayName("TRANSFER_REQUEST: 发出 transfer 语义事件，不调 LLM")
+    void transferRequest_emitsTransferEvent() throws Exception {
         when(intentClassifier.classify(anyString()))
                 .thenReturn(new IntentResult(IntentType.TRANSFER_REQUEST, 0.95));
 
-        // streamChat(deprecated) 从 transfer payload.message 提取文字，不返回空 Flux
-        Flux<String> result = service.streamChat("s2", "我要找真人客服");
+        Flux<ChatEvent> result = service.stream("s2", "我要找真人客服", null);
 
         StepVerifier.create(result)
-                .expectNextMatches(msg -> msg.contains("人工客服"))
+                .assertNext(e -> {
+                    assertThat(e.eventType()).isEqualTo(ChatEvent.EventType.TRANSFER);
+                    // 反序列化 payload 验证 message 字段
+                    TransferPayload payload;
+                    try {
+                        payload = objectMapper.readValue(e.data(), TransferPayload.class);
+                    } catch (Exception ex) {
+                        throw new AssertionError("transfer payload 解析失败", ex);
+                    }
+                    assertThat(payload.message()).contains("人工客服");
+                    assertThat(payload.intentCode()).isEqualTo("faq_transfer");
+                })
                 .verifyComplete();
         verify(sessionQueueService).enqueue(eq("s2"), anyString(), anyString(), anyString());
         verify(aiClient, never()).streamChat(anyList(), anyString());
     }
 
     @Test
-    @DisplayName("COMPLAINT: 自动入队转人工，回复包含道歉语")
-    void complaint_enqueuedWithApology() {
+    @DisplayName("COMPLAINT: transfer 事件的 message 包含道歉语")
+    void complaint_transferEventContainsApology() throws Exception {
         when(intentClassifier.classify(anyString()))
                 .thenReturn(new IntentResult(IntentType.COMPLAINT, 0.93));
 
-        Flux<String> result = service.streamChat("s3", "你们服务太差了，我要投诉");
+        Flux<ChatEvent> result = service.stream("s3", "你们服务太差了，我要投诉", null);
 
         StepVerifier.create(result)
-                .expectNextMatches(msg -> msg.contains("抱歉") && msg.contains("人工客服"))
+                .assertNext(e -> {
+                    assertThat(e.eventType()).isEqualTo(ChatEvent.EventType.TRANSFER);
+                    try {
+                        TransferPayload payload = objectMapper.readValue(e.data(), TransferPayload.class);
+                        assertThat(payload.message()).contains("抱歉").contains("人工客服");
+                    } catch (Exception ex) {
+                        throw new AssertionError("transfer payload 解析失败", ex);
+                    }
+                })
                 .verifyComplete();
         verify(sessionQueueService).enqueue(eq("s3"), anyString(), anyString(), anyString());
         verify(aiClient, never()).streamChat(anyList(), anyString());
     }
 
+    // -------------------------------------------------------
+    // 拒答路径
+    // -------------------------------------------------------
+
     @Test
-    @DisplayName("OUT_OF_SCOPE: 返回拒答模板，不调 LLM")
-    void outOfScope_returnsTemplate() {
+    @DisplayName("OUT_OF_SCOPE: 返回拒答 data token，不调 LLM")
+    void outOfScope_returnsDataWithTemplate() {
         when(intentClassifier.classify(anyString()))
                 .thenReturn(new IntentResult(IntentType.OUT_OF_SCOPE, 0.88));
 
-        Flux<String> result = service.streamChat("s4", "帮我解一道微积分题");
+        Flux<ChatEvent> result = service.stream("s4", "帮我解一道微积分题", null);
 
         StepVerifier.create(result)
-                .expectNextMatches(msg -> msg.contains("只能回答业务相关"))
+                .assertNext(e -> {
+                    assertThat(e.eventType()).isNull();
+                    assertThat(e.data()).contains("只能回答业务相关");
+                })
                 .verifyComplete();
         verify(aiClient, never()).streamChat(anyList(), anyString());
     }
 
+    // -------------------------------------------------------
+    // 闲聊路径
+    // -------------------------------------------------------
+
     @Test
-    @DisplayName("CHITCHAT: 跳过 RAG（hits 有值也忽略），直接调 LLM，systemPrompt 不含参考资料")
+    @DisplayName("CHITCHAT: 跳过 RAG，调用 LLM，systemPrompt 不含参考资料")
     void chitchat_skipsRag() {
         when(intentClassifier.classify(anyString()))
                 .thenReturn(new IntentResult(IntentType.CHITCHAT, 0.9));
         when(aiClient.streamChat(anyList(), anyString()))
                 .thenReturn(Flux.just("你好！"));
-        // 模拟 knowledgeClient 返回一个命中，但 CHITCHAT 路径应跳过 RAG 不使用它
+        // 模拟 knowledgeClient 返回命中，但 CHITCHAT 路径应跳过 RAG
         KnowledgeSearchResult.Hit hit = mock(KnowledgeSearchResult.Hit.class);
         when(knowledgeClient.search(anyString())).thenReturn(List.of(hit));
 
-        Flux<String> result = service.streamChat("s5", "你好");
+        Flux<ChatEvent> result = service.stream("s5", "你好", null);
 
         StepVerifier.create(result)
-                .expectNext("你好！")
+                .assertNext(e -> assertThat(e.data()).isEqualTo("你好！"))
                 .verifyComplete();
         // skipRag=true 时 systemPrompt 不拼入参考资料
         verify(aiClient).streamChat(anyList(), argThat(prompt -> !prompt.contains("【参考资料】")));
     }
+
+    // -------------------------------------------------------
+    // 降级路径
+    // -------------------------------------------------------
 
     @Test
     @DisplayName("UNKNOWN: 降级走正常 FAQ 流程，调用 LLM")
@@ -139,26 +191,48 @@ class ChatAppServiceIntentTest {
         when(aiClient.streamChat(anyList(), anyString()))
                 .thenReturn(Flux.just("正常回答"));
 
-        Flux<String> result = service.streamChat("s6", "随便问个问题");
+        Flux<ChatEvent> result = service.stream("s6", "随便问个问题", null);
 
         StepVerifier.create(result)
-                .expectNext("正常回答")
+                .assertNext(e -> assertThat(e.data()).isEqualTo("正常回答"))
                 .verifyComplete();
         verify(aiClient).streamChat(anyList(), anyString());
     }
 
+    // -------------------------------------------------------
+    // 异常容错
+    // -------------------------------------------------------
+
     @Test
-    @DisplayName("enqueue 抛异常时，转人工失败不影响最终回复推送")
-    void transferRequest_enqueueFails_stillReturnsReply() {
+    @DisplayName("enqueue 抛异常时，转人工失败不影响 transfer 事件推送")
+    void transferRequest_enqueueFails_stillEmitsTransferEvent() {
         when(intentClassifier.classify(anyString()))
                 .thenReturn(new IntentResult(IntentType.TRANSFER_REQUEST, 0.9));
         doThrow(new RuntimeException("Redis 不可用"))
                 .when(sessionQueueService).enqueue(any(), any(), any(), any());
 
-        Flux<String> result = service.streamChat("s7", "转人工");
+        Flux<ChatEvent> result = service.stream("s7", "转人工", null);
 
         StepVerifier.create(result)
-                .expectNextMatches(msg -> msg.contains("人工客服"))
+                .assertNext(e -> assertThat(e.eventType()).isEqualTo(ChatEvent.EventType.TRANSFER))
+                .verifyComplete();
+    }
+
+    // -------------------------------------------------------
+    // 向后兼容：@Deprecated streamChat() 降级契约
+    // -------------------------------------------------------
+
+    @Test
+    @DisplayName("[deprecated] streamChat: transfer 场景降级返回提示文字，不返回空 Flux")
+    @SuppressWarnings("deprecation")
+    void deprecatedStreamChat_transferDegradesToText() {
+        when(intentClassifier.classify(anyString()))
+                .thenReturn(new IntentResult(IntentType.TRANSFER_REQUEST, 0.9));
+
+        Flux<String> result = service.streamChat("s8", "转人工");
+
+        StepVerifier.create(result)
+                .assertNext(msg -> assertThat(msg).contains("人工客服"))
                 .verifyComplete();
     }
 }

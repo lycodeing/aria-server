@@ -144,32 +144,105 @@ public class ChatAppService {
      * 通用 FAQ 流程：RAG + 意图路由 + LLM，包含 sources event。
      * 返回 {@link ChatEvent} 流，知识库命中时先发 sources 再发 AI token。
      *
-     * <p>使用 {@code switchOnFirst} 延迟 sources 发射：只有当 {@code streamChatEvents}
-     * 第一个事件是普通数据 token 时才前置 sources；若第一个事件是 transfer/error 语义事件，
-     * 则直接透传，避免无意义的 sources 在转人工场景中先行发出造成前端状态闪烁。
+     * <p>所有阻塞操作（Redis 历史写入、HTTP 知识库检索、LLM 意图分类）通过
+     * {@code Mono.fromCallable + subscribeOn(boundedElastic)} 整体切换到 IO 线程池，
+     * 与 {@link #streamChatWithDomain} 的线程模型保持一致，避免阻塞 reactor-http-nio 线程。
      */
     private Flux<ChatEvent> streamFaq(String sessionId, String message) {
-        List<KnowledgeSearchResult.Hit> hits = searchHits(message);
-        Flux<ChatEvent> aiEvents = streamChatEvents(sessionId, message, hits);
+        return Mono.fromCallable(() -> {
+                    // 以下均为阻塞操作，必须在 boundedElastic 线程上执行
+                    historyRepository.append(sessionId, ROLE_USER, message);
+                    List<KnowledgeSearchResult.Hit> hits = searchHits(message);
+                    IntentResult intent = intentClassifier.classify(message);
+                    log.debug("[Chat] sessionId={} intent={} confidence={}",
+                            sessionId, intent.intent(), intent.confidence());
+                    return new FaqRouteData(hits, intent);
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(route -> buildFaqEventStream(sessionId, message, route));
+    }
 
-        if (hits.isEmpty()) {
-            return aiEvents;
+    /**
+     * 将 FAQ 路由数据转换为 SSE 事件流。
+     * 调用前所有阻塞操作已完成（由 {@link #streamFaq} 的 boundedElastic 保证），
+     * 此方法只组装 Flux，不执行任何阻塞 I/O。
+     */
+    private Flux<ChatEvent> buildFaqEventStream(String sessionId, String message, FaqRouteData route) {
+        IntentResult intent = route.intent();
+        List<KnowledgeSearchResult.Hit> hits = route.hits();
+
+        // 路由：需要转人工
+        if (intent.requiresTransfer()) {
+            try {
+                sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
+                log.info("[Chat] 自动转人工 sessionId={} intent={}", sessionId, intent.intent());
+            } catch (Exception e) {
+                log.warn("[Chat] 自动转人工失败 sessionId={}", sessionId, e);
+            }
+            String reply = intent.intent() == IntentType.COMPLAINT
+                    ? "非常抱歉给您带来了不好的体验，我已为您转接人工客服，请稍候。"
+                    : "好的，我已为您转接人工客服，请稍候。";
+            historyRepository.append(sessionId, ROLE_ASSISTANT, reply);
+            try {
+                String transferJson = objectMapper.writeValueAsString(
+                        new TransferPayload(FAQ_TRANSFER_INTENT_CODE, reply));
+                return Flux.just(ChatEvent.transfer(transferJson));
+            } catch (JsonProcessingException e) {
+                log.warn("[Chat] FAQ transfer payload 序列化失败 sessionId={}", sessionId, e);
+                return Flux.just(ChatEvent.data(reply));
+            }
         }
 
+        // 路由：超出业务范围
+        if (intent.intent() == IntentType.OUT_OF_SCOPE) {
+            historyRepository.append(sessionId, ROLE_ASSISTANT, OUT_OF_SCOPE_REPLY);
+            return Flux.just(ChatEvent.data(OUT_OF_SCOPE_REPLY));
+        }
+
+        // 路由：闲聊 → 跳过 RAG
+        List<KnowledgeSearchResult.Hit> effectiveHits = intent.skipRag() ? List.of() : hits;
+        String systemPrompt = buildSystemPrompt(effectiveHits);
+        List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
+        StringBuilder assistantReply = new StringBuilder();
+
+        Flux<ChatEvent> aiStream = aiClient.streamChat(aiPrompt, systemPrompt)
+                .map(content -> {
+                    assistantReply.append(content);
+                    return ChatEvent.data(content);
+                })
+                .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
+                .onErrorResume(e -> Flux.just(ChatEvent.data("抱歉，AI 服务暂时不可用，请稍后重试。")))
+                .doFinally(signal -> {
+                    if (!assistantReply.isEmpty()) {
+                        historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
+                    }
+                });
+
+        // 无命中 / 闲聊跳过 RAG → 直接返回 AI 流
+        if (hits.isEmpty() || intent.skipRag()) {
+            return aiStream;
+        }
+
+        // 有命中：用 switchOnFirst 延迟 sources，仅在正常 AI 回复路径前置
         ChatEvent sourcesEvent = ChatEvent.sources(buildSourcesJson(hits));
-        // switchOnFirst：窥探第一个事件，语义事件（transfer/error）不需要 sources 前缀
-        return aiEvents.switchOnFirst((signal, flux) -> {
+        return aiStream.switchOnFirst((signal, flux) -> {
             if (signal.hasValue()) {
                 ChatEvent first = signal.get();
                 String type = first != null ? first.eventType() : null;
                 if (ChatEvent.EventType.TRANSFER.equals(type)
                         || ChatEvent.EventType.ERROR.equals(type)) {
-                    return flux; // 转人工/错误路径跳过 sources
+                    return flux; // 语义事件路径跳过 sources
                 }
             }
             return Flux.concat(Flux.just(sourcesEvent), flux);
         });
     }
+
+    /** FAQ 路由阶段的中间结果，携带 hits 和意图分类结果，通过 Mono.fromCallable 在 boundedElastic 上计算。 */
+    private record FaqRouteData(List<KnowledgeSearchResult.Hit> hits, IntentResult intent) {}
+
+    /** ExecuteResult 阶段工具调用 + system prompt 的计算结果，替代 Object[] 裸数组桥接。 */
+    private record ExecutePrepareData(List<ToolCallResult> toolResults, String systemPrompt) {}
 
     /**
      * 将 hits 序列化为 JSON 数组，格式：[{"docId":"...","label":"..."}]。
@@ -190,80 +263,23 @@ public class ChatAppService {
         try {
             return objectMapper.writeValueAsString(sources);
         } catch (JsonProcessingException e) {
+            log.warn("[Chat] sources JSON 序列化失败，降级返回空数组", e);
             return "[]";
         }
     }
 
     /**
-     * 流式对话（带预检索 hits），含意图路由，返回 {@link ChatEvent} 流。
+     * 流式对话（带预检索 hits），含意图路由，返回 {@link ChatEvent} 流。已废弃，由 {@link #streamFaq} 取代。
      *
-     * <p>路由逻辑：
-     * <ol>
-     *   <li>意图分类（LLM 轻量分类请求）</li>
-     *   <li>TRANSFER_REQUEST / COMPLAINT → 自动入队转人工，返回 transfer 语义事件</li>
-     *   <li>OUT_OF_SCOPE → 返回拒答模板流，不调 LLM</li>
-     *   <li>CHITCHAT → 跳过 RAG，直接 LLM 回复</li>
-     *   <li>FAQ_QUERY / UNKNOWN → 正常 RAG + LLM 流程</li>
-     * </ol>
-     *
-     * <p>原 {@code streamChat()} 返回 {@code Flux<String>}，transfer 事件无法穿透
-     * {@code streamFaq()} 的 {@code .map(ChatEvent::data)} 包装，导致前端收不到语义信号。
-     * 改为返回 {@code Flux<ChatEvent>} 后，transfer 分支可直接发出 {@link ChatEvent#transfer}。
+     * @deprecated 阻塞操作（historyRepository、intentClassifier）现已移至 streamFaq 的 boundedElastic 线程块。
+     *             此方法保留仅供向后兼容，内部直接委托 streamFaq 实现。
      */
+    @Deprecated
     private Flux<ChatEvent> streamChatEvents(String sessionId, String userMessage,
                                               List<KnowledgeSearchResult.Hit> hits) {
-        historyRepository.append(sessionId, ROLE_USER, userMessage);
-
-        // 意图分类
-        IntentResult intent = intentClassifier.classify(userMessage);
-        log.debug("[Chat] sessionId={} intent={} confidence={}", sessionId, intent.intent(), intent.confidence());
-
-        // 路由：需要转人工 — 发出 transfer 语义事件，前端可据此自动切换 WebSocket 模式
-        if (intent.requiresTransfer()) {
-            try {
-                sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
-                log.info("[Chat] 自动转人工 sessionId={} intent={}", sessionId, intent.intent());
-            } catch (Exception e) {
-                log.warn("[Chat] 自动转人工失败 sessionId={}", sessionId, e);
-            }
-            String reply = intent.intent() == IntentType.COMPLAINT
-                    ? "非常抱歉给您带来了不好的体验，我已为您转接人工客服，请稍候。"
-                    : "好的，我已为您转接人工客服，请稍候。";
-            historyRepository.append(sessionId, ROLE_ASSISTANT, reply);
-            try {
-                String transferJson = objectMapper.writeValueAsString(new TransferPayload(FAQ_TRANSFER_INTENT_CODE, reply));
-                return Flux.just(ChatEvent.transfer(transferJson));
-            } catch (JsonProcessingException e) {
-                log.warn("[Chat] FAQ transfer payload 序列化失败 sessionId={}", sessionId, e);
-                return Flux.just(ChatEvent.data(reply));
-            }
-        }
-
-        // 路由：超出业务范围
-        if (intent.intent() == IntentType.OUT_OF_SCOPE) {
-            historyRepository.append(sessionId, ROLE_ASSISTANT, OUT_OF_SCOPE_REPLY);
-            return Flux.just(ChatEvent.data(OUT_OF_SCOPE_REPLY));
-        }
-
-        // 路由：闲聊 → 跳过 RAG
-        List<KnowledgeSearchResult.Hit> effectiveHits = intent.skipRag() ? List.of() : hits;
-
-        String systemPrompt = buildSystemPrompt(effectiveHits);
-        List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
-        StringBuilder assistantReply = new StringBuilder();
-
-        return aiClient.streamChat(aiPrompt, systemPrompt)
-                .map(content -> {
-                    assistantReply.append(content);
-                    return ChatEvent.data(content);
-                })
-                .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
-                .onErrorResume(e -> Flux.just(ChatEvent.data("抱歉，AI 服务暂时不可用，请稍后重试。")))
-                .doFinally(signal -> {
-                    if (!assistantReply.isEmpty()) {
-                        historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
-                    }
-                });
+        // 直接委托给新实现；hits 参数保留供测试桩使用（测试中直接注入 knowledgeClient mock）
+        return buildFaqEventStream(sessionId, userMessage, new FaqRouteData(hits,
+                intentClassifier.classify(userMessage)));
     }
 
     /**
@@ -413,13 +429,14 @@ public class ChatAppService {
                         String toolContext = buildToolContext(toolResults);
                         List<KnowledgeSearchResult.Hit> hits = r.intentConfig().skipRag()
                                 ? List.of() : knowledgeClient.search(userMessage);
-                        return new Object[]{toolResults, buildSystemPromptWithToolContext(
-                                hits, r.systemPromptAddon(), toolContext)};
+                        String systemPrompt = buildSystemPromptWithToolContext(
+                                hits, r.systemPromptAddon(), toolContext);
+                        // 使用类型安全的 record 替代 Object[] 裸数组桥接
+                        return new ExecutePrepareData(toolResults, systemPrompt);
                     })
-                    .flatMapMany(arr -> {
-                        @SuppressWarnings("unchecked")
-                        List<ToolCallResult> toolResults = (List<ToolCallResult>) arr[0];
-                        String systemPrompt = (String) arr[1];
+                    .flatMapMany(prepared -> {
+                        List<ToolCallResult> toolResults = prepared.toolResults();
+                        String systemPrompt = prepared.systemPrompt();
 
                         // 构造工具调用状态事件（使用 Payload 记录类，消除 Map.of() 魔法值）
                         List<ChatEvent> toolEvents = new ArrayList<>();
