@@ -68,6 +68,8 @@ public class AiModelConfigService {
     public AiModelConfigDO create(AiModelRequest req, Long operatorId) {
         AiModelConfigDO do_ = new AiModelConfigDO();
         copyRequestToDo(req, do_);
+        // 新建时 apiKeyEnc 必须写入（允许空值，代表无鉴权）
+        do_.setApiKeyEnc(normalizeApiKey(req.getApiKeyEnc()));
         do_.setCreatedBy(operatorId);
         do_.setCreatedAt(LocalDateTime.now());
         do_.setUpdatedAt(LocalDateTime.now());
@@ -86,9 +88,9 @@ public class AiModelConfigService {
     public void update(Long id, AiModelRequest req) {
         AiModelConfigDO existing = getOrThrow(id);
         copyRequestToDo(req, existing);
-        // api_key_enc 为空时保留原值，避免编辑时意外清除 Key
+        // apiKeyEnc 不为空才更新，留空代表"不修改现有 Key"
         if (req.getApiKeyEnc() != null && !req.getApiKeyEnc().isBlank()) {
-            existing.setApiKeyEnc(req.getApiKeyEnc());
+            existing.setApiKeyEnc(normalizeApiKey(req.getApiKeyEnc()));
         }
         existing.setUpdatedAt(LocalDateTime.now());
         mapper.updateById(existing);
@@ -181,8 +183,8 @@ public class AiModelConfigService {
      * @return 解密后的原始 API Key
      */
     public String decryptApiKey(String apiKeyEnc) {
-        if (apiKeyEnc == null) {
-            return "";
+        if (apiKeyEnc == null || apiKeyEnc.isBlank()) {
+            return "";  // 空值表示无鉴权（如本地 Ollama），直接返回空串
         }
         if (apiKeyEnc.startsWith("PLAINTEXT:")) {
             return apiKeyEnc.substring(10);
@@ -220,7 +222,7 @@ public class AiModelConfigService {
                         .eq(AiModelConfigDO::getId, id)
                         .isNull(AiModelConfigDO::getDeletedAt));
         if (record == null) {
-            throw new IllegalArgumentException("AI 模型配置不存在: id=" + id);
+            throw new BusinessException(404, "AI 模型配置不存在: id=" + id);
         }
         return record;
     }
@@ -238,7 +240,10 @@ public class AiModelConfigService {
         do_.setApiProtocol(req.getApiProtocol());
         do_.setBaseUrl(req.getBaseUrl());
         do_.setModelName(req.getModelName());
-        do_.setModelType(req.getModelType());
+        // modelType 为空时不覆盖，防止 update 时意外清除已有类型（CHAT/EMBEDDING/ROUTER）
+        if (req.getModelType() != null) {
+            do_.setModelType(req.getModelType());
+        }
         if (req.getTemperature() != null) {
             do_.setTemperature(new BigDecimal(req.getTemperature().toString()));
         }
@@ -251,8 +256,27 @@ public class AiModelConfigService {
         if (req.getIsEnabled() != null) {
             do_.setIsEnabled(req.getIsEnabled());
         }
-        // apiKeyEnc 由调用方单独处理（create 时直接赋值，update 时空值保留原值）
-        do_.setApiKeyEnc(req.getApiKeyEnc());
+        // apiKeyEnc 不在此方法中处理：
+        // create() 直接调用 normalizeApiKey() 写入；
+        // update() 只在非空时调用 normalizeApiKey() 写入，空值表示不修改原 Key。
+    }
+
+    /**
+     * 规范化 API Key 存储格式。
+     * <ul>
+     *   <li>null / 空串 → 返回空串（无鉴权场景，如本地 Ollama）</li>
+     *   <li>已有 PLAINTEXT:/AES: 前缀 → 原样返回</li>
+     *   <li>裸 Key（无前缀）→ 自动补 PLAINTEXT: 前缀</li>
+     * </ul>
+     */
+    private String normalizeApiKey(String apiKeyEnc) {
+        if (apiKeyEnc == null || apiKeyEnc.isBlank()) {
+            return "";
+        }
+        if (apiKeyEnc.startsWith("PLAINTEXT:") || apiKeyEnc.startsWith("AES:")) {
+            return apiKeyEnc;
+        }
+        return "PLAINTEXT:" + apiKeyEnc;
     }
 
     // -------------------------------------------------------
