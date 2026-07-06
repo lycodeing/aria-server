@@ -1,6 +1,5 @@
 package com.aria.conversation.infrastructure.websocket;
 
-import com.aria.conversation.application.service.SessionQueueService;
 import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -37,17 +36,17 @@ import java.util.regex.Pattern;
 public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     // ---- 消息类型常量 ----
-    private static final String MSG_TYPE_CONNECTED    = "CONNECTED";
-    private static final String MSG_TYPE_MESSAGE      = "MESSAGE";
+    private static final String MSG_TYPE_CONNECTED = "CONNECTED";
+    private static final String MSG_TYPE_MESSAGE = "MESSAGE";
     private static final String MSG_TYPE_AGENT_JOINED = "AGENT_JOINED";
-    private static final String MSG_TYPE_ERROR        = "ERROR";
+    private static final String MSG_TYPE_ERROR = "ERROR";
 
     // ---- 路径常量 ----
     private static final String PATH_SEGMENT_CHAT = "chat";
     private static final String DEFAULT_SESSION_ID = "";
 
     // ---- 属性 key ----
-    private static final String ATTR_ROLE       = "role";
+    private static final String ATTR_ROLE = "role";
     private static final String ATTR_SESSION_ID = "sessionId";
 
     /**
@@ -61,7 +60,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      * 超出时关闭连接并返回 NOT_ACCEPTABLE 状态。
      */
     private static final int MAX_MESSAGE_BYTES = 65536;
-
+    /**
+     * S-03 合法 role 白名单，仅允许 "chat"（访客）和 "agent"（座席）
+     */
+    private static final java.util.Set<String> VALID_ROLES = java.util.Set.of("chat", "agent");
     /**
      * 访客 WS 会话注册表: sessionId → WebSocketSession
      */
@@ -70,7 +72,6 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      * 座席 WS 会话注册表: sessionId → WebSocketSession
      */
     private final ConcurrentHashMap<String, WebSocketSession> agentSessions = new ConcurrentHashMap<>();
-
     /**
      * S-02 线程安全：每个 sessionId 对应一把发送锁，串行化 sendMessage 调用。
      * {@link org.springframework.web.socket.WebSocketSession#sendMessage} 非线程安全；
@@ -79,12 +80,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      * 连接关闭时在 {@link #afterConnectionClosed} / {@link #handleTransportError} 中一并清理。
      */
     private final ConcurrentHashMap<String, Object> sendLocks = new ConcurrentHashMap<>();
-
-    /** S-03 合法 role 白名单，仅允许 "chat"（访客）和 "agent"（座席） */
-    private static final java.util.Set<String> VALID_ROLES = java.util.Set.of("chat", "agent");
-
     private final ObjectMapper objectMapper;
-    private final SessionQueueService sessionQueueService;
     private final ConversationHistoryRepository historyRepository;
 
     // ----------------------------------------------------------------
@@ -238,8 +234,9 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             log.info("[WS] visitor disconnected sessionId={}", sessionId);
         } else {
             agentSessions.remove(sessionId);
-            // 座席断开时关闭 Redis 中的会话，避免访客消息永远进入死会话。
-            sessionQueueService.close(sessionId);
+            // 注意：座席 WS 断开（刷新页面、网络抖动）不等于会话结束，不在此处关闭会话。
+            // 会话关闭只由座席主动调用 /sessions/{id}/close 接口触发，
+            // 防止座席临时断线导致进行中的会话被意外终止。
             log.info("[WS] agent disconnected sessionId={}", sessionId);
         }
     }
@@ -247,7 +244,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void handleTransportError(WebSocketSession session, Throwable ex) {
         String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
-        String role      = (String) session.getAttributes().get(ATTR_ROLE);
+        String role = (String) session.getAttributes().get(ATTR_ROLE);
 
         // 非法 sessionId 或握手阶段就被拒绝的连接，attributes 未写入，直接忽略
         if (role == null || sessionId == null) {
@@ -263,7 +260,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
             visitorSessions.remove(sessionId);
         } else {
             agentSessions.remove(sessionId);
-            sessionQueueService.close(sessionId);
+            // 注意：transport error（网络抖动/超时）不等于会话结束，不在此处关闭会话。
+            // 会话关闭只由座席主动调用 /sessions/{id}/close 接口触发。
         }
     }
 
@@ -276,9 +274,11 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      */
     public void notifyVisitor(String sessionId, Object payload) {
         WebSocketSession vs = visitorSessions.get(sessionId);
-        if (vs != null && vs.isOpen()) {
-            sendJson(vs, payload);
+        if (vs == null) {
+            log.warn("[WS] notifyVisitor sessionId={} 不存在", sessionId);
+            return;
         }
+        sendJson(vs, payload);
     }
 
     /**
