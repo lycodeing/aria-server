@@ -184,7 +184,7 @@ public class AiModelConfigService {
      */
     public String decryptApiKey(String apiKeyEnc) {
         if (apiKeyEnc == null || apiKeyEnc.isBlank()) {
-            return "";  // 空值表示无鉴权（如本地 Ollama），直接返回空串
+            return "";  // 空值表示无鉴权（本地 Ollama 等），直接返回空串
         }
         if (apiKeyEnc.startsWith("PLAINTEXT:")) {
             return apiKeyEnc.substring(10);
@@ -192,7 +192,10 @@ public class AiModelConfigService {
         if (apiKeyEnc.startsWith("AES:")) {
             return com.aria.common.core.util.EncryptUtils.decrypt(apiKeyEnc.substring(4));
         }
-        throw new IllegalStateException("不支持的加密格式（期望 PLAINTEXT: 或 AES: 前缀）：" + apiKeyEnc);
+        // 历史遗留裸 Key（无格式前缀），以明文处理并打印警告；
+        // 应在管理后台重新保存该配置使其规范化。
+        log.warn("[AiModelConfig] apiKeyEnc 缺少格式前缀，以明文处理 id 对应配置，建议重新保存");
+        return apiKeyEnc;
     }
 
     /**
