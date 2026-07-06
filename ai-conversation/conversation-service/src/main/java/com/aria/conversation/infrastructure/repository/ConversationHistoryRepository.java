@@ -6,12 +6,16 @@ import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.infrastructure.mq.ConversationMessagePublisher;
 import com.aria.conversation.infrastructure.persistence.mapper.ConversationMessageMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Repository;
 
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 对话历史 Repository。
@@ -70,11 +74,11 @@ public class ConversationHistoryRepository {
             return redis.call('INCR', KEYS[1])
             """;
 
-    private static final org.springframework.data.redis.core.script.RedisScript<Long> INIT_AND_INCR_SCRIPT =
-            new org.springframework.data.redis.core.script.DefaultRedisScript<>(INIT_AND_INCR_LUA, Long.class);
+    private static final RedisScript<Long> INIT_AND_INCR_SCRIPT =
+            new DefaultRedisScript<>(INIT_AND_INCR_LUA, Long.class);
 
-    private static final org.springframework.data.redis.core.script.RedisScript<Long> RESET_AND_INCR_SCRIPT =
-            new org.springframework.data.redis.core.script.DefaultRedisScript<>(RESET_AND_INCR_LUA, Long.class);
+    private static final RedisScript<Long> RESET_AND_INCR_SCRIPT =
+            new DefaultRedisScript<>(RESET_AND_INCR_LUA, Long.class);
 
     private static final long TTL_HOURS         = 24L;
     private static final int  MAX_HISTORY_TURNS = 20;
@@ -110,11 +114,10 @@ public class ConversationHistoryRepository {
      * <p>Redis TTL 过期检测：若 Lua INCR 返回 1 且本地标记为已初始化，说明 Redis key 已过期重建，
      * 此时清除标记并用 DB max 重新修正基准值，防止 seq 从 1 重新开始与 DB 已有记录冲突。
      */
-    private final java.util.Set<String> initializedSessions =
-            java.util.concurrent.ConcurrentHashMap.newKeySet();
-
+    private final Set<String> initializedSessions = ConcurrentHashMap.newKeySet();
+    
     /**
-     * 生成 session 内的下一个单调递增 seq（Redis Lua 原子 INCR + DB 兜底）。
+     * 生成 session 内的下一个单调递增 seq（Redis Lua 原子 INCR + DB 兆底）。
      *
      * <p>热路径优化：已初始化的 session 跳过 DB 查询，仅走 Redis INCR；
      * 首次或 TTL 过期时查 DB 作为基准，由 Lua 原子初始化后再 INCR。
@@ -125,13 +128,32 @@ public class ConversationHistoryRepository {
     public long nextSeq(String sessionId) {
         String key = SEQ_KEY_PREFIX + sessionId;
         boolean alreadyInitialized = initializedSessions.contains(sessionId);
-
+    
         // 冷路径：首次访问，查 DB 获取基准值
+        long seq = coldPathInitSeq(key, sessionId, alreadyInitialized);
+    
+        // 热路径兆底：seq==1 且本地标记为已初始化，说明 Redis key TTL 已过期被重建
+        if (seq == 1L && alreadyInitialized) {
+            seq = hotPathRecoverSeq(key, sessionId);
+        }
+        return seq;
+    }
+    
+    /**
+     * 冷路径：初始化 seq 计数器。
+     * 首次访问时查 DB 获取基准值，通过 Lua 原子初始化后再 INCR。
+     *
+     * @param key                Redis seq key
+     * @param sessionId          会话 ID
+     * @param alreadyInitialized 是否已初始化
+     * @return INCR 后的 seq 值
+     */
+    private long coldPathInitSeq(String key, String sessionId, boolean alreadyInitialized) {
         long dbMaxBaseline = alreadyInitialized ? 0L : messageMapper.selectMaxSeq(sessionId);
         if (!alreadyInitialized) {
             initializedSessions.add(sessionId);
         }
-
+    
         Long seq = lockHelper.executeLua(
                 INIT_AND_INCR_SCRIPT,
                 Collections.singletonList(key),
@@ -141,24 +163,30 @@ public class ConversationHistoryRepository {
         if (seq == null) {
             throw new IllegalStateException("Redis seq INCR 返回 null, sessionId=" + sessionId);
         }
-
-        // 热路径兜底：seq==1 且本地标记为已初始化，说明 Redis key TTL 已过期被重建
-        // 重新查 DB 修正基准，防止与已持久化的 seq 冲突
-        if (seq == 1L && alreadyInitialized) {
-            long dbMax = messageMapper.selectMaxSeq(sessionId);
-            if (dbMax > 0) {
-                // 重新执行 INIT_AND_INCR，此时 key 已存在（值为 1），Lua 跳过 SET 直接 INCR
-                // 先强制设置为 dbMax，再 INCR，确保 seq 正确接续
-                lockHelper.executeLua(
-                        RESET_AND_INCR_SCRIPT,
-                        Collections.singletonList(key),
-                        String.valueOf(dbMax),
-                        String.valueOf(Duration.ofHours(TTL_HOURS).getSeconds())
-                );
-                seq = dbMax + 1L;
-            }
-        }
         return seq;
+    }
+    
+    /**
+     * 热路径恢复：Redis key TTL 过期后重新以 DB max 为基准修正 seq。
+     * 防止与已持久化的 seq 产生冲突。
+     *
+     * @param key       Redis seq key
+     * @param sessionId 会话 ID
+     * @return 修正后的 seq 值
+     */
+    private long hotPathRecoverSeq(String key, String sessionId) {
+        long dbMax = messageMapper.selectMaxSeq(sessionId);
+        if (dbMax > 0) {
+            // 重新执行 RESET_AND_INCR，强制设置为 dbMax 后再 INCR
+            lockHelper.executeLua(
+                    RESET_AND_INCR_SCRIPT,
+                    Collections.singletonList(key),
+                    String.valueOf(dbMax),
+                    String.valueOf(Duration.ofHours(TTL_HOURS).getSeconds())
+            );
+            return dbMax + 1L;
+        }
+        return 1L;
     }
 
     // -------------------------------------------------------

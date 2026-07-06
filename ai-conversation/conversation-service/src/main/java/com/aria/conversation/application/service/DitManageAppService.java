@@ -43,10 +43,22 @@ public class DitManageAppService {
 
     // ---- 领域 ----
 
+    /**
+     * 查询所有领域列表。
+     *
+     * @return 领域 DO 列表
+     */
     public List<DomainDO> listDomains() {
         return domainMapper.selectList(null);
     }
 
+    /**
+     * 根据 ID 查询领域。
+     *
+     * @param id 领域 ID
+     * @return 领域 DO
+     * @throws BusinessException 领域不存在时抛出
+     */
     public DomainDO getDomain(Long id) {
         DomainDO domain = domainMapper.selectById(id);
         if (domain == null) {
@@ -55,6 +67,12 @@ public class DitManageAppService {
         return domain;
     }
 
+    /**
+     * 创建新领域。
+     *
+     * @param domain 领域 DO
+     * @return 创建后的领域 DO
+     */
     @Transactional(rollbackFor = Exception.class)
     public DomainDO createDomain(DomainDO domain) {
         domainMapper.insert(domain);
@@ -62,6 +80,12 @@ public class DitManageAppService {
         return domain;
     }
 
+    /**
+     * 更新领域，并失效相关缓存。
+     *
+     * @param domain 领域 DO
+     * @throws BusinessException 领域不存在时抛出
+     */
     @Transactional(rollbackFor = Exception.class)
     public void updateDomain(DomainDO domain) {
         if (domainMapper.updateById(domain) == 0) {
@@ -71,6 +95,12 @@ public class DitManageAppService {
         domainRepository.evict(domain.getCode());
     }
 
+    /**
+     * 删除领域，并失效相关缓存。
+     *
+     * @param id 领域 ID
+     * @throws BusinessException 领域不存在时抛出
+     */
     @Transactional(rollbackFor = Exception.class)
     public void deleteDomain(Long id) {
         DomainDO domainDO = getDomain(id);
@@ -81,12 +111,24 @@ public class DitManageAppService {
 
     // ---- 意图 ----
 
+    /**
+     * 查询指定领域下的意图列表（按 sortOrder 升序）。
+     *
+     * @param domainId 领域 ID
+     * @return 意图 DO 列表
+     */
     public List<IntentDO> listIntents(Long domainId) {
         return intentMapper.selectList(
                 new LambdaQueryWrapper<IntentDO>().eq(IntentDO::getDomainId, domainId)
                         .orderByAsc(IntentDO::getSortOrder));
     }
 
+    /**
+     * 创建新意图，并失效所属领域缓存。
+     *
+     * @param intent 意图 DO
+     * @return 创建后的意图 DO
+     */
     @Transactional(rollbackFor = Exception.class)
     public IntentDO createIntent(IntentDO intent) {
         intentMapper.insert(intent);
@@ -95,6 +137,12 @@ public class DitManageAppService {
         return intent;
     }
 
+    /**
+     * 更新意图，并失效所属领域缓存。
+     *
+     * @param intent 意图 DO
+     * @throws BusinessException 意图不存在时抛出
+     */
     @Transactional(rollbackFor = Exception.class)
     public void updateIntent(IntentDO intent) {
         if (intentMapper.updateById(intent) == 0) {
@@ -122,10 +170,22 @@ public class DitManageAppService {
 
     // ---- 槽位 ----
 
+    /**
+     * 查询指定意图下的槽位列表。
+     *
+     * @param intentId 意图 ID
+     * @return 槽位 DO 列表
+     */
     public List<IntentSlotDO> listSlots(Long intentId) {
         return slotMapper.findByIntentId(intentId);
     }
 
+    /**
+     * 创建新槽位，并失效所属领域缓存。
+     *
+     * @param slot 槽位 DO
+     * @return 创建后的槽位 DO
+     */
     @Transactional(rollbackFor = Exception.class)
     public IntentSlotDO createSlot(IntentSlotDO slot) {
         slotMapper.insert(slot);
@@ -134,6 +194,12 @@ public class DitManageAppService {
         return slot;
     }
 
+    /**
+     * 更新槽位，并失效所属领域缓存。
+     *
+     * @param slot 槽位 DO
+     * @throws BusinessException 槽位不存在或更新失败时抛出
+     */
     @Transactional(rollbackFor = Exception.class)
     public void updateSlot(IntentSlotDO slot) {
         // 先查出已有记录获取 intentId，updateById 不含 intentId 时缓存失效会拿到 null
@@ -148,6 +214,12 @@ public class DitManageAppService {
         evictDomainByIntentId(existing.getIntentId());
     }
 
+    /**
+     * 删除槽位，并失效所属领域缓存。
+     *
+     * @param slotId 槽位 ID
+     * @throws BusinessException 槽位不存在时抛出
+     */
     @Transactional(rollbackFor = Exception.class)
     public void deleteSlot(Long slotId) {
         IntentSlotDO slotDO = slotMapper.selectById(slotId);
@@ -161,10 +233,22 @@ public class DitManageAppService {
 
     // ---- 工具 ----
 
+    /**
+     * 查询所有工具列表。
+     *
+     * @return 工具 DO 列表
+     */
     public List<ToolDO> listTools() {
         return toolMapper.selectList(null);
     }
 
+    /**
+     * 根据 ID 查询工具。
+     *
+     * @param id 工具 ID
+     * @return 工具 DO
+     * @throws BusinessException 工具不存在时抛出
+     */
     public ToolDO getToolById(Long id) {
         ToolDO tool = toolMapper.selectById(id);
         if (tool == null) {
@@ -173,6 +257,12 @@ public class DitManageAppService {
         return tool;
     }
 
+    /**
+     * 创建新工具。
+     *
+     * @param tool 工具 DO
+     * @return 创建后的工具 DO
+     */
     @Transactional(rollbackFor = Exception.class)
     public ToolDO createTool(ToolDO tool) {
         toolMapper.insert(tool);
@@ -180,6 +270,12 @@ public class DitManageAppService {
         return tool;
     }
 
+    /**
+     * 更新工具。
+     *
+     * @param tool 工具 DO
+     * @throws BusinessException 工具不存在时抛出
+     */
     @Transactional(rollbackFor = Exception.class)
     public void updateTool(ToolDO tool) {
         if (toolMapper.updateById(tool) == 0) {
@@ -188,6 +284,12 @@ public class DitManageAppService {
         log.info("更新工具: id={}", tool.getId());
     }
 
+    /**
+     * 删除工具。
+     *
+     * @param toolId 工具 ID
+     * @throws BusinessException 工具不存在时抛出
+     */
     @Transactional(rollbackFor = Exception.class)
     public void deleteTool(Long toolId) {
         if (toolMapper.selectById(toolId) == null) {
@@ -199,10 +301,22 @@ public class DitManageAppService {
 
     // ---- 意图-工具绑定 ----
 
+    /**
+     * 查询指定意图绑定的工具列表。
+     *
+     * @param intentId 意图 ID
+     * @return 意图-工具绑定 DO 列表
+     */
     public List<IntentToolDO> listBindings(Long intentId) {
         return intentToolMapper.findByIntentId(intentId);
     }
 
+    /**
+     * 创建意图-工具绑定，并失效所属领域缓存。
+     *
+     * @param binding 绑定 DO
+     * @return 创建后的绑定 DO
+     */
     @Transactional(rollbackFor = Exception.class)
     public IntentToolDO createBinding(IntentToolDO binding) {
         intentToolMapper.insert(binding);
@@ -211,6 +325,12 @@ public class DitManageAppService {
         return binding;
     }
 
+    /**
+     * 删除意图-工具绑定，并失效所属领域缓存。
+     *
+     * @param bindingId 绑定 ID
+     * @throws BusinessException 绑定不存在时抛出
+     */
     @Transactional(rollbackFor = Exception.class)
     public void deleteBinding(Long bindingId) {
         IntentToolDO bindingDO = intentToolMapper.selectById(bindingId);

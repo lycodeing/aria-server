@@ -124,56 +124,100 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
         // S3：消息长度检查，超过 64KB 时拒绝并关闭连接
-        if (message.getPayloadLength() > MAX_MESSAGE_BYTES) {
-            String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
-            log.warn("[WS] 消息超过最大长度限制 sessionId={} size={}", sessionId, message.getPayloadLength());
-            sendJson(session, Map.of("type", MSG_TYPE_ERROR, "message", "消息长度超过限制（最大 64KB）"));
-            session.close(CloseStatus.NOT_ACCEPTABLE);
+        if (!checkMessageLength(session, message)) {
             return;
         }
 
         String role = (String) session.getAttributes().get(ATTR_ROLE);
         String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
-
-        // 解析消息体，取 content 字段；如果是纯文本则整体视为 content
-        String content;
-        try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> body = objectMapper.readValue(message.getPayload(), Map.class);
-            content = (String) body.getOrDefault("content", message.getPayload());
-        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-            // 客户端可能直接发送纯文本而非 JSON，降级处理
-            log.debug("[WS] message payload is not JSON, treat as plain text sessionId={}", sessionId);
-            content = message.getPayload();
-        }
-
+        String content = parseMessageContent(session, message, sessionId);
         long ts = Instant.now().getEpochSecond();
 
         if (PATH_SEGMENT_CHAT.equals(role)) {
-            // 访客 → 存历史 → 转发给座席（payload 携带 seq 支持客户端断线重连后的 sinceSeq 增量同步）
-            long seq = historyRepository.append(sessionId, MessageRole.USER.getValue(), content);
-            Map<String, Object> msg = Map.of(
-                    "type", MSG_TYPE_MESSAGE, "sessionId", sessionId,
-                    "role", MessageRole.USER.getValue(),
-                    "content", content,
-                    "seq", seq,
-                    "timestamp", ts
-            );
-            notifyAgent(sessionId, msg);
-            log.debug("[WS] user→agent sessionId={} seq={}", sessionId, seq);
+            handleVisitorMessage(sessionId, content, ts);
         } else {
-            // 座席 → appendAgentMessage（Redis List 写 assistant，DB 写 agent，便于质检分析）→ 转发给访客
-            long seq = historyRepository.appendAgentMessage(sessionId, content);
-            Map<String, Object> msg = Map.of(
-                    "type", MSG_TYPE_MESSAGE, "sessionId", sessionId,
-                    "role", MessageRole.AGENT.getValue(),
-                    "content", content,
-                    "seq", seq,
-                    "timestamp", ts
-            );
-            notifyVisitor(sessionId, msg);
-            log.debug("[WS] agent→user sessionId={} seq={}", sessionId, seq);
+            handleAgentMessage(sessionId, content, ts);
         }
+    }
+
+    /**
+     * 检查消息长度，超过限制时发送错误并关闭连接。
+     *
+     * @param session WebSocket 会话
+     * @param message 接收到的消息
+     * @return true 表示长度合法，false 表示已处理超长消息
+     */
+    private boolean checkMessageLength(WebSocketSession session, TextMessage message) throws IOException {
+        if (message.getPayloadLength() <= MAX_MESSAGE_BYTES) {
+            return true;
+        }
+        String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
+        log.warn("[WS] 消息超过最大长度限制 sessionId={} size={}", sessionId, message.getPayloadLength());
+        sendJson(session, Map.of("type", MSG_TYPE_ERROR, "message", "消息长度超过限制（最大 64KB）"));
+        session.close(CloseStatus.NOT_ACCEPTABLE);
+        return false;
+    }
+
+    /**
+     * 解析消息内容：尝试解析 JSON 取 content 字段，失败时降级为纯文本。
+     *
+     * @param session   WebSocket 会话
+     * @param message   接收到的消息
+     * @param sessionId 会话 ID（用于日志）
+     * @return 消息正文内容
+     */
+    private String parseMessageContent(WebSocketSession session, TextMessage message, String sessionId) {
+        try {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = objectMapper.readValue(message.getPayload(), Map.class);
+            return (String) body.getOrDefault("content", message.getPayload());
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            // 客户端可能直接发送纯文本而非 JSON，降级处理
+            log.debug("[WS] message payload is not JSON, treat as plain text sessionId={}", sessionId);
+            return message.getPayload();
+        }
+    }
+
+    /**
+     * 处理访客消息：存储历史并转发给座席。
+     *
+     * @param sessionId 会话 ID
+     * @param content   消息内容
+     * @param timestamp 时间戳
+     */
+    private void handleVisitorMessage(String sessionId, String content, long timestamp) {
+        // 访客 → 存历史 → 转发给座席（payload 携带 seq 支持客户端断线重连后的 sinceSeq 增量同步）
+        long seq = historyRepository.append(sessionId, MessageRole.USER.getValue(), content);
+        Map<String, Object> msg = Map.of(
+                "type", MSG_TYPE_MESSAGE, "sessionId", sessionId,
+                "role", MessageRole.USER.getValue(),
+                "content", content,
+                "seq", seq,
+                "timestamp", timestamp
+        );
+        notifyAgent(sessionId, msg);
+        log.debug("[WS] user→agent sessionId={} seq={}", sessionId, seq);
+    }
+
+    /**
+     * 处理座席消息：存储历史并转发给访客。
+     *
+     * @param sessionId 会话 ID
+     * @param content   消息内容
+     * @param timestamp 时间戳
+     */
+    private void handleAgentMessage(String sessionId, String content, long timestamp) {
+        // 座席 → appendAgentMessage（Redis List 写 assistant，DB 写 agent，便于质检分析）→ 转发给访客
+        long seq = historyRepository.appendAgentMessage(sessionId, content);
+        Map<String, Object> msg = Map.of(
+                "type", MSG_TYPE_MESSAGE, "sessionId", sessionId,
+                "role", MessageRole.AGENT.getValue(),
+                "content", content,
+                "seq", seq,
+                "timestamp", timestamp
+        );
+        notifyVisitor(sessionId, msg);
+        log.debug("[WS] agent→user sessionId={} seq={}", sessionId, seq);
     }
 
     @Override
@@ -182,7 +226,9 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
 
         // 非法 sessionId 或握手阶段就被拒绝的连接，attributes 未写入，直接忽略
-        if (role == null || sessionId == null) return;
+        if (role == null || sessionId == null) {
+            return;
+        }
 
         // S-02：连接关闭时释放 sendLock，避免 lock map 无限增长
         sendLocks.remove(session.getId());
@@ -204,7 +250,9 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         String role      = (String) session.getAttributes().get(ATTR_ROLE);
 
         // 非法 sessionId 或握手阶段就被拒绝的连接，attributes 未写入，直接忽略
-        if (role == null || sessionId == null) return;
+        if (role == null || sessionId == null) {
+            return;
+        }
 
         log.warn("[WS] transport error sessionId={} role={}", sessionId, ex.getMessage());
         // S-02：transport error 后同步释放 sendLock
