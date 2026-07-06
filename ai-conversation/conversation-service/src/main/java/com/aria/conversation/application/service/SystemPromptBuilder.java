@@ -7,8 +7,8 @@ import java.util.List;
 /**
  * 系统提示词（System Prompt）构造工具类。
  *
- * <p>封装 RAG 参考资料拼接逻辑，供 {@code DomainAgentService}、
- * {@code FallbackRouteHandler} 和 {@code ChatAppService} 共享使用，避免重复代码。
+ * <p>封装 RAG 参考资料拼接逻辑，供 {@code DomainAgentService} 和
+ * {@code ChatAppService} 共享使用，避免重复代码。
  */
 public final class SystemPromptBuilder {
 

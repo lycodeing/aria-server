@@ -38,7 +38,7 @@ public class RemoteAiModelConfigProvider implements AiModelConfigProvider, Messa
 
     private final RedisCacheHelper cache;
     private final WebClient        webClient;
-    private final ObjectMapper     objectMapper = new ObjectMapper();
+    private final ObjectMapper     objectMapper;
 
     @Value("${aria.auth.internal-url:http://localhost:8083}")
     private String authInternalUrl;
@@ -50,9 +50,11 @@ public class RemoteAiModelConfigProvider implements AiModelConfigProvider, Messa
     public RemoteAiModelConfigProvider(
             RedisCacheHelper cache,
             WebClient.Builder builder,
+            ObjectMapper objectMapper,
             ObjectProvider<org.springframework.data.redis.listener.RedisMessageListenerContainer> containerProvider) {
-        this.cache     = cache;
-        this.webClient = builder.clone().build();
+        this.cache        = cache;
+        this.webClient    = builder.clone().build();
+        this.objectMapper = objectMapper;
         // 容器存在时注册 Pub/Sub 监听；未配置时跳过，配置变更需等待缓存 TTL 自然过期
         containerProvider.ifAvailable(c -> c.addMessageListener(this, new ChannelTopic(PUBSUB_TOPIC)));
     }

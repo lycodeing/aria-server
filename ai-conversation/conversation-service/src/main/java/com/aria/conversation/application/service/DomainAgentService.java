@@ -10,6 +10,10 @@ import com.aria.conversation.infrastructure.dit.config.ToolConfig;
 import com.aria.conversation.infrastructure.dit.domain.DomainDO;
 import com.aria.conversation.infrastructure.dit.pipeline.ToolCallResult;
 import com.aria.conversation.infrastructure.dit.pipeline.HttpToolRunner;
+import com.aria.conversation.infrastructure.dit.domain.DomainSwitchRecord;
+import com.aria.conversation.infrastructure.dit.domain.SwitchType;
+import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
+import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
 import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
@@ -62,6 +66,8 @@ public class DomainAgentService {
     private final SessionChatMemoryStore memoryStore;
     private final KnowledgeClient knowledgeClient;
     private final ObjectMapper objectMapper;
+    private final SessionDomainRepository sessionDomainRepo;
+    private final SessionDomainSwitchRepository domainSwitchRepo;
 
     /**
      * LangChain4j AiService 流式对话接口。
@@ -93,10 +99,13 @@ public class DomainAgentService {
         List<ToolConfig> domainTools = getToolsForDomain(domainCode);
 
         // 4. 构建 ToolProvider（域工具 + 内置工具）
-        ToolProvider toolProvider = buildToolProvider(domainCode, domainTools, eventSink);
+        ToolProvider toolProvider = buildToolProvider(sessionId, domainCode, userMessage, domainTools, eventSink);
 
         // 5. 构建每次请求独立的 DomainAssistant
-        //    systemMessageProvider 使用闭包，确保每次请求获取独立的 RAG prompt
+        //    ⚠️ 此处每次请求都重新 build，是有意为之，不可改为单例：
+        //    - systemMessageProvider 依赖 RAG 闭包（每次请求独立检索结果）
+        //    - toolProvider 依赖 domainCode 和 domainTools（不同域工具集不同）
+        //    AiServices.builder 本身是轻量级操作，性能代价可忽略。
         DomainAssistant assistant = AiServices.builder(DomainAssistant.class)
                 .streamingChatModel(modelFactory.getStreamingChatModel())
                 .systemMessageProvider(id -> systemPrompt)
@@ -136,8 +145,8 @@ public class DomainAgentService {
     // ToolProvider 构造
     // -------------------------------------------------------
 
-    private ToolProvider buildToolProvider(String domainCode,
-                                            List<ToolConfig> tools,
+    private ToolProvider buildToolProvider(String sessionId, String domainCode,
+                                            String userMessage, List<ToolConfig> tools,
                                             Sinks.Many<ChatEvent> eventSink) {
         // 预计算域列表，用于 switch_domain 描述
         List<DomainDO> allDomains = domainRepo.findAllEnabledSummary();
@@ -163,7 +172,8 @@ public class DomainAgentService {
                             .required("target_domain_code")
                             .build())
                     .build();
-            toolMap.put(switchDomainSpec, buildSwitchDomainExecutor(domainCode, eventSink));
+            toolMap.put(switchDomainSpec,
+                    buildSwitchDomainExecutor(sessionId, domainCode, userMessage, eventSink));
 
             // 内置工具：transfer_to_agent
             ToolSpecification transferSpec = ToolSpecification.builder()
@@ -206,7 +216,8 @@ public class DomainAgentService {
         };
     }
 
-    private ToolExecutor buildSwitchDomainExecutor(String currentDomain,
+    private ToolExecutor buildSwitchDomainExecutor(String sessionId, String currentDomain,
+                                                     String userMessage,
                                                      Sinks.Many<ChatEvent> eventSink) {
         return (ToolExecutionRequest req, Object memId) -> {
             try {
@@ -218,6 +229,14 @@ public class DomainAgentService {
                 }
                 String reason = (String) args.getOrDefault("reason", "");
                 log.info("[DomainAgent] switch_domain {} → {} reason={}", currentDomain, targetDomain, reason);
+
+                // 持久化 session 激活域（与 ChatAppService ROUTER 路径保持一致）
+                sessionDomainRepo.save(sessionId, targetDomain);
+                domainSwitchRepo.record(new DomainSwitchRecord(
+                        sessionId, currentDomain, targetDomain,
+                        SwitchType.LLM_TOOL, userMessage,
+                        reason.isBlank() ? "LLM 工具触发切换" : reason, null));
+
                 eventSink.tryEmitNext(ChatEvent.domainSwitch(targetDomain));
             } catch (Exception e) {
                 log.warn("[DomainAgent] switch_domain parse error", e);

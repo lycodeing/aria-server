@@ -164,14 +164,15 @@ public class User extends AggregateRoot {
      * @param ip 客户端 IP
      */
     public void onLoginSucceeded(String ip) {
+        Instant now = Instant.now();
         this.loginFailCount = 0;
         this.lockedUntil = null;
-        this.lastLoginAt = Instant.now();
+        this.lastLoginAt = now;
         this.lastLoginIp = ip;
         if (this.status == UserStatus.LOCKED) {
             this.status = UserStatus.ACTIVE;
         }
-        registerEvent(new UserLoginSucceeded(id, ip, Instant.now()));
+        registerEvent(new UserLoginSucceeded(id, ip, now));
     }
 
     // ===== 密码管理 =====

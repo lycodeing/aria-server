@@ -198,8 +198,8 @@ public class HttpToolRunner {
     private HttpHeaders buildHeaders(ToolConfig tool, Map<String, Object> params) {
         HttpHeaders headers = new HttpHeaders();
         // 认证头（策略模式，新增认证方式只需添加 HttpAuthStrategy 实现）
-        // 注意：authConfig 中的 token / api_key_value 字段当前以明文存储。
-        // 生产部署前需接入加密存储（如 KMS/AES），并在此处调用解密服务后再使用。
+        // authConfig 中的敏感字段（token / api_key_value）通过 PLAINTEXT:/AES: 前缀存储，
+        // ApiKeyAuthStrategy / BearerAuthStrategy 读取时自动解密后再写入请求头。
         authStrategyMap.getOrDefault(
                 tool.authType() != null ? tool.authType() : "NONE",
                 authStrategyMap.getOrDefault("NONE", new NoAuthStrategy()))

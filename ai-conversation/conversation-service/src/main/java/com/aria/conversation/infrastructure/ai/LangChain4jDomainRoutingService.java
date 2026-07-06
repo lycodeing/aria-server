@@ -16,6 +16,10 @@ import java.util.Optional;
  *
  * <p>根据用户消息和近期对话历史，调用 router 小模型判断是否需要切换服务域。
  * 任何异常均降级返回当前域（不切换），保证主流程不中断。
+ *
+ * @implNote {@link #route} 内部调用 {@link com.aria.conversation.infrastructure.ai.DynamicModelFactory#getRouterModel()}
+ *           执行阻塞式 HTTP 请求，必须在 {@code Schedulers.boundedElastic()} 线程上调用，
+ *           禁止在 Reactor 事件循环（非弹性）线程上直接调用，否则会阻塞 I/O 线程。
  */
 @Slf4j
 @Component
@@ -44,8 +48,8 @@ public class LangChain4jDomainRoutingService implements DomainRoutingService {
 
             // 校验小模型返回值是否为合法域 code（大小写不敏感）
             Optional<String> matchedCode = enabledDomains.stream()
-                    .filter(d -> d.getCode().equalsIgnoreCase(response))
                     .map(DomainDO::getCode)
+                    .filter(code -> code.equalsIgnoreCase(response))
                     .findFirst();
 
             if (matchedCode.isEmpty()) {

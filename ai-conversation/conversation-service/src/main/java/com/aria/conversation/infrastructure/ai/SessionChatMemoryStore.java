@@ -11,8 +11,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -50,18 +52,22 @@ public class SessionChatMemoryStore implements ChatMemoryStore {
      * <p>LangChain4j 在每轮对话后会调用此方法回写全量消息。如果直接将所有消息的
      * seq 设为 0，会破坏断线重连增量同步机制（{@code getHistorySince} 依赖 seq > 0）。
      *
-     * <p>策略：通过 role + content 匹配已有消息以保留其 seq；新增消息从当前最大 seq+1 开始分配。
+     * <p>策略：通过 role + content 匹配已有消息以保留其 seq；同 role+content 的多条消息
+     * 按先后顺序依次消费（Deque 队列），避免重复内容碰撞导致 seq 复用；
+     * 新增消息从当前最大 seq+1 开始分配。
      */
     @Override
     public void updateMessages(Object memoryId, List<ChatMessage> messages) {
         String sessionId = memoryId.toString();
         try {
-            // 读取已有消息，构建 role|content → seq 的索引
+            // 读取已有消息，构建 role|content → seq 队列的索引
+            // 使用 Deque 而非单值 Map，确保同 role+content 的多条消息按顺序各自获得独立 seq
             List<ConversationMessage> existing = historyRepo.findAll(sessionId);
-            Map<String, Long> seqIndex = new HashMap<>(existing.size());
+            Map<String, Deque<Long>> seqIndex = new LinkedHashMap<>(existing.size() * 2);
             long maxSeq = 0L;
             for (ConversationMessage em : existing) {
-                seqIndex.putIfAbsent(em.role() + "|" + em.content(), em.seq());
+                seqIndex.computeIfAbsent(em.role() + "|" + em.content(), k -> new ArrayDeque<>())
+                        .offer(em.seq());
                 if (em.seq() > maxSeq) {
                     maxSeq = em.seq();
                 }
@@ -73,7 +79,9 @@ public class SessionChatMemoryStore implements ChatMemoryStore {
             for (ChatMessage m : messages) {
                 ConversationMessage dm = toDomainMessage(m);
                 String key = dm.role() + "|" + dm.content();
-                Long existingSeq = seqIndex.get(key);
+                // poll() 按入队顺序消费，同内容第二条不会复用第一条的 seq
+                Deque<Long> seqQueue = seqIndex.get(key);
+                Long existingSeq = (seqQueue != null) ? seqQueue.poll() : null;
                 long seq = (existingSeq != null && existingSeq > 0) ? existingSeq : ++nextSeq;
                 toSave.add(new ConversationMessage(
                         dm.role(), dm.content(), seq, dm.timestamp(),

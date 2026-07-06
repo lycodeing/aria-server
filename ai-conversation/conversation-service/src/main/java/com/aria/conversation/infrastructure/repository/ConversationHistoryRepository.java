@@ -117,7 +117,7 @@ public class ConversationHistoryRepository {
     private final Set<String> initializedSessions = ConcurrentHashMap.newKeySet();
     
     /**
-     * 生成 session 内的下一个单调递增 seq（Redis Lua 原子 INCR + DB 兆底）。
+     * 生成 session 内的下一个单调递增 seq（Redis Lua 原子 INCR + DB 兜底）。
      *
      * <p>热路径优化：已初始化的 session 跳过 DB 查询，仅走 Redis INCR；
      * 首次或 TTL 过期时查 DB 作为基准，由 Lua 原子初始化后再 INCR。
@@ -132,7 +132,7 @@ public class ConversationHistoryRepository {
         // 冷路径：首次访问，查 DB 获取基准值
         long seq = coldPathInitSeq(key, sessionId, alreadyInitialized);
     
-        // 热路径兆底：seq==1 且本地标记为已初始化，说明 Redis key TTL 已过期被重建
+        // 热路径兜底：seq==1 且本地标记为已初始化，说明 Redis key TTL 已过期被重建
         if (seq == 1L && alreadyInitialized) {
             seq = hotPathRecoverSeq(key, sessionId);
         }
@@ -149,7 +149,7 @@ public class ConversationHistoryRepository {
      * @return INCR 后的 seq 值
      */
     private long coldPathInitSeq(String key, String sessionId, boolean alreadyInitialized) {
-        long dbMaxBaseline = alreadyInitialized ? 0L : messageMapper.selectMaxSeq(sessionId);
+        long dbMaxBaseline = alreadyInitialized ? 0L : messageMapper.selectMaxSeq(sessionId);  // 冷路径：查 DB 作为初始基准，热路径跳过
         if (!alreadyInitialized) {
             initializedSessions.add(sessionId);
         }
