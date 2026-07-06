@@ -16,6 +16,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -122,17 +123,18 @@ public class SessionQueueService {
      * @param sessionId 会话唯一标识
      */
     public void initAiChatSession(String sessionId) {
-        persistRepository.initAiChatSession(sessionId,
-                java.time.OffsetDateTime.now());
+        persistRepository.initAiChatSession(sessionId, OffsetDateTime.now());
     }
 
     /**
      * 查询最近历史会话，供座席工作台「已结束」Tab 展示。
      * 包含 status=CLOSED（转人工已结束）和 status=AI_CHAT（纯 AI 对话）两类，
-     * 按 updated_at 倒序，最多返回 50 条。
+     * 按 updated_at 倒序，最多返回 limit 条。
+     *
+     * @param limit 返回条数上限，建议不超过 200
      */
-    public List<SessionQueueItem> getClosedSessions() {
-        return persistRepository.getClosedConversations(50).stream()
+    public List<SessionQueueItem> getClosedSessions(int limit) {
+        return persistRepository.getClosedConversations(limit).stream()
                 .map(e -> new SessionQueueItem(
                         e.getSessionId(),
                         e.getVisitorName(),

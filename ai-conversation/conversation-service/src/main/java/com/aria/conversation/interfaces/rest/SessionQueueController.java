@@ -94,12 +94,16 @@ public class SessionQueueController {
     }
 
     /**
-     * 获取最近已关闭的会话（最多 50 条，按结束时间倒序）。
-     * 供座席工作台「已结束」Tab 查看历史会话记录。
+     * 获取最近已关闭的会话，供座席工作台「已结束」Tab 查看历史会话记录。
+     * 包含 CLOSED（转人工已结束）和 AI_CHAT（纯 AI 对话）两类，按 updated_at 倒序。
+     *
+     * @param limit 返回条数上限，默认 50，最大 200
      */
     @GetMapping("/closed")
-    public R<List<SessionQueueItem>> getClosed() {
-        return R.ok(queueService.getClosedSessions());
+    public R<List<SessionQueueItem>> getClosed(
+            @RequestParam(defaultValue = "50") int limit) {
+        int safeLimit = Math.min(Math.max(limit, 1), 200);
+        return R.ok(queueService.getClosedSessions(safeLimit));
     }
 
     /**

@@ -13,7 +13,6 @@ import org.springframework.stereotype.Repository;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 
 /**
  * 对话持久化 Repository。
@@ -85,6 +84,9 @@ public class ConversationPersistRepository {
 
     /**
      * 激活会话（SESSION_ACCEPT 事件触发，座席接入时调用）。
+     *
+     * <p>WAITING → ACTIVE 状态转换由 DB 侧 CAS 保证：仅当 status=WAITING 时才更新，
+     * 幂等设计：同一 sessionId 重复调用时 affected=0，静默忽略，防止 MQ 重试覆盖已 ACTIVE 状态。
      *
      * @param sessionId  会话唯一标识
      * @param agentId    接入座席 ID
@@ -160,34 +162,6 @@ public class ConversationPersistRepository {
     }
 
     /**
-     * 查询所有 WAITING 状态的会话（Redis 过期时的 DB 兜底）。
-     *
-     * @return WAITING 会话列表，按 started_at 升序
-     */
-    public List<ConversationEntity> getWaitingConversations() {
-        return conversationMapper.selectList(
-                com.baomidou.mybatisplus.core.toolkit.Wrappers
-                        .lambdaQuery(ConversationEntity.class)
-                        .eq(ConversationEntity::getStatus, SessionStatus.WAITING.getValue())
-                        .orderByAsc(ConversationEntity::getStartedAt)
-        );
-    }
-
-    /**
-     * 查询最近有消息的 sessionId 列表及最后活跃时间。
-     *
-     * <p>用于展示纯 AI 对话的历史会话（没有对应 cs_conversation 记录）。
-     * 按 MAX(created_at) 倒序，取最近 limit 条。
-     * Map 包含：session_id（String）、last_active_at（OffsetDateTime）。
-     *
-     * @param limit 返回条数上限
-     * @return session_id 和最后活跃时间的列表
-     */
-    public List<Map<String, Object>> getRecentSessionIds(int limit) {
-        return messageMapper.selectRecentSessionIds(limit);
-    }
-
-    /**
      * 检查会话在 DB 中是否为 ACTIVE（用于 Redis 丢失时的兜底）。
      *
      * @param sessionId 会话唯一标识
@@ -232,9 +206,11 @@ public class ConversationPersistRepository {
             try {
                 messageMapper.insert(msg);
             } catch (DuplicateKeyException e) {
+                // (session_id, seq) 唯一索引冲突：消息已存在，MQ 重试时幂等跳过
                 log.debug("[Persist] 消息已存在，幂等跳过 sessionId={} seq={}",
                         msg.getSessionId(), msg.getSeq());
             } catch (Exception e) {
+                // 其他异常（DB 连接失败/超时等）收集后统一抛出，阻止调用方 ACK → 触发 Spring AMQP 重试 → DLQ
                 log.error("[Persist] 消息写入失败 sessionId={} role={}",
                         msg.getSessionId(), msg.getRole(), e);
                 failures.add(msg.getSessionId() + "/" + msg.getRole());

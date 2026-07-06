@@ -274,8 +274,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      */
     public void notifyVisitor(String sessionId, Object payload) {
         WebSocketSession vs = visitorSessions.get(sessionId);
-        if (vs == null) {
-            log.warn("[WS] notifyVisitor sessionId={} 不存在", sessionId);
+        if (vs == null || !vs.isOpen()) {
+            log.warn("[WS] notifyVisitor sessionId={} visitor not connected", sessionId);
             return;
         }
         sendJson(vs, payload);

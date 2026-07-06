@@ -114,6 +114,10 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                 .last("LIMIT " + limit)
         );
     }
+
+    /**
+     * 将会话状态更新为 CLOSED，记录结束时间。
+     * 仅当会话非 CLOSED 状态时才更新（幂等），防止重复关闭。
      *
      * @param sessionId 会话唯一标识
      * @param endedAt   结束时间
