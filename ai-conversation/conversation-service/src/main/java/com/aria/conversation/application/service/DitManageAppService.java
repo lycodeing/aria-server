@@ -49,7 +49,9 @@ public class DitManageAppService {
 
     public DomainDO getDomain(Long id) {
         DomainDO domain = domainMapper.selectById(id);
-        if (domain == null) throw new BusinessException(NOT_FOUND, "领域不存在: " + id);
+        if (domain == null) {
+            throw new BusinessException(NOT_FOUND, "领域不存在: " + id);
+        }
         return domain;
     }
 
@@ -62,8 +64,9 @@ public class DitManageAppService {
 
     @Transactional(rollbackFor = Exception.class)
     public void updateDomain(DomainDO domain) {
-        if (domainMapper.updateById(domain) == 0)
+        if (domainMapper.updateById(domain) == 0) {
             throw new BusinessException(NOT_FOUND, "领域不存在: " + domain.getId());
+        }
         log.info("更新领域: id={}", domain.getId());
         domainRepository.evict(domain.getCode());
     }
@@ -94,8 +97,9 @@ public class DitManageAppService {
 
     @Transactional(rollbackFor = Exception.class)
     public void updateIntent(IntentDO intent) {
-        if (intentMapper.updateById(intent) == 0)
+        if (intentMapper.updateById(intent) == 0) {
             throw new BusinessException(NOT_FOUND, "意图不存在: " + intent.getId());
+        }
         log.info("更新意图: id={}", intent.getId());
         evictDomainByIntentId(intent.getId());
     }
@@ -163,7 +167,9 @@ public class DitManageAppService {
 
     public ToolDO getToolById(Long id) {
         ToolDO tool = toolMapper.selectById(id);
-        if (tool == null) throw new BusinessException(NOT_FOUND, "工具不存在: " + id);
+        if (tool == null) {
+            throw new BusinessException(NOT_FOUND, "工具不存在: " + id);
+        }
         return tool;
     }
 
@@ -208,7 +214,9 @@ public class DitManageAppService {
     @Transactional(rollbackFor = Exception.class)
     public void deleteBinding(Long bindingId) {
         IntentToolDO bindingDO = intentToolMapper.selectById(bindingId);
-        if (bindingDO == null) throw new BusinessException(NOT_FOUND, "绑定不存在: " + bindingId);
+        if (bindingDO == null) {
+            throw new BusinessException(NOT_FOUND, "绑定不存在: " + bindingId);
+        }
         intentToolMapper.deleteById(bindingId);
         log.info("删除绑定: id={}", bindingId);
         evictDomainByIntentId(bindingDO.getIntentId());
@@ -238,8 +246,12 @@ public class DitManageAppService {
      */
     private void evictDomainByIntentId(Long intentId) {
         IntentDO intent = intentMapper.selectById(intentId);
-        if (intent == null) return;
+        if (intent == null) {
+            return;
+        }
         DomainDO domain = domainMapper.selectById(intent.getDomainId());
-        if (domain != null) domainRepository.evict(domain.getCode());
+        if (domain != null) {
+            domainRepository.evict(domain.getCode());
+        }
     }
 }

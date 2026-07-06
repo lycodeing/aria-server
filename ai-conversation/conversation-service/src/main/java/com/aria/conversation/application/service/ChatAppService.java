@@ -278,7 +278,9 @@ public class ChatAppService {
      * 将 hits 序列化为 JSON 数组，格式：[{"docId":"...","label":"..."}]。
      */
     public String buildSourcesJson(List<KnowledgeSearchResult.Hit> hits) {
-        if (hits.isEmpty()) return "[]";
+        if (hits.isEmpty()) {
+            return "[]";
+        }
         List<Map<String, String>> sources = hits.stream()
                 .map(h -> {
                     String label = (h.getBreadcrumb() != null && !h.getBreadcrumb().isBlank())

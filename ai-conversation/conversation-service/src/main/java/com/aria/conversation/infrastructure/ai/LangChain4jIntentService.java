@@ -9,6 +9,7 @@ import com.aria.conversation.infrastructure.dit.config.IntentConfig;
 import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import lombok.RequiredArgsConstructor;
@@ -43,7 +44,7 @@ public class LangChain4jIntentService implements IntentService {
                 return IntentResult.UNKNOWN;
             }
             String systemPrompt = buildPrompt(domain.intents());
-            List<dev.langchain4j.data.message.ChatMessage> messages = List.of(
+            List<ChatMessage> messages = List.of(
                     SystemMessage.from(systemPrompt),
                     UserMessage.from(userMessage)
             );

@@ -14,13 +14,16 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
- * 基于 LangChain4j 的 Embedding 服务，替代手写 {@link OpenAiEmbeddingService}。
+ * 基于 LangChain4j 的 Embedding 服务，使用 {@code OpenAiEmbeddingModel} 适配任意 OpenAI 兼容端点。
  * 支持任意 OpenAI 兼容端点，Caffeine 缓存按 config hash 热切换。
  */
 @Slf4j
@@ -48,7 +51,9 @@ public class LangChain4jEmbeddingService implements EmbeddingService {
      */
     @Override
     public void embed(List<KnowledgeChunk> chunks) {
-        if (chunks.isEmpty()) return;
+        if (chunks.isEmpty()) {
+            return;
+        }
 
         List<List<KnowledgeChunk>> batches = partition(chunks, props.batchSize());
         log.debug("[Embedding] 开始批量向量化 total={} batches={}", chunks.size(), batches.size());
@@ -107,12 +112,44 @@ public class LangChain4jEmbeddingService implements EmbeddingService {
     }
 
     /**
-     * 生成配置缓存 key — 包含 baseUrl、modelName 和 apiKey（均影响路由和鉴权）。
-     * 不打印到日志（apiKey 敏感）。
+     * 生成配置缓存 key — 包含 baseUrl、modelName 和脱敏 apiKey。
+     * 使用 "|" 分隔符防字段粘连；apiKey 只取首尾各 4 字符以降低泄露风险。
+     * 最终对拼接结果取 SHA-256 hash，缓存 key 中不保留任何明文配置。
+     *
+     * @param cfg AI 模型配置
+     * @return SHA-256 hash 字符串
      */
     private static String configKey(AiModelConfig cfg) {
-        return cfg.baseUrl() + "|" + cfg.modelName() + "|"
-                + (cfg.apiKey() != null ? cfg.apiKey() : "");
+        String input = String.join("|",
+                cfg.baseUrl() != null ? cfg.baseUrl() : "",
+                cfg.modelName() != null ? cfg.modelName() : "",
+                maskApiKey(cfg.apiKey()));
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(64);
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            // SHA-256 由 JVM 规范保证可用，此处不会抛出
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
+    }
+
+    /**
+     * 脱敏 apiKey：只保留首尾各 4 个字符，中间用 "***" 替代。
+     * 长度不足 8 的 apiKey 直接返回原值（通常为测试占位符）。
+     */
+    private static String maskApiKey(String apiKey) {
+        if (apiKey == null) {
+            return "";
+        }
+        if (apiKey.length() <= 8) {
+            return apiKey;
+        }
+        return apiKey.substring(0, 4) + "***" + apiKey.substring(apiKey.length() - 4);
     }
 
     private static <T> List<List<T>> partition(List<T> list, int size) {
