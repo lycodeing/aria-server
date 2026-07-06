@@ -234,7 +234,7 @@ public class ChatAppService {
 
         // 路由：闲聊 → 跳过 RAG
         List<KnowledgeSearchResult.Hit> effectiveHits = intent.skipRag() ? List.of() : hits;
-        String systemPrompt = buildSystemPrompt(effectiveHits);
+        String systemPrompt = SystemPromptBuilder.build(effectiveHits, null, BASE_SYSTEM_PROMPT);
         List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
         StringBuilder assistantReply = new StringBuilder();
 
@@ -303,7 +303,7 @@ public class ChatAppService {
     public String chat(String sessionId, String userMessage) {
         historyRepository.append(sessionId, ROLE_USER, userMessage);
         List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
-        String systemPrompt = buildSystemPrompt(hits);
+        String systemPrompt = SystemPromptBuilder.build(hits, null, BASE_SYSTEM_PROMPT);
         String reply = aiClient.chat(toAiPrompt(historyRepository.findAll(sessionId)), systemPrompt);
         historyRepository.append(sessionId, ROLE_ASSISTANT, reply);
         return reply;
@@ -343,9 +343,10 @@ public class ChatAppService {
 
     /**
      * @deprecated 新代码应直接调用 {@link #stream}。
-     *             本方法仅保留用于非 SSE 场景（如内部调用）的向后兼容。
+     *             本方法仅保留用于非 SSE 场景（如内部调用）的向后兼容，
+     *             后续版本将被移除。
      */
-    @Deprecated
+    @Deprecated(since = "1.0", forRemoval = true)
     public Flux<String> streamChat(String sessionId, String userMessage) {
         return streamFaq(sessionId, userMessage)
                 .flatMap(e -> {
@@ -371,22 +372,4 @@ public class ChatAppService {
                 .toList();
     }
 
-    /**
-     * 构建含知识上下文的 system prompt。
-     */
-    private String buildSystemPrompt(List<KnowledgeSearchResult.Hit> hits) {
-        if (hits == null || hits.isEmpty()) {
-            return BASE_SYSTEM_PROMPT;
-        }
-        StringBuilder ref = new StringBuilder("【参考资料】（请优先依据以下内容回答，无需在回答中标注来源编号）\n\n");
-        for (int i = 0; i < hits.size(); i++) {
-            KnowledgeSearchResult.Hit hit = hits.get(i);
-            String label = (hit.getBreadcrumb() != null && !hit.getBreadcrumb().isBlank())
-                    ? hit.getBreadcrumb() : "文档片段";
-            String content = hit.getContent() != null ? hit.getContent() : "";
-            ref.append("[").append(i + 1).append("] ").append(label).append("\n")
-               .append(content).append("\n\n");
-        }
-        return ref.append("---\n").append(BASE_SYSTEM_PROMPT).toString();
-    }
 }
