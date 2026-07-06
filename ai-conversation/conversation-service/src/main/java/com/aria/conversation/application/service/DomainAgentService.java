@@ -38,16 +38,15 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * LangChain4j function-calling domain agent service.
+ * 基于 LangChain4j function-calling 的域对话服务。
  *
- * <p>Replaces {@code DitPipeline} for the DIT path. Builds a per-request
- * {@code DomainAssistant} with:
+ * <p>替代原 {@code DitPipeline}，为每次请求构建 {@code DomainAssistant}，包含：
  * <ul>
- *   <li>RAG-enriched system prompt (computed per-request via closure)</li>
- *   <li>Domain-scoped HTTP tools from {@code DomainConfig}</li>
- *   <li>Built-in {@code switch_domain} and {@code transfer_to_agent} tools</li>
- *   <li>{@code tool_call}/{@code tool_done} SSE events emitted directly from the
- *       {@code ToolExecutor} lambdas via a {@link Sinks.Many}</li>
+ *   <li>RAG 增强的 system prompt（每次请求通过闭包计算）</li>
+ *   <li>域范围的 HTTP 工具（来自 {@code DomainConfig}）</li>
+ *   <li>内置 {@code switch_domain} 和 {@code transfer_to_agent} 工具</li>
+ *   <li>{@code tool_call}/{@code tool_done} SSE 事件通过 {@link Sinks.Many} 从
+ *       {@code ToolExecutor} lambda 中直接发射</li>
  * </ul>
  */
 @Slf4j
@@ -65,39 +64,39 @@ public class DomainAgentService {
     private final ObjectMapper objectMapper;
 
     /**
-     * LangChain4j AiService interface for streaming domain chat.
-     * Uses Reactor adapter (langchain4j-reactor) to return {@code Flux<String>}.
+     * LangChain4j AiService 流式对话接口。
+     * 使用 langchain4j-reactor 适配器返回 {@code Flux<String>}。
      */
     private interface DomainAssistant {
         Flux<String> chat(@MemoryId String sessionId, @UserMessage String message);
     }
 
     /**
-     * Stream domain-aware chat, emitting {@link ChatEvent} tokens and tool events.
+     * 流式域对话，发射 {@link ChatEvent} 令牌流和工具生命周期事件。
      *
-     * @param sessionId  conversation session ID (used as chat memory key)
-     * @param domainCode active domain code
-     * @param userMessage user's message text
-     * @return merged flux of AI token events and tool lifecycle events
+     * @param sessionId   会话 ID（用作对话记忆 key）
+     * @param domainCode  当前活跃域 code
+     * @param userMessage 用户消息文本
+     * @return AI 令牌事件与工具事件的合并流
      */
     public Flux<ChatEvent> streamChat(String sessionId, String domainCode, String userMessage) {
         log.debug("[DomainAgent] start sessionId={} domain={}", sessionId, domainCode);
 
-        // 1. RAG: retrieve relevant knowledge hits synchronously (runs on caller's thread)
+        // 1. RAG：同步检索知识库（在调用线程上执行）
         List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
-        String systemPrompt = buildSystemPrompt(hits);
+        String systemPrompt = SystemPromptBuilder.build(hits);
 
-        // 2. Sink for tool_call / tool_done / domain_switch / transfer events
+        // 2. Sink：用于发射 tool_call / tool_done / domain_switch / transfer 事件
         Sinks.Many<ChatEvent> eventSink = Sinks.many().unicast().onBackpressureBuffer();
 
-        // 3. Collect domain-scoped tools
+        // 3. 收集域范围内的工具列表
         List<ToolConfig> domainTools = getToolsForDomain(domainCode);
 
-        // 4. Build ToolProvider with domain tools + builtins
+        // 4. 构建 ToolProvider（域工具 + 内置工具）
         ToolProvider toolProvider = buildToolProvider(domainCode, domainTools, eventSink);
 
-        // 5. Build per-request DomainAssistant
-        //    systemMessageProvider uses a closure so each request gets its own RAG prompt.
+        // 5. 构建每次请求独立的 DomainAssistant
+        //    systemMessageProvider 使用闭包，确保每次请求获取独立的 RAG prompt
         DomainAssistant assistant = AiServices.builder(DomainAssistant.class)
                 .streamingChatModel(modelFactory.getStreamingChatModel())
                 .systemMessageProvider(id -> systemPrompt)
@@ -109,7 +108,7 @@ public class DomainAgentService {
                 .toolProvider(toolProvider)
                 .build();
 
-        // 6. Merge AI token stream with tool-event stream
+        // 6. 合并 AI 令牌流与工具事件流
         Flux<ChatEvent> tokenFlux = assistant.chat(sessionId, userMessage)
                 .map(ChatEvent::data)
                 .doFinally(signal -> eventSink.tryEmitComplete());
@@ -120,7 +119,7 @@ public class DomainAgentService {
     }
 
     // -------------------------------------------------------
-    // Tool collection
+    // 工具集合
     // -------------------------------------------------------
 
     private List<ToolConfig> getToolsForDomain(String domainCode) {
@@ -134,13 +133,13 @@ public class DomainAgentService {
     }
 
     // -------------------------------------------------------
-    // ToolProvider construction
+    // ToolProvider 构造
     // -------------------------------------------------------
 
     private ToolProvider buildToolProvider(String domainCode,
                                             List<ToolConfig> tools,
                                             Sinks.Many<ChatEvent> eventSink) {
-        // Pre-compute domain list for switch_domain description
+        // 预计算域列表，用于 switch_domain 描述
         List<DomainDO> allDomains = domainRepo.findAllEnabledSummary();
         String domainDesc = allDomains.stream()
                 .map(d -> d.getCode() + "(" + d.getDescription() + ")")
@@ -149,12 +148,12 @@ public class DomainAgentService {
         return request -> {
             Map<ToolSpecification, ToolExecutor> toolMap = new LinkedHashMap<>();
 
-            // Business tools bound to this domain
+            // 域内业务工具
             for (ToolConfig tc : tools) {
                 toolMap.put(buildToolSpec(tc), buildHttpToolExecutor(tc, eventSink));
             }
 
-            // Built-in: switch_domain
+            // 内置工具：switch_domain
             ToolSpecification switchDomainSpec = ToolSpecification.builder()
                     .name(BuiltinToolNames.SWITCH_DOMAIN)
                     .description("当用户问题与当前服务域无关时调用。可用域：" + domainDesc)
@@ -166,7 +165,7 @@ public class DomainAgentService {
                     .build();
             toolMap.put(switchDomainSpec, buildSwitchDomainExecutor(domainCode, eventSink));
 
-            // Built-in: transfer_to_agent
+            // 内置工具：transfer_to_agent
             ToolSpecification transferSpec = ToolSpecification.builder()
                     .name(BuiltinToolNames.TRANSFER_TO_AGENT)
                     .description("当用户明确要求转接人工客服时调用")
@@ -179,13 +178,13 @@ public class DomainAgentService {
     }
 
     // -------------------------------------------------------
-    // Individual ToolExecutor factories
+    // ToolExecutor 工厂方法
     // -------------------------------------------------------
 
     private ToolExecutor buildHttpToolExecutor(ToolConfig tc, Sinks.Many<ChatEvent> eventSink) {
         return (ToolExecutionRequest req, Object memId) -> {
             try {
-                // Notify frontend: tool is running
+                // 通知前端：工具正在执行
                 eventSink.tryEmitNext(ChatEvent.toolCall(
                         objectMapper.writeValueAsString(ToolCallPayload.running(tc.code()))));
 
@@ -193,7 +192,7 @@ public class DomainAgentService {
                 ToolCallResult result = httpToolRunner.execute(tc, args, Map.of());
                 log.info("[DomainAgent] tool={} status={}", tc.code(), result.getStatus());
 
-                // Notify frontend: tool completed
+                // 通知前端：工具执行完成
                 eventSink.tryEmitNext(ChatEvent.toolDone(
                         objectMapper.writeValueAsString(ToolDonePayload.from(result))));
 
@@ -235,7 +234,7 @@ public class DomainAgentService {
     }
 
     // -------------------------------------------------------
-    // ToolSpecification construction from ToolConfig
+    // 工具规格（ToolSpecification）构造
     // -------------------------------------------------------
 
     private ToolSpecification buildToolSpec(ToolConfig tc) {
@@ -261,7 +260,7 @@ public class DomainAgentService {
                 }
             }
         } catch (Exception e) {
-            log.warn("[DomainAgent] paramSchema parse error tool={}", tc.code(), e);
+            log.error("[DomainAgent] paramSchema 解析失败，工具参数定义将为空 tool={}", tc.code(), e);
         }
         return ToolSpecification.builder()
                 .name(tc.code())
@@ -270,29 +269,10 @@ public class DomainAgentService {
                 .build();
     }
 
-    // -------------------------------------------------------
-    // System prompt construction
-    // -------------------------------------------------------
 
-    private String buildSystemPrompt(List<KnowledgeSearchResult.Hit> hits) {
-        StringBuilder sb = new StringBuilder();
-        if (hits != null && !hits.isEmpty()) {
-            sb.append("【参考资料】（请优先依据以下内容回答，无需在回答中标注来源编号）\n\n");
-            for (int i = 0; i < hits.size(); i++) {
-                KnowledgeSearchResult.Hit h = hits.get(i);
-                String label = (h.getBreadcrumb() != null && !h.getBreadcrumb().isBlank())
-                        ? h.getBreadcrumb() : "文档片段";
-                sb.append("[").append(i + 1).append("] ").append(label).append("\n")
-                  .append(h.getContent() != null ? h.getContent() : "").append("\n\n");
-            }
-            sb.append("---\n");
-        }
-        sb.append("你是一名专业的智能客服助手。请用简洁、友好的语言回答用户问题。");
-        return sb.toString();
-    }
 
     // -------------------------------------------------------
-    // Utilities
+    // 工具方法
     // -------------------------------------------------------
 
     private Map<String, Object> parseArguments(String arguments) throws Exception {

@@ -1,7 +1,6 @@
 package com.aria.conversation.application.service.route;
 
 import com.aria.conversation.application.service.ChatEvent;
-import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;

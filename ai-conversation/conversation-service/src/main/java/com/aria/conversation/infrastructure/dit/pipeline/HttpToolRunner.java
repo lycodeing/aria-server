@@ -3,17 +3,19 @@ package com.aria.conversation.infrastructure.dit.pipeline;
 import com.aria.conversation.infrastructure.dit.config.ToolConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.net.URI;
 import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -27,7 +29,8 @@ import java.util.stream.Collectors;
  * <p>支持 {slot_name} 占位符替换：在 URL 路径、请求头、请求体中的 {xxx} 
  * 均会被 resolvedSlots 中对应的值替换。
  *
- * <p>按 baseUrl 缓存 WebClient，避免重复创建连接池。
+ * <p>按 baseUrl 缓存 WebClient（Caffeine，最多 128 个，10 分钟未访问自动驱逐），
+ * 避免重复创建连接池。
  */
 @Slf4j
 @Component
@@ -39,8 +42,11 @@ public class HttpToolRunner {
 
     private final ObjectMapper objectMapper;
     private final WebClient.Builder webClientBuilder;
-    /** baseUrl → WebClient 缓存 */
-    private final ConcurrentHashMap<String, WebClient> clientCache = new ConcurrentHashMap<>();
+    /** baseUrl → WebClient 缓存，最多缓存 128 个 baseUrl，10 分钟未访问自动驱逐 */
+    private final Cache<String, WebClient> clientCache = Caffeine.newBuilder()
+            .maximumSize(128)
+            .expireAfterAccess(Duration.ofMinutes(10))
+            .build();
     private final Map<String, HttpAuthStrategy> authStrategyMap;
 
     public HttpToolRunner(ObjectMapper objectMapper,
@@ -74,7 +80,7 @@ public class HttpToolRunner {
 
             // 构建 WebClient
             String baseUrl = extractBaseUrl(url);
-            WebClient client = clientCache.computeIfAbsent(baseUrl, u ->
+            WebClient client = clientCache.get(baseUrl, u ->
                     webClientBuilder.clone().baseUrl(u)
                             .codecs(c -> c.defaultCodecs().maxInMemorySize(2 * 1024 * 1024))
                             .build());
@@ -212,9 +218,17 @@ public class HttpToolRunner {
         return headers;
     }
 
+    /**
+     * 提取 URL 的 baseUrl（协议 + 主机 + 端口）。
+     * 例如：https://api.shop.com/v1/weather → https://api.shop.com
+     */
     private String extractBaseUrl(String url) {
-        // 提取协议 + 主机 + 端口，如 https://api.shop.com
-        int idx = url.indexOf('/', 8); // 跳过 "https://"
-        return idx > 0 ? url.substring(0, idx) : url;
+        try {
+            URI uri = URI.create(url);
+            return uri.getScheme() + "://" + uri.getAuthority();
+        } catch (Exception e) {
+            log.warn("[DIT] extractBaseUrl 解析失败，回退使用原始 URL: {}", url, e);
+            return url;
+        }
     }
 }

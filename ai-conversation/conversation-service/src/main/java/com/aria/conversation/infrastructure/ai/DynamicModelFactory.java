@@ -13,21 +13,22 @@ import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Sinks;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Sinks;
-
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Dynamic LangChain4j Model Factory.
- * Replaces DynamicAiClient. Uses LlmModelBuilder strategy to eliminate switch(apiProtocol).
- * Caffeine-based caches keyed by config hash support hot-swapping without restart.
+ * 动态 LangChain4j 模型工厂。
+ *
+ * <p>替代原 {@code DynamicAiClient}，通过 {@link LlmModelBuilder} 策略模式消除
+ * {@code switch(apiProtocol)} 分支。使用 Caffeine 缓存按配置 hash 缓存模型实例，
+ * 支持运行期热切换配置（不同 baseUrl/modelName/apiKey 各自独立实例），无需重启。
  */
 @Slf4j
 @Component
@@ -50,8 +51,12 @@ public class DynamicModelFactory {
     }
 
     /**
-     * Streaming chat — drop-in replacement for DynamicAiClient.streamChat().
-     * Converts project ChatMessage + systemPrompt to LangChain4j types internally.
+     * 流式对话 — {@code DynamicAiClient.streamChat()} 的替代方法。
+     * 内部将项目 {@link ChatMessage} 和 systemPrompt 转换为 LangChain4j 类型。
+     *
+     * @param messages     对话消息列表
+     * @param systemPrompt 系统提示词（可为 null）
+     * @return AI 回复 token 流
      */
     public Flux<String> streamChat(List<ChatMessage> messages, String systemPrompt) {
         List<dev.langchain4j.data.message.ChatMessage> lc4jMessages =
@@ -73,15 +78,23 @@ public class DynamicModelFactory {
     }
 
     /**
-     * Blocking chat — drop-in replacement for DynamicAiClient.chat().
-     * ⚠️ Must be called on boundedElastic thread only.
+     * 阻塞式对话 — {@code DynamicAiClient.chat()} 的替代方法。
+     * ⚠️ 必须在 boundedElastic 线程上调用。
+     *
+     * @param messages     对话消息列表
+     * @param systemPrompt 系统提示词（可为 null）
+     * @return AI 完整回复文本
      */
     public String chat(List<ChatMessage> messages, String systemPrompt) {
         return getChatModel().chat(toLangChain4jMessages(messages, systemPrompt))
                 .aiMessage().text();
     }
 
-    /** Returns cached ChatModel for the current active config. */
+    /**
+     * 获取当前活跃配置对应的缓存 ChatModel。
+     *
+     * @return 缓存的 ChatModel 实例
+     */
     public ChatModel getChatModel() {
         AiModelConfig cfg = configProvider.getActive();
         return chatCache.get(configHash(cfg), k -> {
@@ -90,7 +103,11 @@ public class DynamicModelFactory {
         });
     }
 
-    /** Returns cached StreamingChatModel for the current active config. */
+    /**
+     * 获取当前活跃配置对应的缓存 StreamingChatModel。
+     *
+     * @return 缓存的 StreamingChatModel 实例
+     */
     public StreamingChatModel getStreamingChatModel() {
         AiModelConfig cfg = configProvider.getActive();
         return streamingCache.get(configHash(cfg), k -> {
@@ -99,7 +116,11 @@ public class DynamicModelFactory {
         });
     }
 
-    /** Returns the current chat config hash for diagnostics/logging. */
+    /**
+     * 获取当前活跃配置的 hash 值，用于诊断和日志。
+     *
+     * @return 配置 hash 字符串
+     */
     public String currentConfigHash() {
         return configHash(configProvider.getActive());
     }
@@ -107,6 +128,8 @@ public class DynamicModelFactory {
     /**
      * ROUTER 小模型（用于 DomainRoutingService 域路由判断）。
      * Caffeine 缓存，routerCache 最多 5 个实例。
+     *
+     * @return 缓存的 Router ChatModel 实例
      */
     public ChatModel getRouterModel() {
         AiModelConfig cfg = configProvider.getActiveRouter();
@@ -124,8 +147,19 @@ public class DynamicModelFactory {
                         "[AI] No LlmModelBuilder for protocol: " + cfg.apiProtocol()));
     }
 
+    /**
+     * 生成配置缓存 key — 包含 baseUrl、modelName、apiProtocol 和脱敏 apiKey。
+     * 使用 "|" 分隔符防止字段粘连导致碰撞；apiKey 只取首尾各 4 字符以降低彩虹表风险。
+     *
+     * @param cfg AI 模型配置
+     * @return SHA-256 hash 字符串
+     */
     private String configHash(AiModelConfig cfg) {
-        String input = cfg.baseUrl() + cfg.apiKey() + cfg.modelName() + cfg.apiProtocol();
+        String input = String.join("|",
+                cfg.baseUrl() != null ? cfg.baseUrl() : "",
+                cfg.modelName() != null ? cfg.modelName() : "",
+                cfg.apiProtocol() != null ? cfg.apiProtocol() : "",
+                maskApiKey(cfg.apiKey()));
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
@@ -133,9 +167,23 @@ public class DynamicModelFactory {
             for (byte b : digest) sb.append(String.format("%02x", b));
             return sb.toString();
         } catch (NoSuchAlgorithmException e) {
-            // SHA-256 is guaranteed by the JVM spec, this never throws
+            // SHA-256 由 JVM 规范保证可用，此处不会抛出
             throw new IllegalStateException("SHA-256 not available", e);
         }
+    }
+
+    /**
+     * 脱敏 apiKey：只保留首尾各 4 个字符，中间用 "***" 替代。
+     * 长度不足 8 的 apiKey 直接返回原值（通常为测试占位符）。
+     */
+    private static String maskApiKey(String apiKey) {
+        if (apiKey == null) {
+            return "";
+        }
+        if (apiKey.length() <= 8) {
+            return apiKey;
+        }
+        return apiKey.substring(0, 4) + "***" + apiKey.substring(apiKey.length() - 4);
     }
 
     private List<dev.langchain4j.data.message.ChatMessage> toLangChain4jMessages(

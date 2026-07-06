@@ -1,7 +1,7 @@
 package com.aria.conversation.infrastructure.ai;
 
+import com.aria.conversation.domain.model.SlotDefinition;
 import com.aria.conversation.domain.service.SlotService;
-import com.aria.conversation.infrastructure.dit.config.SlotConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.mock.ChatModelMock;
@@ -24,9 +24,8 @@ class LangChain4jSlotServiceTest {
 
     private SlotService service;
 
-    private static SlotConfig slot(String name, String desc) {
-        return new SlotConfig(name, "string", desc, true,
-                List.of("EXTRACT"), null, null, null, null, null);
+    private static SlotDefinition slot(String name, String desc) {
+        return new SlotDefinition(name, "string", desc, null);
     }
 
     @BeforeEach
@@ -41,7 +40,7 @@ class LangChain4jSlotServiceTest {
         ChatModel mock = ChatModelMock.thatAlwaysResponds("{\"order_id\":\"ORD001\",\"user_name\":\"张三\"}");
         when(modelFactory.getChatModel()).thenReturn(mock);
 
-        List<SlotConfig> slots = List.of(
+        List<SlotDefinition> slots = List.of(
                 slot("order_id", "订单号"),
                 slot("user_name", "用户姓名")
         );
@@ -58,7 +57,7 @@ class LangChain4jSlotServiceTest {
         ChatModel mock = ChatModelMock.thatAlwaysResponds("无法识别相关信息");
         when(modelFactory.getChatModel()).thenReturn(mock);
 
-        List<SlotConfig> slots = List.of(slot("order_id", "订单号"));
+        List<SlotDefinition> slots = List.of(slot("order_id", "订单号"));
 
         Map<String, Object> result = service.extract("随便说几句", List.of(), slots);
 

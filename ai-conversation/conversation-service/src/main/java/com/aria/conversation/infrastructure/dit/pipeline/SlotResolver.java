@@ -1,5 +1,7 @@
 package com.aria.conversation.infrastructure.dit.pipeline;
 
+import com.aria.conversation.domain.ConversationMessage;
+import com.aria.conversation.domain.model.SlotDefinition;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
 import com.aria.conversation.domain.service.SlotService;
 import com.aria.conversation.infrastructure.dit.config.IntentConfig;
@@ -9,13 +11,11 @@ import com.aria.conversation.infrastructure.dit.mapper.ToolMapper;
 import com.aria.conversation.infrastructure.dit.repository.PendingSlotRepository;
 import com.aria.conversation.infrastructure.dit.repository.PendingSlotState;
 import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -94,7 +94,14 @@ public class SlotResolver {
                 .filter(s -> strategyContains(s, "EXTRACT"))
                 .toList();
         if (!toExtract.isEmpty()) {
-            Map<String, Object> extracted = extractService.extract(userMessage, recentHistory, toExtract);
+            // 将 infrastructure 类型转换为 domain 类型，保持 DDD 依赖方向
+            List<ConversationMessage> domainHistory = recentHistory.stream()
+                    .map(m -> new ConversationMessage(m.role(), m.content(), 0L, null, null, null))
+                    .toList();
+            List<SlotDefinition> domainSlots = toExtract.stream()
+                    .map(s -> new SlotDefinition(s.slotName(), s.slotType(), s.description(), s.enumValues()))
+                    .toList();
+            Map<String, Object> extracted = extractService.extract(userMessage, domainHistory, domainSlots);
             resolved.putAll(extracted);
         }
 

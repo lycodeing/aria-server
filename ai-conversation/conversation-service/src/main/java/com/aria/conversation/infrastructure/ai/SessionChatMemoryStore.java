@@ -11,10 +11,13 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
- * LangChain4j ChatMemoryStore ACL adapter.
+ * LangChain4j ChatMemoryStore ACL 适配器。
  *
  * <p>将会话历史 Redis 存储（{@link ConversationHistoryRepository}）适配为
  * LangChain4j {@link ChatMemoryStore} 接口。LangChain4j 类型仅在本类内部使用，
@@ -41,13 +44,44 @@ public class SessionChatMemoryStore implements ChatMemoryStore {
                 .toList();
     }
 
+    /**
+     * 更新消息列表并保留已有消息的 seq。
+     *
+     * <p>LangChain4j 在每轮对话后会调用此方法回写全量消息。如果直接将所有消息的
+     * seq 设为 0，会破坏断线重连增量同步机制（{@code getHistorySince} 依赖 seq > 0）。
+     *
+     * <p>策略：通过 role + content 匹配已有消息以保留其 seq；新增消息从当前最大 seq+1 开始分配。
+     */
     @Override
     public void updateMessages(Object memoryId, List<ChatMessage> messages) {
+        String sessionId = memoryId.toString();
         try {
-            historyRepo.saveAll(memoryId.toString(), messages.stream()
-                    .map(this::toDomainMessage).toList());
+            // 读取已有消息，构建 role|content → seq 的索引
+            List<ConversationMessage> existing = historyRepo.findAll(sessionId);
+            Map<String, Long> seqIndex = new HashMap<>(existing.size());
+            long maxSeq = 0L;
+            for (ConversationMessage em : existing) {
+                seqIndex.putIfAbsent(em.role() + "|" + em.content(), em.seq());
+                if (em.seq() > maxSeq) {
+                    maxSeq = em.seq();
+                }
+            }
+
+            // 转换消息并分配 seq
+            List<ConversationMessage> toSave = new ArrayList<>(messages.size());
+            long nextSeq = maxSeq;
+            for (ChatMessage m : messages) {
+                ConversationMessage dm = toDomainMessage(m);
+                String key = dm.role() + "|" + dm.content();
+                Long existingSeq = seqIndex.get(key);
+                long seq = (existingSeq != null && existingSeq > 0) ? existingSeq : ++nextSeq;
+                toSave.add(new ConversationMessage(
+                        dm.role(), dm.content(), seq, dm.timestamp(),
+                        dm.toolRequestId(), dm.toolName()));
+            }
+            historyRepo.saveAll(sessionId, toSave);
         } catch (Exception e) {
-            log.error("[Memory] Failed to persist chat memory: sessionId={}", memoryId, e);
+            log.error("[Memory] 持久化聊天记忆失败: sessionId={}", memoryId, e);
             throw e;
         }
     }
@@ -73,14 +107,16 @@ public class SessionChatMemoryStore implements ChatMemoryStore {
     }
 
     private ConversationMessage toDomainMessage(ChatMessage m) {
-        if (m instanceof AiMessage ai)
+        if (m instanceof AiMessage ai) {
             return new ConversationMessage("assistant", ai.text(), 0L, null, null, null);
-        if (m instanceof ToolExecutionResultMessage tr)
-            // LangChain4j 1.1.0: id(), toolName(), text()
+        }
+        if (m instanceof ToolExecutionResultMessage tr) {
             return new ConversationMessage("tool", tr.text(), 0L, null,
                     tr.id(), tr.toolName());
-        if (m instanceof UserMessage um)
+        }
+        if (m instanceof UserMessage um) {
             return new ConversationMessage("user", um.singleText(), 0L, null, null, null);
+        }
         return new ConversationMessage("user", m.toString(), 0L, null, null, null);
     }
 }

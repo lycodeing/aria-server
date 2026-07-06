@@ -1,10 +1,10 @@
 package com.aria.conversation.application.service.route;
 
 import com.aria.conversation.application.service.ChatEvent;
+import com.aria.conversation.application.service.SystemPromptBuilder;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
-import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
@@ -24,9 +24,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class FallbackRouteHandler implements RouteResultHandler {
 
-    private static final String ROLE_ASSISTANT    = "assistant";
-    private static final String BASE_SYSTEM_PROMPT =
-            "你是一名专业的智能客服助手。请用简洁、友好的语言回答用户问题。回答要简明扼要，避免冗长说明。";
+    private static final String ROLE_ASSISTANT = "assistant";
 
     private final DynamicModelFactory modelFactory;
     private final KnowledgeClient knowledgeClient;
@@ -43,7 +41,7 @@ public class FallbackRouteHandler implements RouteResultHandler {
         RouteResult.FallbackResult r = (RouteResult.FallbackResult) route;
 
         List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
-        String systemPrompt = buildSystemPrompt(hits, r.systemPromptAddon());
+        String systemPrompt = SystemPromptBuilder.build(hits, r.systemPromptAddon(), null);
         List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
 
         StringBuilder reply = new StringBuilder();
@@ -59,26 +57,6 @@ public class FallbackRouteHandler implements RouteResultHandler {
                         historyRepository.append(sessionId, ROLE_ASSISTANT, reply.toString());
                     }
                 });
-    }
-
-    private String buildSystemPrompt(List<KnowledgeSearchResult.Hit> hits, String addon) {
-        StringBuilder sb = new StringBuilder();
-        if (hits != null && !hits.isEmpty()) {
-            sb.append("【参考资料】（请优先依据以下内容回答，无需在回答中标注来源编号）\n\n");
-            for (int i = 0; i < hits.size(); i++) {
-                KnowledgeSearchResult.Hit h = hits.get(i);
-                String label = (h.getBreadcrumb() != null && !h.getBreadcrumb().isBlank())
-                        ? h.getBreadcrumb() : "文档片段";
-                sb.append("[").append(i + 1).append("] ").append(label).append("\n")
-                  .append(h.getContent() != null ? h.getContent() : "").append("\n\n");
-            }
-            sb.append("---\n");
-        }
-        if (addon != null && !addon.isBlank()) {
-            sb.append(addon).append("\n");
-        }
-        sb.append(BASE_SYSTEM_PROMPT);
-        return sb.toString();
     }
 
     private List<ChatMessage> toAiPrompt(List<ConversationMessage> history) {

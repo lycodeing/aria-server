@@ -1,7 +1,8 @@
 package com.aria.conversation.infrastructure.ai;
 
+import com.aria.conversation.domain.ConversationMessage;
+import com.aria.conversation.domain.model.SlotDefinition;
 import com.aria.conversation.domain.service.SlotService;
-import com.aria.conversation.infrastructure.dit.config.SlotConfig;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.data.message.AiMessage;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -32,8 +34,8 @@ public class LangChain4jSlotService implements SlotService {
 
     @Override
     public Map<String, Object> extract(String userMessage,
-                                       List<ChatMessage> recentHistory,
-                                       List<SlotConfig> slots) {
+                                       List<ConversationMessage> recentHistory,
+                                       List<SlotDefinition> slots) {
         if (slots == null || slots.isEmpty()) {
             return Map.of();
         }
@@ -42,22 +44,22 @@ public class LangChain4jSlotService implements SlotService {
             List<dev.langchain4j.data.message.ChatMessage> messages =
                     buildMessages(userMessage, recentHistory, systemPrompt);
             String response = modelFactory.getChatModel().chat(messages).aiMessage().text();
-            return parseExtracted(response, slots);
+            return parseExtracted(response);
         } catch (Exception e) {
             log.warn("[Slot] 槽位提取失败 slots={}", slots.stream()
-                    .map(SlotConfig::slotName).toList(), e);
+                    .map(SlotDefinition::slotName).toList(), e);
             return Collections.emptyMap();
         }
     }
 
-    private String buildExtractPrompt(List<SlotConfig> slots) {
+    private String buildExtractPrompt(List<SlotDefinition> slots) {
         StringBuilder sb = new StringBuilder("""
                 你是一个信息提取器。从用户的消息中提取以下参数，以 JSON 格式返回，
                 无法提取的参数不要包含在 JSON 中，不要输出任何其他内容。
                 
                 需要提取的参数：
                 """);
-        for (SlotConfig slot : slots) {
+        for (SlotDefinition slot : slots) {
             sb.append("- ").append(slot.slotName())
               .append("（").append(slot.slotType()).append("）")
               .append("：").append(slot.description());
@@ -72,14 +74,14 @@ public class LangChain4jSlotService implements SlotService {
 
     private List<dev.langchain4j.data.message.ChatMessage> buildMessages(
             String userMessage,
-            List<ChatMessage> history,
+            List<ConversationMessage> history,
             String systemPrompt) {
         List<dev.langchain4j.data.message.ChatMessage> result = new ArrayList<>();
         result.add(SystemMessage.from(systemPrompt));
         if (history != null && !history.isEmpty()) {
-            // Take up to last 6 messages (3 turns) for context
+            // 截取最近 6 条消息（3 轮对话）作为上下文
             int start = Math.max(0, history.size() - 6);
-            for (ChatMessage m : history.subList(start, history.size())) {
+            for (ConversationMessage m : history.subList(start, history.size())) {
                 result.add("assistant".equals(m.role())
                         ? AiMessage.from(m.content())
                         : UserMessage.from(m.content()));
@@ -89,7 +91,7 @@ public class LangChain4jSlotService implements SlotService {
         return result;
     }
 
-    private Map<String, Object> parseExtracted(String response, List<SlotConfig> slots) {
+    private Map<String, Object> parseExtracted(String response) {
         if (response == null || response.isBlank()) return Map.of();
         String json = response.trim();
         if (json.startsWith("```")) {
@@ -98,8 +100,9 @@ public class LangChain4jSlotService implements SlotService {
         }
         if (!json.startsWith("{")) return Map.of();
         try {
-            Map<String, Object> result = objectMapper.readValue(json, new TypeReference<>() {});
-            // Filter out blank / null values
+            Map<String, Object> raw = objectMapper.readValue(json, new TypeReference<>() {});
+            // 防御性拷贝：避免 objectMapper 返回不可变 Map 导致 removeIf 抛 UnsupportedOperationException
+            Map<String, Object> result = new LinkedHashMap<>(raw);
             result.entrySet().removeIf(entry ->
                     entry.getValue() == null
                     || entry.getValue().toString().isBlank()

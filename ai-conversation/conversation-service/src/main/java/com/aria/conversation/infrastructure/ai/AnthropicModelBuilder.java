@@ -7,9 +7,14 @@ import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
+
 import java.time.Duration;
 
-/** Handles Anthropic Claude protocol. */
+/**
+ * Anthropic Claude 协议的 LLM 模型构建器。
+ *
+ * <p>优先级最高（{@code @Order(1)}），当 apiProtocol 为 ANTHROPIC 时匹配。
+ */
 @Order(1)
 @Component
 public class AnthropicModelBuilder implements LlmModelBuilder {
