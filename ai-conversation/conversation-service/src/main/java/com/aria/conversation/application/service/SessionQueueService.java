@@ -116,11 +116,18 @@ public class SessionQueueService {
     }
 
     /**
-     * 查询最近已关闭的会话（CLOSED），供座席工作台「已结束」Tab 展示。
-     * 按结束时间倒序，最多返回 50 条。
+     * 查询最近历史会话，供座席工作台「已结束」Tab 展示。
+     * 按结束/最后活跃时间倒序，最多返回 50 条。
+     *
+     * <p>合并两类来源：
+     * <ol>
+     *   <li>转人工后已关闭的会话（cs_conversation 表，status=CLOSED）</li>
+     *   <li>纯 AI 对话（cs_conversation_message 有记录，但 cs_conversation 无对应行）</li>
+     * </ol>
      */
     public List<SessionQueueItem> getClosedSessions() {
-        return persistRepository.getClosedConversations(50).stream()
+        // 1. 转人工已关闭的会话
+        List<SessionQueueItem> closed = persistRepository.getClosedConversations(50).stream()
                 .map(e -> new SessionQueueItem(
                         e.getSessionId(),
                         e.getVisitorName(),
@@ -130,6 +137,42 @@ public class SessionQueueService {
                         SessionStatus.CLOSED,
                         e.getAgentId()))
                 .toList();
+
+        // 已收录 sessionId 的集合（用于去重）
+        java.util.Set<String> knownIds = closed.stream()
+                .map(SessionQueueItem::sessionId)
+                .collect(java.util.stream.Collectors.toSet());
+
+        // 2. 纯 AI 对话：从消息表取最近 100 个 session，过滤掉已在 cs_conversation 中的
+        List<java.util.Map<String, Object>> recent =
+                persistRepository.getRecentSessionIds(100);
+
+        List<SessionQueueItem> aiOnly = recent.stream()
+                .filter(row -> {
+                    String sid = String.valueOf(row.get("session_id"));
+                    return !knownIds.contains(sid);
+                })
+                .map(row -> {
+                    String sid = String.valueOf(row.get("session_id"));
+                    Object lastActive = row.get("last_active_at");
+                    long epochSec = 0L;
+                    if (lastActive instanceof java.time.OffsetDateTime odt) {
+                        epochSec = odt.toEpochSecond();
+                    } else if (lastActive instanceof java.time.LocalDateTime ldt) {
+                        epochSec = ldt.toEpochSecond(java.time.ZoneOffset.UTC);
+                    }
+                    return new SessionQueueItem(
+                            sid, "访客", "AI 对话", "咨询",
+                            epochSec, SessionStatus.CLOSED, null);
+                })
+                .toList();
+
+        // 3. 合并并按时间倒序，取前 50 条
+        List<SessionQueueItem> merged = new java.util.ArrayList<>();
+        merged.addAll(closed);
+        merged.addAll(aiOnly);
+        merged.sort((a, b) -> Long.compare(b.waitSince(), a.waitSince()));
+        return merged.size() > 50 ? merged.subList(0, 50) : merged;
     }
 
     /**

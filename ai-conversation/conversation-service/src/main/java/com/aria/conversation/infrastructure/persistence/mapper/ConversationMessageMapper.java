@@ -1,12 +1,14 @@
 package com.aria.conversation.infrastructure.persistence.mapper;
 
 import com.aria.conversation.infrastructure.persistence.entity.ConversationMessageEntity;
+import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 对话消息 Mapper。
@@ -39,6 +41,23 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
                 .isNotNull(ConversationMessageEntity::getSeq)
                 .gt(ConversationMessageEntity::getSeq, sinceSeq)
                 .orderByAsc(ConversationMessageEntity::getSeq));
+    }
+
+    /**
+     * 查询最近有消息的 session_id 列表及其最后活跃时间，用于展示 AI 纯对话历史。
+     *
+     * <p>按每个 session 的 MAX(created_at) 倒序，取最近 limit 条。
+     * 结果 Map 包含：session_id（String）、last_active_at（OffsetDateTime）。
+     *
+     * @param limit 返回条数上限
+     * @return session_id 和最后活跃时间的 Map 列表
+     */
+    default List<Map<String, Object>> selectRecentSessionIds(@Param("limit") int limit) {
+        return selectMaps(new QueryWrapper<ConversationMessageEntity>()
+                .select("session_id, MAX(created_at) AS last_active_at")
+                .groupBy("session_id")
+                .orderByDesc("MAX(created_at)")
+                .last("LIMIT " + limit));
     }
 
     /**

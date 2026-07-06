@@ -13,6 +13,7 @@ import org.springframework.stereotype.Repository;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 对话持久化 Repository。
@@ -53,7 +54,6 @@ public class ConversationPersistRepository {
         entity.setSessionId(sessionId);
         entity.setVisitorName(visitorName != null ? visitorName : "访客");
         entity.setTransferReason(transferReason);
-        // 【强制】使用枚举 name()，消除魔法字符串
         entity.setTag(tag != null && !tag.isBlank() ? tag : "咨询");
         entity.setStatus(SessionStatus.WAITING);
         entity.setStartedAt(startedAt);
@@ -62,18 +62,15 @@ public class ConversationPersistRepository {
             conversationMapper.insert(entity);
             log.debug("[Persist] 会话创建 sessionId={}", sessionId);
         } catch (DuplicateKeyException e) {
-            // 幂等处理：同一 sessionId 重复消费（MQ 至少一次语义），静默忽略
             log.debug("[Persist] 会话已存在，忽略重复创建 sessionId={}", sessionId);
         }
-        // 其他异常（DB 连接失败/超时等）向上传播，触发 Spring AMQP 重试 → DLQ
     }
 
     /**
      * 激活会话（SESSION_ACCEPT 事件触发，座席接入时调用）。
-     * 将 DB 中的状态从 WAITING 更新为 ACTIVE，作为持久化的 source of truth。
-     * 幂等：重复 accept 同一会话时，DB 行已是 ACTIVE，UPDATE 影响行数为 0，静默忽略。
      *
      * @param sessionId  会话唯一标识
+     * @param agentId    接入座席 ID
      * @param acceptedAt 接入时间
      */
     public void activateConversation(String sessionId, String agentId, OffsetDateTime acceptedAt) {
@@ -87,7 +84,6 @@ public class ConversationPersistRepository {
 
     /**
      * 转交会话：将 ACTIVE 会话的 agent_id 更新为目标座席。
-     * 状态保持 ACTIVE，仅所有权变更。
      *
      * @param sessionId     会话唯一标识
      * @param targetAgentId 目标座席 ID
@@ -102,8 +98,18 @@ public class ConversationPersistRepository {
     }
 
     /**
+     * 查询所有 ACTIVE 状态的会话，供座席工作台刷新后恢复。
+     * 从 DB 读取，不依赖 Redis，重启后仍可正确恢复。
+     *
+     * @return ACTIVE 会话列表，按 started_at 升序
+     */
+    public List<ConversationEntity> getActiveConversations() {
+        return conversationMapper.selectActiveConversations();
+    }
+
+    /**
      * 查询最近已关闭的会话列表（按 ended_at 倒序，最多返回 limit 条）。
-     * 供座席工作台「已结束」Tab 展示历史会话。
+     * 供座席工作台「已结束」Tab 展示历史会话（仅转人工后有 cs_conversation 记录的会话）。
      *
      * @param limit 返回条数上限
      * @return CLOSED 会话列表
@@ -121,17 +127,23 @@ public class ConversationPersistRepository {
         return conversationMapper.selectList(
                 com.baomidou.mybatisplus.core.toolkit.Wrappers
                         .lambdaQuery(ConversationEntity.class)
-                        .eq(ConversationEntity::getStatus,
-                                com.aria.conversation.domain.SessionStatus.WAITING.getValue())
+                        .eq(ConversationEntity::getStatus, SessionStatus.WAITING.getValue())
                         .orderByAsc(ConversationEntity::getStartedAt)
         );
     }
-     * 从 DB 读取，不依赖 Redis，重启后仍可正确恢复。
+
+    /**
+     * 查询最近有消息的 sessionId 列表及最后活跃时间。
      *
-     * @return ACTIVE 会话列表，按 started_at 升序
+     * <p>用于展示纯 AI 对话的历史会话（没有对应 cs_conversation 记录）。
+     * 按 MAX(created_at) 倒序，取最近 limit 条。
+     * Map 包含：session_id（String）、last_active_at（OffsetDateTime）。
+     *
+     * @param limit 返回条数上限
+     * @return session_id 和最后活跃时间的列表
      */
-    public List<ConversationEntity> getActiveConversations() {
-        return conversationMapper.selectActiveConversations();
+    public List<Map<String, Object>> getRecentSessionIds(int limit) {
+        return messageMapper.selectRecentSessionIds(limit);
     }
 
     /**
@@ -179,7 +191,6 @@ public class ConversationPersistRepository {
             try {
                 messageMapper.insert(msg);
             } catch (DuplicateKeyException e) {
-                // (session_id, seq) 唯一索引冲突：消息已存在，MQ 重试时幂等跳过
                 log.debug("[Persist] 消息已存在，幂等跳过 sessionId={} seq={}",
                         msg.getSessionId(), msg.getSeq());
             } catch (Exception e) {
@@ -189,7 +200,6 @@ public class ConversationPersistRepository {
             }
         }
         if (!failures.isEmpty()) {
-            // 有写入失败，向上抛出让 processSingle 不 ACK，保留在 PEL 等待重试
             throw new RuntimeException("[Persist] 部分消息写入失败，等待 PEL 重试: " + failures);
         }
         log.debug("[Persist] 批量写入消息 count={}", messages.size());
