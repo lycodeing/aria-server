@@ -74,7 +74,8 @@ public enum SessionStatus {
                         String.format("非法状态转换: %s → %s", this, next));
             }
             case AI_CHAT -> {
-                if (next == CLOSED) {
+                // AI 对话后用户转人工 → 升级为 WAITING；或直接结束
+                if (next == WAITING || next == CLOSED) {
                     yield next;
                 }
                 throw new IllegalStateException(
