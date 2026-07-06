@@ -33,7 +33,7 @@ public class UserInfoApplicationService {
     private static final String ROLE_PREFIX_KF = "kf_";
 
     /** 超级管理员首页路由 */
-    private static final String HOME_PATH_ANALYTICS = "/dashboard/analysis";
+    private static final String HOME_PATH_ANALYTICS = "/dashboard/analytics";
 
     /** 客服角色首页路由 */
     private static final String HOME_PATH_CHAT = "/customerservice/chat";

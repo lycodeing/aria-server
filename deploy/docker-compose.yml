@@ -1,0 +1,175 @@
+networks:
+  ai-stack-net:
+    external: true
+
+volumes:
+  redis_data:
+  rabbitmq_data:
+  minio_data:
+
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai-cs-postgres
+    restart: unless-stopped
+    networks: [ai-stack-net]
+    security_opt:
+      - seccomp:unconfined
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Lycodeing@2024
+      POSTGRES_DB: ai_customerservice
+    volumes:
+      - /root/ai-cs/data/postgres:/var/lib/postgresql/data
+      - /root/ai-cs/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai-cs-redis
+    restart: unless-stopped
+    networks: [ai-stack-net]
+    command: redis-server
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    container_name: ai-cs-rabbitmq
+    restart: unless-stopped
+    networks: [ai-stack-net]
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: ai-cs-minio
+    restart: unless-stopped
+    networks: [ai-stack-net]
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: Lycodeing@2024
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+
+  auth-service:
+    image: eclipse-temurin:17-jre-alpine
+    container_name: ai-cs-auth
+    restart: unless-stopped
+    networks: [ai-stack-net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - /root/ai-cs/jars/aria-auth-1.0.0-SNAPSHOT.jar:/app/app.jar:ro
+    command: ["java", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=70.0", "-Djava.security.egd=file:/dev/./urandom", "-jar", "/app/app.jar"]
+    environment:
+      DB_USERNAME: postgres
+      DB_PASSWORD: Lycodeing@2024
+      REDIS_HOST: ai-cs-redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      JWT_SECRET_KEY: cs-auth-lycodeing-secret-key-2024
+      INTERNAL_SECRET: aria-internal-lycodeing-2024
+      SPRING_DATASOURCE_URL: jdbc:postgresql://ai-cs-postgres:5432/ai_customerservice
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8083 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  knowledge-service:
+    image: eclipse-temurin:17-jre-alpine
+    container_name: ai-cs-knowledge
+    restart: unless-stopped
+    networks: [ai-stack-net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    volumes:
+      - /root/ai-cs/jars/aria-knowledge-1.0.0-SNAPSHOT.jar:/app/app.jar:ro
+    command: ["java", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=70.0", "-Djava.security.egd=file:/dev/./urandom", "-jar", "/app/app.jar"]
+    environment:
+      DB_USERNAME: postgres
+      DB_PASSWORD: Lycodeing@2024
+      REDIS_HOST: ai-cs-redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      RABBITMQ_HOST: ai-cs-rabbitmq
+      RABBITMQ_USERNAME: guest
+      RABBITMQ_PASSWORD: guest
+      MINIO_ENDPOINT: http://ai-cs-minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: Lycodeing@2024
+      AI_CTYUN_API_KEY: ""
+      SPRING_DATASOURCE_URL: jdbc:postgresql://ai-cs-postgres:5432/ai_knowledge
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8081 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  conversation-service:
+    image: eclipse-temurin:17-jre-alpine
+    container_name: ai-cs-conversation
+    restart: unless-stopped
+    networks: [ai-stack-net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    volumes:
+      - /root/ai-cs/jars/aria-conversation-1.0.0-SNAPSHOT.jar:/app/app.jar:ro
+    command: ["java", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=70.0", "-Djava.security.egd=file:/dev/./urandom", "-jar", "/app/app.jar"]
+    environment:
+      DB_USERNAME: postgres
+      DB_PASSWORD: Lycodeing@2024
+      REDIS_HOST: ai-cs-redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      RABBITMQ_HOST: ai-cs-rabbitmq
+      RABBITMQ_USERNAME: guest
+      RABBITMQ_PASSWORD: guest
+      AI_CTYUN_API_KEY: ""
+      ARIA_AUTH_INTERNAL_URL: http://ai-cs-auth:8083
+      KNOWLEDGE_SERVICE_BASE_URL: http://ai-cs-knowledge:8081
+      APP_CORS_ALLOWED_ORIGINS: https://chat.lycodeing.cn
+      SPRING_DATASOURCE_URL: jdbc:postgresql://ai-cs-postgres:5432/ai_customerservice
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 8082 || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 90s

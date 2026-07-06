@@ -48,6 +48,16 @@ public class UserController {
         return R.ok(UserAssembler.toVO(user));
     }
 
+    /**
+     * Vben Admin 框架兼容接口：GET /api/v1/users/info
+     * Vben 内置路径为 /user/info，前端 baseURL=/api/v1 → 实际请求 /api/v1/user/info，
+     * nginx proxy 将 /api/v1/user 转发到 auth-service，此处补全路径兼容。
+     */
+    @GetMapping("/info")
+    public R<UserVO> info() {
+        return me();
+    }
+
     @GetMapping
     public R<PageVO<UserVO>> list(
             @RequestParam(required = false) String keyword,
