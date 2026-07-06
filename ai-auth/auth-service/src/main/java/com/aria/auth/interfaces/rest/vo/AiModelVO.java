@@ -15,6 +15,8 @@ public class AiModelVO {
     private String  provider;
     private String  apiProtocol;
     private String  baseUrl;
+    /** 模型类型：CHAT=对话大模型，EMBEDDING=向量模型 */
+    private String  modelType;
     /** 脱敏后的 API Key（格式：前4位****后4位） */
     private String  maskedApiKey;
     private String  modelName;

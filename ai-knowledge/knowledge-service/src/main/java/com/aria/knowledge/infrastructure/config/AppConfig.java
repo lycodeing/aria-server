@@ -1,6 +1,7 @@
 package com.aria.knowledge.infrastructure.config;
 
 import com.aria.knowledge.domain.service.ChunkQualityDomainService;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -15,6 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 知识库服务通用 Bean 配置。
  */
 @Configuration
+@EnableConfigurationProperties(EmbeddingProperties.class)
 public class AppConfig {
 
     /**

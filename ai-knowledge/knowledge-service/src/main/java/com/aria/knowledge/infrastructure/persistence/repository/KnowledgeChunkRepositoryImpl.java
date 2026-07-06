@@ -1,6 +1,8 @@
 package com.aria.knowledge.infrastructure.persistence.repository;
 
 import com.aria.knowledge.domain.model.ChunkHit;
+import com.aria.knowledge.domain.model.DocChunkStats;
+import com.aria.knowledge.domain.model.KbChunkStats;
 import com.aria.knowledge.domain.model.KnowledgeChunk;
 import com.aria.knowledge.domain.repository.KnowledgeChunkRepository;
 import com.aria.knowledge.infrastructure.persistence.assembler.KnowledgeChunkAssembler;
@@ -90,8 +92,7 @@ public class KnowledgeChunkRepositoryImpl implements KnowledgeChunkRepository {
     }
 
     @Override
-    public java.util.Map<String, Long> countStatsByDocId(String docId) {
-        // 5 次轻量 COUNT 查询替代全量加载内存统计
+    public DocChunkStats countStatsByDocId(String docId) {
         var base = new LambdaQueryWrapper<KnowledgeChunkEntity>()
                 .eq(KnowledgeChunkEntity::getDocId, docId);
         long total  = chunkMapper.selectCount(base.clone());
@@ -103,9 +104,7 @@ public class KnowledgeChunkRepositoryImpl implements KnowledgeChunkRepository {
                 .eq(KnowledgeChunkEntity::getChunkType, "TABLE"));
         long image  = chunkMapper.selectCount(base.clone()
                 .eq(KnowledgeChunkEntity::getChunkType, "IMAGE_CAPTION"));
-        return java.util.Map.of(
-            "totalChunks", total, "totalTokens", tokens,
-            "textChunks",  text,  "tableChunks", table, "imageChunks", image);
+        return new DocChunkStats(total, tokens, text, table, image);
     }
 
     @Override
@@ -137,14 +136,12 @@ public class KnowledgeChunkRepositoryImpl implements KnowledgeChunkRepository {
     }
 
     @Override
-    public java.util.Map<String, Long> countStatsByKbId(String kbId) {
+    public KbChunkStats countStatsByKbId(String kbId) {
         long chunkCount = chunkMapper.selectCount(new LambdaQueryWrapper<KnowledgeChunkEntity>()
             .eq(KnowledgeChunkEntity::getKbId, kbId)
             .eq(KnowledgeChunkEntity::getDocStatus, "PUBLISHED")
             .gt(KnowledgeChunkEntity::getRetrievalWeight, 0));
-        Long tokenSum = chunkMapper.selectTokenSumByKbId(kbId);
-        return java.util.Map.of(
-            "chunkCount", chunkCount,
-            "tokenSum",   tokenSum != null ? tokenSum : 0L);
+        long tokenSum = Optional.ofNullable(chunkMapper.selectTokenSumByKbId(kbId)).orElse(0L);
+        return new KbChunkStats(kbId, chunkCount, tokenSum);
     }
 }
