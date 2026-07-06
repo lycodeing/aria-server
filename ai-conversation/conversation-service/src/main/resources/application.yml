@@ -2,26 +2,9 @@ server:
   port: 8082
   servlet:
     context-path: /
-
-# Sa-Token Redis Session 配置（与 auth-service 共享同一 Redis 验 token）
-sa-token:
-  token-name: Authorization
-  token-prefix: "Bearer"
-  is-read-header: true
-  is-read-cookie: false
-
 spring:
   application:
     name: aria-conversation
-
-# Sa-Token（与 auth-service 共享 JWT 密钥，用于验证座席 token）
-sa-token:
-  token-name: Authorization
-  timeout: 28800
-  token-prefix: "Bearer"
-  is-read-header: true
-  is-read-cookie: false
-  jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}
 
   # -------- 数据库（对话历史持久化） --------
   datasource:
@@ -141,3 +124,12 @@ logging:
     com.aria.conversation: INFO
     org.springframework.web.reactive: WARN
 
+
+# Sa-Token（与 auth-service 共享 JWT 密钥，用于验证座席 token）
+sa-token:
+  token-name: Authorization
+  timeout: 28800
+  token-prefix: "Bearer"
+  is-read-header: true
+  is-read-cookie: false
+  jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}

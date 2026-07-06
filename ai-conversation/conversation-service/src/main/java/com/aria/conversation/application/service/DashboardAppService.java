@@ -115,7 +115,7 @@ public class DashboardAppService {
      * 安全执行计数查询，异常时返回 0 并记录日志。
      * 避免单个指标查询失败导致整个概览接口 500。
      */
-    private long safeCount(java.util.concurrent.Supplier<Long> supplier) {
+    private long safeCount(java.util.function.Supplier<Long> supplier) {
         try {
             return supplier.get();
         } catch (Exception e) {
