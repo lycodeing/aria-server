@@ -4,7 +4,8 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Getter;
 import lombok.Setter;
 
-@Getter @Setter
+@Getter
+@Setter
 @TableName("cs_auth.sys_permission")
 public class PermissionDO {
     private Long id;

@@ -11,4 +11,5 @@ public record TeamVO(
         String permission,
         String createdAt,
         String updatedAt
-) {}
+) {
+}

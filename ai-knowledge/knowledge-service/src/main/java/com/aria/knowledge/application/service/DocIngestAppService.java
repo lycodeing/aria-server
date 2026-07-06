@@ -61,7 +61,7 @@ public class DocIngestAppService {
     /**
      * 接收上传文件，文档状态初始为 DRAFT。
      *
-     * <p>执行顺序（保证一致性，避免"幽灵消息"）：
+     * <p>执行顺序（保证一致性，避免“幽灵消息”）：
      * <ol>
      *   <li>上传文件到 MinIO（无副作用即可，失败直接抛出）</li>
      *   <li>事务内写 DB（DRAFT 状态）</li>
@@ -77,17 +77,53 @@ public class DocIngestAppService {
     public DocUploadVO submit(MultipartFile file, String kbId) {
         String docId    = String.valueOf(IdGenerator.nextId());
         String fileType = resolveFileType(file.getOriginalFilename());
-
+    
         // Step 1：上传到 MinIO（事务外副作用，失败抛出由 Controller 处理）
-        String storagePath;
+        String storagePath = uploadToMinio(docId, file);
+    
+        // Step 2：写入数据库（事务内）
+        KnowledgeDoc doc = buildKnowledgeDoc(docId, kbId, file, fileType, storagePath);
+        docRepository.save(doc);
+    
+        // Step 3：注册事务回调
+        registerTransactionCallbacks(docId, kbId, fileType, storagePath);
+    
+        log.info("文档上传接收成功，docId={}，fileType={}，storagePath={}", docId, fileType, storagePath);
+        return DocUploadVO.builder()
+            .docId(docId)
+            .status(UPLOAD_STATUS_PENDING)
+            .message("文档已接收，正在后台处理，可通过 docId 查询进度")
+            .build();
+    }
+    
+    /**
+     * 上传文件到 MinIO 存储。
+     *
+     * @param docId 文档 ID
+     * @param file  上传的文件
+     * @return 存储路径
+     */
+    private String uploadToMinio(String docId, MultipartFile file) {
         try {
-            storagePath = minioStorageService.upload(docId, file.getOriginalFilename(), file.getBytes());
+            return minioStorageService.upload(docId, file.getOriginalFilename(), file.getBytes());
         } catch (IOException e) {
             throw new BusinessException(ERROR_INTERNAL, "文件读取失败: " + e.getMessage());
         }
-
-        // Step 2：写入数据库（事务内）
-        KnowledgeDoc doc = KnowledgeDoc.builder()
+    }
+    
+    /**
+     * 构建知识库文档 DO 对象。
+     *
+     * @param docId       文档 ID
+     * @param kbId        知识库 ID
+     * @param file        上传的文件
+     * @param fileType    文件类型
+     * @param storagePath 存储路径
+     * @return 知识库文档 DO
+     */
+    private KnowledgeDoc buildKnowledgeDoc(String docId, String kbId, MultipartFile file,
+                                            String fileType, String storagePath) {
+        return KnowledgeDoc.builder()
             .id(docId)
             .kbId(kbId)
             .fileName(file.getOriginalFilename())
@@ -97,44 +133,45 @@ public class DocIngestAppService {
             .status(DocStatus.DRAFT)
             .uploaderId(safeLoginId())
             .build();
-        docRepository.save(doc);
-
-        // Step 3：注册事务回调：
-        //   afterCommit  → 发布 MQ（保证 Consumer 能查到 DB 记录）
-        //   afterRollback → 删除 MinIO 文件（补偿，避免 DB 失败后文件孤立）
+    }
+    
+    /**
+     * 注册事务回调：
+     * afterCommit  → 发布 MQ（保证 Consumer 能查到 DB 记录）
+     * afterRollback → 删除 MinIO 文件（补偿，避免 DB 失败后文件孤立）
+     *
+     * @param docId       文档 ID
+     * @param kbId        知识库 ID
+     * @param fileType    文件类型
+     * @param storagePath 存储路径
+     */
+    private void registerTransactionCallbacks(String docId, String kbId, String fileType, String storagePath) {
         DocIngestEvent event = DocIngestEvent.builder()
             .docId(docId)
             .kbId(kbId)
             .fileType(fileType)
             .storagePath(storagePath)
             .build();
-        final String finalStoragePath = storagePath;
+    
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
             public void afterCommit() {
                 publisher.publish(event);
             }
-
+    
             @Override
             public void afterCompletion(int status) {
                 // STATUS_ROLLED_BACK = 1：事务回滚时删除 MinIO 孤立文件
                 if (status == TransactionSynchronization.STATUS_ROLLED_BACK) {
-                    log.warn("文档上传事务回滚，清理 MinIO 孤立文件 docId={} path={}", docId, finalStoragePath);
+                    log.warn("文档上传事务回滚，清理 MinIO 孤立文件 docId={} path={}", docId, storagePath);
                     try {
-                        minioStorageService.delete(finalStoragePath);
+                        minioStorageService.delete(storagePath);
                     } catch (Exception ex) {
-                        log.error("清理 MinIO 孤立文件失败，需人工处理 docId={} path={}", docId, finalStoragePath, ex);
+                        log.error("清理 MinIO 孤立文件失败，需人工处理 docId={} path={}", docId, storagePath, ex);
                     }
                 }
             }
         });
-
-        log.info("文档上传接收成功，docId={}，fileType={}，storagePath={}", docId, fileType, storagePath);
-        return DocUploadVO.builder()
-            .docId(docId)
-            .status(UPLOAD_STATUS_PENDING)
-            .message("文档已接收，正在后台处理，可通过 docId 查询进度")
-            .build();
     }
 
     // -------------------------------------------------------
@@ -266,7 +303,9 @@ public class DocIngestAppService {
      * @param docIds 文档 ID 列表，最多 50 条
      */
     public void batchOffline(List<String> docIds) {
-        if (docIds == null || docIds.isEmpty()) return;
+        if (docIds == null || docIds.isEmpty()) {
+            return;
+        }
         if (docIds.size() > 50) {
             throw new BusinessException(ERROR_BAD_REQUEST, "批量操作最多支持 50 条");
         }

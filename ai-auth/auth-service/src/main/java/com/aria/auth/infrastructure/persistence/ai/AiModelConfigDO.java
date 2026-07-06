@@ -25,14 +25,18 @@ public class AiModelConfigDO {
     private String apiProtocol;
     private String remark;
     private String baseUrl;
-    /** 加密存储的 API Key，格式：PLAINTEXT:{raw} 或 AES:{base64} */
+    /**
+     * 加密存储的 API Key，格式：PLAINTEXT:{raw} 或 AES:{base64}
+     */
     private String apiKeyEnc;
     private String modelName;
     private BigDecimal temperature;
     private Integer maxTokens;
     private Integer timeoutSec;
-    /** 模型类型：CHAT=对话大模型，EMBEDDING=向量模型 */
-    private String  modelType;
+    /**
+     * 模型类型：CHAT=对话大模型，EMBEDDING=向量模型
+     */
+    private String modelType;
 
     @com.baomidou.mybatisplus.annotation.TableField("is_default")
     private Boolean isDefault;

@@ -12,7 +12,8 @@ public class Role {
     private boolean system;
     private String status;
 
-    private Role() {}
+    private Role() {
+    }
 
     /**
      * 新建角色（业务创建时使用，ID 由持久化层回填）。
@@ -51,25 +52,45 @@ public class Role {
         this.roleName = newName;
     }
 
-    /** 启用角色 */
+    /**
+     * 启用角色
+     */
     public void activate() {
         this.status = "active";
     }
 
-    /** 停用角色（系统内置角色不允许停用） */
+    /**
+     * 停用角色（系统内置角色不允许停用）
+     */
     public void deactivate() {
         if (this.system) throw new IllegalStateException("系统内置角色不允许停用");
         this.status = "inactive";
     }
 
-    public Long getId() { return id; }
-    public String getRoleKey() { return roleKey; }
-    public String getRoleName() { return roleName; }
-    public boolean isSystem() { return system; }
-    public String getStatus() { return status; }
+    public Long getId() {
+        return id;
+    }
+
+    public String getRoleKey() {
+        return roleKey;
+    }
+
+    public String getRoleName() {
+        return roleName;
+    }
+
+    public boolean isSystem() {
+        return system;
+    }
+
+    public String getStatus() {
+        return status;
+    }
 
     /**
      * 仅 Repository 实现层在 insert 后回填自增 ID 时使用。
      */
-    public void assignId(Long id) { this.id = id; }
+    public void assignId(Long id) {
+        this.id = id;
+    }
 }

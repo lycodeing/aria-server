@@ -22,13 +22,13 @@ import java.util.List;
 @RequiredArgsConstructor
 public class LoginRateLimiter {
 
-    private static final int      MAX_PER_MINUTE    = 10;
-    private static final int      IP_BAN_THRESHOLD  = 20;
-    private static final Duration BAN_DURATION      = Duration.ofMinutes(5);
-    private static final Duration RATE_WINDOW       = Duration.ofSeconds(60);
-    private static final Duration FAIL_WINDOW       = Duration.ofMinutes(10);
+    private static final int MAX_PER_MINUTE = 10;
+    private static final int IP_BAN_THRESHOLD = 20;
+    private static final Duration BAN_DURATION = Duration.ofMinutes(5);
+    private static final Duration RATE_WINDOW = Duration.ofSeconds(60);
+    private static final Duration FAIL_WINDOW = Duration.ofMinutes(10);
 
-    private static final String KEY_BAN_PREFIX  = "auth:ban:";
+    private static final String KEY_BAN_PREFIX = "auth:ban:";
     private static final String KEY_RATE_PREFIX = "auth:rl:";
     private static final String KEY_FAIL_PREFIX = "auth:fail:";
 

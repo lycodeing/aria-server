@@ -32,12 +32,13 @@ public class RemoteAiModelConfigProvider implements AiModelConfigProvider, Messa
 
     private static final String CHAT_CACHE_KEY      = "aria:ai:model:active";
     private static final String EMBEDDING_CACHE_KEY = "aria:ai:model:embedding:active";
+    private static final String ROUTER_CACHE_KEY    = "aria:ai:model:router:active";
     private static final Duration CACHE_TTL         = Duration.ofMinutes(5);
     private static final String PUBSUB_TOPIC        = "aria:config:ai-changed";
 
     private final RedisCacheHelper cache;
     private final WebClient        webClient;
-    private final ObjectMapper     objectMapper = new ObjectMapper();
+    private final ObjectMapper     objectMapper;
 
     @Value("${aria.auth.internal-url:http://localhost:8083}")
     private String authInternalUrl;
@@ -49,9 +50,11 @@ public class RemoteAiModelConfigProvider implements AiModelConfigProvider, Messa
     public RemoteAiModelConfigProvider(
             RedisCacheHelper cache,
             WebClient.Builder builder,
+            ObjectMapper objectMapper,
             ObjectProvider<org.springframework.data.redis.listener.RedisMessageListenerContainer> containerProvider) {
-        this.cache     = cache;
-        this.webClient = builder.clone().build();
+        this.cache        = cache;
+        this.webClient    = builder.clone().build();
+        this.objectMapper = objectMapper;
         // 容器存在时注册 Pub/Sub 监听；未配置时跳过，配置变更需等待缓存 TTL 自然过期
         containerProvider.ifAvailable(c -> c.addMessageListener(this, new ChannelTopic(PUBSUB_TOPIC)));
     }
@@ -94,14 +97,34 @@ public class RemoteAiModelConfigProvider implements AiModelConfigProvider, Messa
         log.info("[AiConfig] EMBEDDING 配置缓存已失效，下次请求将重新拉取");
     }
 
+    // ---- ROUTER 配置 ----
+
+    @Override
+    public AiModelConfig getActiveRouter() {
+        AiModelConfig cached = cache.get(ROUTER_CACHE_KEY, AiModelConfig.class);
+        if (cached != null) return cached;
+
+        AiModelConfig config = fetchFromAuthService("/internal/ai-models/active-router");
+        cache.set(ROUTER_CACHE_KEY, config, CACHE_TTL);
+        log.debug("[AiConfig] 已从 auth-service 拉取 ROUTER 配置并缓存，model={}", config.modelName());
+        return config;
+    }
+
+    @Override
+    public void invalidateRouter() {
+        cache.delete(ROUTER_CACHE_KEY);
+        log.info("[AiConfig] ROUTER 配置缓存已失效，下次请求将重新拉取");
+    }
+
     // ---- Redis Pub/Sub ----
 
-    /** 配置变更通知：同时失效 CHAT 和 EMBEDDING 两个缓存 */
+    /** 配置变更通知：同时失效 CHAT + EMBEDDING + ROUTER 三个缓存 */
     @Override
     public void onMessage(Message message, byte[] pattern) {
-        log.info("[AiConfig] 收到配置变更通知，清除 CHAT + EMBEDDING 缓存");
+        log.info("[AiConfig] 收到配置变更通知，清除 CHAT + EMBEDDING + ROUTER 缓存");
         invalidate();
         invalidateEmbedding();
+        invalidateRouter();
     }
 
     // ---- 内部工具 ----

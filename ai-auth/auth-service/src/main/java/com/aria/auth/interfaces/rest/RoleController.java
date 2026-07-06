@@ -4,25 +4,21 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import com.aria.auth.application.query.RolePageQuery;
 import com.aria.auth.application.service.MenuApplicationService;
 import com.aria.auth.application.service.RoleApplicationService;
-import com.aria.auth.domain.model.role.Permission;
 import com.aria.auth.domain.model.role.Role;
 import com.aria.auth.interfaces.assembler.RoleAssembler;
 import com.aria.auth.interfaces.rest.vo.*;
-import com.aria.auth.interfaces.rest.vo.*;
 import com.aria.common.core.page.PageResult;
 import com.aria.common.web.response.R;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
-import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * 角色管理接口。
@@ -76,7 +72,9 @@ public class RoleController {
         return R.ok();
     }
 
-    /** 查询接口权限树（按 module 分组，分组逻辑由 Service 层完成） */
+    /**
+     * 查询接口权限树（按 module 分组，分组逻辑由 Service 层完成）
+     */
     @GetMapping("/permissions/tree")
     public R<List<PermissionTreeVO>> permissionTree() {
         List<PermissionTreeVO> tree = roleAppService.getPermissionTree().entrySet().stream()
@@ -90,7 +88,9 @@ public class RoleController {
         return R.ok(tree);
     }
 
-    /** 给角色分配接口权限（全量替换） */
+    /**
+     * 给角色分配接口权限（全量替换）
+     */
     @PutMapping("/{id}/permissions")
     public R<AssignPermissionsVO> assignPermissions(
             @PathVariable Long id,
@@ -99,31 +99,39 @@ public class RoleController {
         return R.ok(new AssignPermissionsVO(id, req.getPermissionIds(), "权限分配成功"));
     }
 
-    /** 查询角色已分配的菜单 ID 列表 */
+    /**
+     * 查询角色已分配的菜单 ID 列表
+     */
     @GetMapping("/{id}/menus")
     public R<List<Long>> getRoleMenus(@PathVariable Long id) {
         return R.ok(menuService.getRoleMenuIds(id));
     }
 
-    /** 给角色分配菜单（批量替换） */
+    /**
+     * 给角色分配菜单（批量替换）
+     */
     @PutMapping("/{id}/menus")
     public R<Void> assignMenus(@PathVariable Long id,
-                                @RequestBody @Valid AssignMenusRequest req) {
+                               @RequestBody @Valid AssignMenusRequest req) {
         menuService.assignMenusToRole(id, req.getMenuIds());
         return R.ok();
     }
 
-    /** 查询角色数据权限范围 */
+    /**
+     * 查询角色数据权限范围
+     */
     @GetMapping("/{id}/data-scope")
     public R<Map<String, Object>> getDataScope(@PathVariable Long id) {
         String scopeType = roleAppService.getDataScope(id);
         return R.ok(Map.of("roleId", id, "scopeType", scopeType));
     }
 
-    /** 设置角色数据权限范围 */
+    /**
+     * 设置角色数据权限范围
+     */
     @PutMapping("/{id}/data-scope")
     public R<Void> setDataScope(@PathVariable Long id,
-                                 @RequestBody @Valid DataScopeRequest req) {
+                                @RequestBody @Valid DataScopeRequest req) {
         roleAppService.setDataScope(id, req.getScopeType());
         return R.ok();
     }

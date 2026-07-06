@@ -9,9 +9,13 @@ import java.util.List;
  */
 public interface IPermissionRepository {
 
-    /** 查询所有权限（用于权限树展示） */
+    /**
+     * 查询所有权限（用于权限树展示）
+     */
     List<Permission> findAll();
 
-    /** 查询用户拥有的接口权限列表 */
+    /**
+     * 查询用户拥有的接口权限列表
+     */
     List<Permission> findByUserId(Long userId);
 }

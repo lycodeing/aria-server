@@ -11,19 +11,19 @@ import lombok.Data;
 @Data
 public class UpdateMenuCommand {
 
-    private Long    parentId;
-    private String  menuType;
-    private String  menuName;
-    private String  menuKey;
-    private String  path;
-    private String  component;
-    private String  icon;
+    private Long parentId;
+    private String menuType;
+    private String menuName;
+    private String menuKey;
+    private String path;
+    private String component;
+    private String icon;
     private Integer sortOrder;
     private Boolean isVisible;
     private Boolean isCache;
     private Boolean isExternal;
-    private String  redirect;
-    private String  permissionKey;
-    private String  status;
-    private String  remark;
+    private String redirect;
+    private String permissionKey;
+    private String status;
+    private String remark;
 }

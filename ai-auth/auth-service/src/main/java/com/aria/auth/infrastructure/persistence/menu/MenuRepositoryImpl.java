@@ -42,7 +42,7 @@ public class MenuRepositoryImpl implements IMenuRepository {
     @Override
     public List<Menu> findAll() {
         return menuMapper.selectList(
-                new LambdaQueryWrapper<MenuDO>().orderByAsc(MenuDO::getSortOrder))
+                        new LambdaQueryWrapper<MenuDO>().orderByAsc(MenuDO::getSortOrder))
                 .stream().map(this::toDomain).collect(Collectors.toList());
     }
 

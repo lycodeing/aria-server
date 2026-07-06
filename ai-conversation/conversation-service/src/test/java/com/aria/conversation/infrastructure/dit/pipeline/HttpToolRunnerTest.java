@@ -17,7 +17,8 @@ class HttpToolRunnerTest {
     @BeforeEach
     void setUp() {
         runner = new HttpToolRunner(new ObjectMapper(),
-                org.springframework.web.reactive.function.client.WebClient.builder());
+                org.springframework.web.reactive.function.client.WebClient.builder(),
+                java.util.List.of(new BearerAuthStrategy(), new ApiKeyAuthStrategy(), new NoAuthStrategy()));
     }
 
     // ---- replacePlaceholders ----

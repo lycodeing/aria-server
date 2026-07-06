@@ -17,7 +17,9 @@ import java.time.temporal.ChronoUnit;
 @Component
 public class PasswordExpiryChecker {
 
-    /** 密码过期天数，默认 90 天 */
+    /**
+     * 密码过期天数，默认 90 天
+     */
     @Value("${adp.auth.password.expire-days:90}")
     private long expireDays;
 

@@ -26,6 +26,7 @@ import org.springframework.web.bind.annotation.RestController;
  * <pre>
  * GET /internal/ai-models/active           返回当前默认 CHAT 配置（api_key 已解密明文）
  * GET /internal/ai-models/active-embedding 返回当前默认 EMBEDDING 配置（api_key 已解密明文）
+ * GET /internal/ai-models/active-router    返回当前默认 ROUTER 配置（api_key 已解密明文）
  * </pre>
  */
 @Slf4j
@@ -83,6 +84,27 @@ public class InternalAiModelController {
         return R.ok(toConfig(do_, 0.0, 0, 30));
     }
 
+    /**
+     * 返回当前激活（默认）的 ROUTER 模型配置，api_key 为解密后明文。
+     * 供 conversation-service 拉取域路由模型配置，仅限内网调用。
+     *
+     * @param secret 内部服务密钥头（X-Internal-Secret），缺失或错误时返回 403
+     */
+    @GetMapping("/active-router")
+    public R<AiModelConfig> getActiveRouter(
+            @RequestHeader(value = "X-Internal-Secret", required = false) String secret) {
+        if (internalSecret == null || !internalSecret.equals(secret)) {
+            log.warn("[InternalAiModel] 内部密钥校验失败，拒绝访问 /active-router");
+            return R.fail(403, "内部接口禁止访问");
+        }
+        AiModelConfigDO do_ = service.getActiveRouterConfig();
+        if (do_ == null) {
+            return R.fail(404, "未找到激活的 ROUTER 模型配置，请在后台 AI 模型配置页面设置默认 ROUTER 配置");
+        }
+        // ROUTER 模型: temperature=0.0, maxTokens=32, timeoutSec=5
+        return R.ok(toConfig(do_, 0.0, 32, 5));
+    }
+
     // ---- 内部工具 ----
 
     /**
@@ -102,8 +124,8 @@ public class InternalAiModelController {
                 service.decryptApiKey(do_.getApiKeyEnc()),
                 do_.getModelName(),
                 do_.getTemperature() != null ? do_.getTemperature().doubleValue() : defaultTemperature,
-                do_.getMaxTokens()   != null ? do_.getMaxTokens()                  : defaultMaxTokens,
-                do_.getTimeoutSec()  != null ? do_.getTimeoutSec()                 : defaultTimeoutSec
+                do_.getMaxTokens() != null ? do_.getMaxTokens() : defaultMaxTokens,
+                do_.getTimeoutSec() != null ? do_.getTimeoutSec() : defaultTimeoutSec
         );
     }
 }

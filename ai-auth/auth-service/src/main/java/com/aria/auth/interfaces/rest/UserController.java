@@ -8,7 +8,6 @@ import com.aria.auth.domain.model.user.User;
 import com.aria.auth.interfaces.assembler.UserAssembler;
 import com.aria.auth.interfaces.rest.vo.PageVO;
 import com.aria.auth.interfaces.rest.vo.UserVO;
-import com.aria.auth.interfaces.rest.vo.*;
 import com.aria.common.core.page.PageResult;
 import com.aria.common.web.response.R;
 import jakarta.validation.Valid;
@@ -111,14 +110,14 @@ public class UserController {
 
     @PostMapping("/{id}/change-password")
     public R<Void> changePassword(@PathVariable Long id,
-                                   @RequestBody @Valid ChangePasswordRequest req) {
+                                  @RequestBody @Valid ChangePasswordRequest req) {
         userAppService.changePassword(id, req.getOldPassword(), req.getNewPassword());
         return R.ok();
     }
 
     @PostMapping("/{id}/reset-password")
     public R<Void> resetPassword(@PathVariable Long id,
-                                  @RequestBody @Valid ResetPasswordRequest req) {
+                                 @RequestBody @Valid ResetPasswordRequest req) {
         userAppService.resetPassword(id, req.getNewPassword());
         return R.ok();
     }
@@ -126,7 +125,7 @@ public class UserController {
     @cn.dev33.satoken.annotation.SaCheckRole("admin")
     @PostMapping("/{id}/roles")
     public R<Void> assignRoles(@PathVariable Long id,
-                                @RequestBody @Valid AssignRolesRequest req) {
+                               @RequestBody @Valid AssignRolesRequest req) {
         userAppService.assignRoles(id, req.getRoleIds());
         return R.ok();
     }

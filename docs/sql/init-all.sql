@@ -383,6 +383,11 @@ INSERT INTO cs_auth.sys_permission (permission_key, permission_name, module) VAL
 ('system:ai-model:set-default', '设为默认AI模型', 'system')
 ON CONFLICT (permission_key) DO NOTHING;
 
+-- 超管角色绑定所有权限（role_id=10 = super_admin）
+INSERT INTO cs_auth.sys_role_permission (role_id, permission_id)
+SELECT 10, p.id FROM cs_auth.sys_permission p
+ON CONFLICT DO NOTHING;
+
 -- AI 模型配置种子数据（两条默认配置：对话模型 + 向量模型）
 INSERT INTO cs_auth.ai_model_config
     (name, provider, api_protocol, model_type, base_url, api_key_enc, model_name, temperature, max_tokens, timeout_sec, is_default, is_enabled, created_at, updated_at) VALUES

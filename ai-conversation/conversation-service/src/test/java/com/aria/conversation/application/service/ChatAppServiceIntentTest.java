@@ -1,12 +1,13 @@
 package com.aria.conversation.application.service;
 
 import com.aria.conversation.application.service.payload.TransferPayload;
-import com.aria.conversation.infrastructure.ai.DynamicAiClient;
-import com.aria.conversation.infrastructure.ai.IntentClassifier;
-import com.aria.conversation.infrastructure.ai.IntentResult;
-import com.aria.conversation.infrastructure.ai.IntentType;
-import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline;
-import com.aria.conversation.infrastructure.dit.pipeline.ToolExecutor;
+import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
+import com.aria.conversation.domain.model.IntentResult;
+import com.aria.conversation.domain.model.IntentType;
+import com.aria.conversation.domain.service.DomainRoutingService;
+import com.aria.conversation.domain.service.IntentService;
+import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
+import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
@@ -35,13 +36,15 @@ import static org.mockito.Mockito.*;
 @DisplayName("ChatAppService 意图路由")
 class ChatAppServiceIntentTest {
 
-    @Mock private DynamicAiClient aiClient;
+    @Mock private DynamicModelFactory aiClient;
     @Mock private ConversationHistoryRepository historyRepository;
     @Mock private KnowledgeClient knowledgeClient;
-    @Mock private IntentClassifier intentClassifier;
+    @Mock private IntentService intentClassifier;
     @Mock private SessionQueueService sessionQueueService;
-    @Mock private DitPipeline ditPipeline;
-    @Mock private ToolExecutor toolExecutor;
+    @Mock private SessionDomainRepository sessionDomainRepo;
+    @Mock private SessionDomainSwitchRepository domainSwitchRepo;
+    @Mock private DomainRoutingService domainRoutingService;
+    @Mock private DomainAgentService domainAgentService;
 
     private ChatAppService service;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -49,7 +52,9 @@ class ChatAppServiceIntentTest {
     @BeforeEach
     void setUp() {
         service = new ChatAppService(aiClient, historyRepository, knowledgeClient,
-                intentClassifier, sessionQueueService, ditPipeline, toolExecutor, objectMapper);
+                intentClassifier, sessionQueueService, objectMapper,
+                sessionDomainRepo, domainSwitchRepo, domainRoutingService,
+                domainAgentService);
         // 大多数路径不需要 RAG 命中，默认返回空列表
         lenient().when(knowledgeClient.search(anyString())).thenReturn(List.of());
         // 转人工/拒答路径不走 findAll，允许该 stub 未被使用

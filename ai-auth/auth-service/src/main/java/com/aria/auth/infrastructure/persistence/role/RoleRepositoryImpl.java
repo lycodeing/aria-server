@@ -11,7 +11,6 @@ import org.springframework.util.StringUtils;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.Objects;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
@@ -61,8 +60,8 @@ public class RoleRepositoryImpl implements IRoleRepository {
         }
         qw.orderByDesc(RoleDO::getId);
         return PageUtil.toPageResult(
-            roleMapper.selectPage(PageUtil.toMpPage(query), qw),
-            this::toDomain, query);
+                roleMapper.selectPage(PageUtil.toMpPage(query), qw),
+                this::toDomain, query);
     }
 
     @Override

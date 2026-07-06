@@ -26,10 +26,27 @@ public class RouteVO {
         this.children = children;
     }
 
-    public String getName()           { return name; }
-    public String getPath()           { return path; }
-    public String getComponent()      { return component; }
-    public String getRedirect()       { return redirect; }
-    public RouteMetaVO getMeta()      { return meta; }
-    public List<RouteVO> getChildren(){ return children; }
+    public String getName() {
+        return name;
+    }
+
+    public String getPath() {
+        return path;
+    }
+
+    public String getComponent() {
+        return component;
+    }
+
+    public String getRedirect() {
+        return redirect;
+    }
+
+    public RouteMetaVO getMeta() {
+        return meta;
+    }
+
+    public List<RouteVO> getChildren() {
+        return children;
+    }
 }

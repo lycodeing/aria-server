@@ -14,20 +14,30 @@ public interface IMenuRepository {
 
     Optional<Menu> findById(Long id);
 
-    /** 查询全量菜单列表（按 sortOrder 升序） */
+    /**
+     * 查询全量菜单列表（按 sortOrder 升序）
+     */
     List<Menu> findAll();
 
-    /** 查询用户拥有的可见菜单（通过角色-菜单关联） */
+    /**
+     * 查询用户拥有的可见菜单（通过角色-菜单关联）
+     */
     List<Menu> findByUserId(Long userId);
 
-    /** 查询角色已分配的菜单 ID 列表 */
+    /**
+     * 查询角色已分配的菜单 ID 列表
+     */
     List<Long> findMenuIdsByRoleId(Long roleId);
 
-    /** 统计指定父节点下的子菜单数量 */
+    /**
+     * 统计指定父节点下的子菜单数量
+     */
     long countChildren(Long parentId);
 
     void delete(Long id);
 
-    /** 全量替换角色菜单分配（先删后批量插入） */
+    /**
+     * 全量替换角色菜单分配（先删后批量插入）
+     */
     void assignMenusToRole(Long roleId, List<Long> menuIds);
 }

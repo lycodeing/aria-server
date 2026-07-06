@@ -46,8 +46,8 @@ public class DataScopeAspect {
 
     @Around("@annotation(com.aria.auth.domain.datascope.DataScope)")
     public Object around(ProceedingJoinPoint pjp) throws Throwable {
-        MethodSignature sig  = (MethodSignature) pjp.getSignature();
-        DataScope       anno = sig.getMethod().getAnnotation(DataScope.class);
+        MethodSignature sig = (MethodSignature) pjp.getSignature();
+        DataScope anno = sig.getMethod().getAnnotation(DataScope.class);
 
         try {
             List<Long> deptIds = resolveDeptIds(anno);

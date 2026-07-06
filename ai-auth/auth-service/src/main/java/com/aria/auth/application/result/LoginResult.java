@@ -29,12 +29,35 @@ public class LoginResult {
         this.mustChangePassword = mustChangePassword;
     }
 
-    public String getTokenName() { return tokenName; }
-    public String getTokenValue() { return tokenValue; }
-    public long getExpiresIn() { return expiresIn; }
-    public long getUserId() { return userId; }
-    public String getUsername() { return username; }
-    public String getDisplayName() { return displayName; }
-    public List<String> getRoles() { return roles; }
-    public boolean isMustChangePassword() { return mustChangePassword; }
+    public String getTokenName() {
+        return tokenName;
+    }
+
+    public String getTokenValue() {
+        return tokenValue;
+    }
+
+    public long getExpiresIn() {
+        return expiresIn;
+    }
+
+    public long getUserId() {
+        return userId;
+    }
+
+    public String getUsername() {
+        return username;
+    }
+
+    public String getDisplayName() {
+        return displayName;
+    }
+
+    public List<String> getRoles() {
+        return roles;
+    }
+
+    public boolean isMustChangePassword() {
+        return mustChangePassword;
+    }
 }

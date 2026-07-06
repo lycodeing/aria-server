@@ -9,11 +9,25 @@ public class UserLoginFailed extends DomainEvent {
     private final boolean locked;
 
     public UserLoginFailed(UserId userId, int failCount, boolean locked) {
-        this.userId = userId; this.failCount = failCount; this.locked = locked;
+        this.userId = userId;
+        this.failCount = failCount;
+        this.locked = locked;
     }
 
-    @Override public String getAggregateId() { return String.valueOf(userId.getValue()); }
-    public UserId getUserId() { return userId; }
-    public int getFailCount() { return failCount; }
-    public boolean isLocked() { return locked; }
+    @Override
+    public String getAggregateId() {
+        return String.valueOf(userId.getValue());
+    }
+
+    public UserId getUserId() {
+        return userId;
+    }
+
+    public int getFailCount() {
+        return failCount;
+    }
+
+    public boolean isLocked() {
+        return locked;
+    }
 }

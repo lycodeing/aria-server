@@ -8,4 +8,5 @@ public record OrgSettingsVO(
         String path,
         String description,
         String defaultVisibility
-) {}
+) {
+}

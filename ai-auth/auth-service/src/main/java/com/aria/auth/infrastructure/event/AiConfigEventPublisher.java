@@ -21,7 +21,9 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class AiConfigEventPublisher {
 
-    /** Pub/Sub 频道：与 RemoteAiModelConfigProvider.PUBSUB_TOPIC 保持一致 */
+    /**
+     * Pub/Sub 频道：与 RemoteAiModelConfigProvider.PUBSUB_TOPIC 保持一致
+     */
     private static final String TOPIC = "aria:config:ai-changed";
 
     private final StringRedisTemplate redisTemplate;

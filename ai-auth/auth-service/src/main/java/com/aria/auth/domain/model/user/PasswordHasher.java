@@ -5,5 +5,6 @@ package com.aria.auth.domain.model.user;
  */
 public interface PasswordHasher {
     String encode(String plain);
+
     boolean matches(String plain, String hash);
 }

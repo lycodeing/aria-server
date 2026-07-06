@@ -29,11 +29,31 @@ public class UserInfoResult {
         this.desc = desc;
     }
 
-    public String getUserId()   { return userId; }
-    public String getUsername() { return username; }
-    public String getRealName() { return realName; }
-    public String getAvatar()   { return avatar; }
-    public List<String> getRoles() { return roles; }
-    public String getHomePath() { return homePath; }
-    public String getDesc()     { return desc; }
+    public String getUserId() {
+        return userId;
+    }
+
+    public String getUsername() {
+        return username;
+    }
+
+    public String getRealName() {
+        return realName;
+    }
+
+    public String getAvatar() {
+        return avatar;
+    }
+
+    public List<String> getRoles() {
+        return roles;
+    }
+
+    public String getHomePath() {
+        return homePath;
+    }
+
+    public String getDesc() {
+        return desc;
+    }
 }

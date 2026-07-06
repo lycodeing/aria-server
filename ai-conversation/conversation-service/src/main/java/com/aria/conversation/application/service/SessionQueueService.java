@@ -240,7 +240,9 @@ public class SessionQueueService {
     /** 获取在线座席列表，统计每个座席当前的 ACTIVE 会话数。 */
     public List<OnlineAgentVO> getOnlineAgents() {
         List<AgentOnlineRegistry.AgentInfo> agents = agentRegistry.findAll();
-        if (agents.isEmpty()) return List.of();
+        if (agents.isEmpty()) {
+            return List.of();
+        }
 
         Map<String, Long> activeCount = new HashMap<>((int) (agents.size() / 0.75f) + 1);
         queueRepository.findAll().forEach(item -> {
@@ -267,38 +269,42 @@ public class SessionQueueService {
         }
     }
 
-    private void publishSessionStart(String sessionId, String visitorName,
-                                     String transferReason, String tag, long timestamp) {
+    /**
+     * 安全发布 MQ 事件的通用包装器。
+     * 捕获 AmqpException 并记录 WARN，不阻断主流程。
+     *
+     * @param action    发布动作
+     * @param eventName 事件名称（用于日志）
+     * @param sessionId 会话 ID（用于日志）
+     */
+    private void publishSafely(Runnable action, String eventName, String sessionId) {
         try {
-            publisher.publishSessionStart(sessionId, visitorName, transferReason, tag, timestamp);
+            action.run();
         } catch (org.springframework.amqp.AmqpException e) {
-            log.warn("[SessionQueue] SESSION_START MQ 发布失败 sessionId={}", sessionId, e);
+            log.warn("[SessionQueue] {} MQ 发布失败 sessionId={}", eventName, sessionId, e);
         }
     }
 
+    private void publishSessionStart(String sessionId, String visitorName,
+                                     String transferReason, String tag, long timestamp) {
+        publishSafely(() -> publisher.publishSessionStart(sessionId, visitorName, transferReason, tag, timestamp),
+                "SESSION_START", sessionId);
+    }
+
     private void publishSessionAccept(String sessionId, String agentId, long timestamp) {
-        try {
-            publisher.publishSessionAccept(sessionId, agentId, timestamp);
-        } catch (org.springframework.amqp.AmqpException e) {
-            log.warn("[SessionQueue] SESSION_ACCEPT MQ 发布失败 sessionId={}", sessionId, e);
-        }
+        publishSafely(() -> publisher.publishSessionAccept(sessionId, agentId, timestamp),
+                "SESSION_ACCEPT", sessionId);
     }
 
     private void publishSessionTransfer(String sessionId, String fromAgentId,
                                         String toAgentId, long timestamp) {
-        try {
-            publisher.publishSessionTransfer(sessionId, fromAgentId, toAgentId, timestamp);
-        } catch (org.springframework.amqp.AmqpException e) {
-            log.warn("[SessionQueue] SESSION_TRANSFER MQ 发布失败 sessionId={}", sessionId, e);
-        }
+        publishSafely(() -> publisher.publishSessionTransfer(sessionId, fromAgentId, toAgentId, timestamp),
+                "SESSION_TRANSFER", sessionId);
     }
 
     private void publishSessionEnd(String sessionId) {
-        try {
-            publisher.publishSessionEnd(sessionId);
-        } catch (org.springframework.amqp.AmqpException e) {
-            log.warn("[SessionQueue] SESSION_END MQ 发布失败 sessionId={}", sessionId, e);
-        }
+        publishSafely(() -> publisher.publishSessionEnd(sessionId),
+                "SESSION_END", sessionId);
     }
 
     // ---- VO ----

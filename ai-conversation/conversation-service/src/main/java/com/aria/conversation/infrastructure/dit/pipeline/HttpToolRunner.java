@@ -3,18 +3,22 @@ package com.aria.conversation.infrastructure.dit.pipeline;
 import com.aria.conversation.infrastructure.dit.config.ToolConfig;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.net.URI;
 import java.time.Duration;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * 通用 HTTP 工具执行器。
@@ -25,7 +29,8 @@ import java.util.regex.Pattern;
  * <p>支持 {slot_name} 占位符替换：在 URL 路径、请求头、请求体中的 {xxx} 
  * 均会被 resolvedSlots 中对应的值替换。
  *
- * <p>按 baseUrl 缓存 WebClient，避免重复创建连接池。
+ * <p>按 baseUrl 缓存 WebClient（Caffeine，最多 128 个，10 分钟未访问自动驱逐），
+ * 避免重复创建连接池。
  */
 @Slf4j
 @Component
@@ -37,12 +42,20 @@ public class HttpToolRunner {
 
     private final ObjectMapper objectMapper;
     private final WebClient.Builder webClientBuilder;
-    /** baseUrl → WebClient 缓存 */
-    private final ConcurrentHashMap<String, WebClient> clientCache = new ConcurrentHashMap<>();
+    /** baseUrl → WebClient 缓存，最多缓存 128 个 baseUrl，10 分钟未访问自动驱逐 */
+    private final Cache<String, WebClient> clientCache = Caffeine.newBuilder()
+            .maximumSize(128)
+            .expireAfterAccess(Duration.ofMinutes(10))
+            .build();
+    private final Map<String, HttpAuthStrategy> authStrategyMap;
 
-    public HttpToolRunner(ObjectMapper objectMapper, WebClient.Builder webClientBuilder) {
+    public HttpToolRunner(ObjectMapper objectMapper,
+                          WebClient.Builder webClientBuilder,
+                          List<HttpAuthStrategy> authStrategies) {
         this.objectMapper = objectMapper;
         this.webClientBuilder = webClientBuilder;
+        this.authStrategyMap = authStrategies.stream()
+                .collect(Collectors.toMap(HttpAuthStrategy::authType, s -> s));
     }
 
     /**
@@ -67,7 +80,7 @@ public class HttpToolRunner {
 
             // 构建 WebClient
             String baseUrl = extractBaseUrl(url);
-            WebClient client = clientCache.computeIfAbsent(baseUrl, u ->
+            WebClient client = clientCache.get(baseUrl, u ->
                     webClientBuilder.clone().baseUrl(u)
                             .codecs(c -> c.defaultCodecs().maxInMemorySize(2 * 1024 * 1024))
                             .build());
@@ -184,31 +197,13 @@ public class HttpToolRunner {
 
     private HttpHeaders buildHeaders(ToolConfig tool, Map<String, Object> params) {
         HttpHeaders headers = new HttpHeaders();
-        // 认证头
-        // 注意：authConfig 中的 token / api_key_value 字段当前以明文存储。
-        // 生产部署前需接入加密存储（如 KMS/AES），并在此处调用解密服务后再使用。
-        if ("BEARER".equals(tool.authType()) && tool.authConfig() != null) {
-            try {
-                JsonNode auth = objectMapper.readTree(tool.authConfig());
-                // 字段名 token_encrypted 为历史遗留，当前实际存储的是明文 token
-                // TODO: 生产前替换为解密调用
-                String token = auth.path("token_encrypted").asText("");
-                if (!token.isBlank()) headers.setBearerAuth(token);
-            } catch (Exception e) {
-                log.warn("[DIT] BEARER 认证头配置解析失败 tool={} authType={}", tool.code(), tool.authType(), e);
-            }
-        } else if ("API_KEY".equals(tool.authType()) && tool.authConfig() != null) {
-            try {
-                JsonNode auth = objectMapper.readTree(tool.authConfig());
-                String headerName = auth.path("header").asText("X-API-Key");
-                // 字段名 value_encrypted 为历史遗留，当前实际存储的是明文值
-                // TODO: 生产前替换为解密调用
-                String value = auth.path("value_encrypted").asText("");
-                if (!value.isBlank()) headers.set(headerName, value);
-            } catch (Exception e) {
-                log.warn("[DIT] API_KEY 认证头配置解析失败 tool={} authType={}", tool.code(), tool.authType(), e);
-            }
-        }
+        // 认证头（策略模式，新增认证方式只需添加 HttpAuthStrategy 实现）
+        // authConfig 中的敏感字段（token / api_key_value）通过 PLAINTEXT:/AES: 前缀存储，
+        // ApiKeyAuthStrategy / BearerAuthStrategy 读取时自动解密后再写入请求头。
+        authStrategyMap.getOrDefault(
+                tool.authType() != null ? tool.authType() : "NONE",
+                authStrategyMap.getOrDefault("NONE", new NoAuthStrategy()))
+            .apply(headers, tool.authConfig(), objectMapper);
         // 自定义请求头
         if (tool.headersTemplate() != null && !tool.headersTemplate().isBlank()) {
             try {
@@ -223,9 +218,17 @@ public class HttpToolRunner {
         return headers;
     }
 
+    /**
+     * 提取 URL 的 baseUrl（协议 + 主机 + 端口）。
+     * 例如：https://api.shop.com/v1/weather → https://api.shop.com
+     */
     private String extractBaseUrl(String url) {
-        // 提取协议 + 主机 + 端口，如 https://api.shop.com
-        int idx = url.indexOf('/', 8); // 跳过 "https://"
-        return idx > 0 ? url.substring(0, idx) : url;
+        try {
+            URI uri = URI.create(url);
+            return uri.getScheme() + "://" + uri.getAuthority();
+        } catch (Exception e) {
+            log.warn("[DIT] extractBaseUrl 解析失败，回退使用原始 URL: {}", url, e);
+            return url;
+        }
     }
 }

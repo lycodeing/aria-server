@@ -13,4 +13,5 @@ public record MemberVO(
         String joinedAt,
         String lastActive,
         String createdAt
-) {}
+) {
+}
