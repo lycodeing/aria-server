@@ -99,16 +99,18 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     }
 
     /**
-     * 查询最近 N 条已关闭会话，供座席工作台「已结束」Tab 展示。
-     * 按 ended_at 倒序（最近结束的优先），限制返回条数防止列表过长。
+     * 查询最近已关闭或 AI 对话的会话（status IN ('CLOSED','AI_CHAT')），
+     * 供座席工作台「已结束」Tab 展示。按 updated_at 倒序，限制返回条数。
      *
-     * @param limit 返回条数上限（建议 50 以内）
-     * @return CLOSED 会话列表，按 ended_at 倒序
+     * @param limit 返回条数上限
+     * @return CLOSED / AI_CHAT 会话列表，按 updated_at 倒序
      */
     default List<ConversationEntity> selectClosedConversations(@Param("limit") int limit) {
         return selectList(Wrappers.lambdaQuery(ConversationEntity.class)
-                .eq(ConversationEntity::getStatus, SessionStatus.CLOSED.getValue())
-                .orderByDesc(ConversationEntity::getEndedAt)
+                .in(ConversationEntity::getStatus,
+                        SessionStatus.CLOSED.getValue(),
+                        SessionStatus.AI_CHAT.getValue())
+                .orderByDesc(ConversationEntity::getUpdatedAt)
                 .last("LIMIT " + limit)
         );
     }

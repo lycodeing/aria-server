@@ -10,9 +10,10 @@ import com.baomidou.mybatisplus.annotation.EnumValue;
  *
  * <p>合法转换路径：
  * <pre>
- *   WAITING → ACTIVE  （座席接入）
- *   WAITING → CLOSED  （未接入直接取消）
- *   ACTIVE  → CLOSED  （座席结束或断线）
+ *   WAITING  → ACTIVE  （座席接入）
+ *   WAITING  → CLOSED  （未接入直接取消）
+ *   ACTIVE   → CLOSED  （座席结束）
+ *   AI_CHAT  → CLOSED  （AI 对话结束，暂保留扩展）
  * </pre>
  */
 public enum SessionStatus {
@@ -22,6 +23,9 @@ public enum SessionStatus {
 
     /** 座席已接入，对话进行中 */
     ACTIVE("ACTIVE"),
+
+    /** 纯 AI 对话（无转人工），由系统在首条消息时自动创建 */
+    AI_CHAT("AI_CHAT"),
 
     /** 会话已结束（终止状态，不可再转换） */
     CLOSED("CLOSED");
@@ -63,6 +67,13 @@ public enum SessionStatus {
                         String.format("非法状态转换: %s → %s", this, next));
             }
             case ACTIVE -> {
+                if (next == CLOSED) {
+                    yield next;
+                }
+                throw new IllegalStateException(
+                        String.format("非法状态转换: %s → %s", this, next));
+            }
+            case AI_CHAT -> {
                 if (next == CLOSED) {
                     yield next;
                 }

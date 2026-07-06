@@ -62,7 +62,24 @@ public class ConversationPersistRepository {
             conversationMapper.insert(entity);
             log.debug("[Persist] 会话创建 sessionId={}", sessionId);
         } catch (DuplicateKeyException e) {
-            log.debug("[Persist] 会话已存在，忽略重复创建 sessionId={}", sessionId);
+            // 可能是 AI_CHAT 记录，用户后来转人工时需要升级为 WAITING
+            int upgraded = conversationMapper.update(
+                    com.baomidou.mybatisplus.core.toolkit.Wrappers
+                            .lambdaUpdate(ConversationEntity.class)
+                            .set(ConversationEntity::getStatus,     SessionStatus.WAITING.getValue())
+                            .set(ConversationEntity::getVisitorName, entity.getVisitorName())
+                            .set(ConversationEntity::getTransferReason, entity.getTransferReason())
+                            .set(ConversationEntity::getTag,         entity.getTag())
+                            .set(ConversationEntity::getStartedAt,   entity.getStartedAt())
+                            .eq(ConversationEntity::getSessionId,    sessionId)
+                            .eq(ConversationEntity::getStatus,
+                                    SessionStatus.AI_CHAT.getValue())
+            );
+            if (upgraded > 0) {
+                log.debug("[Persist] AI_CHAT 会话升级为 WAITING sessionId={}", sessionId);
+            } else {
+                log.debug("[Persist] 会话已存在（非AI_CHAT），忽略重复创建 sessionId={}", sessionId);
+            }
         }
     }
 
@@ -94,6 +111,30 @@ public class ConversationPersistRepository {
             log.debug("[Persist] 会话不存在或非 ACTIVE，忽略转交 sessionId={}", sessionId);
         } else {
             log.debug("[Persist] 会话转交 sessionId={} → agentId={}", sessionId, targetAgentId);
+        }
+    }
+
+    /**
+     * 幂等初始化 AI_CHAT 会话记录（首条 AI 消息时调用）。
+     * 若记录已存在（任意状态），静默跳过，不覆盖。
+     *
+     * @param sessionId 会话唯一标识
+     * @param startedAt 首条消息时间
+     */
+    public void initAiChatSession(String sessionId, OffsetDateTime startedAt) {
+        ConversationEntity entity = new ConversationEntity();
+        entity.setSessionId(sessionId);
+        entity.setVisitorName("访客");
+        entity.setTransferReason("");
+        entity.setTag("AI 对话");
+        entity.setStatus(SessionStatus.AI_CHAT);
+        entity.setStartedAt(startedAt);
+        try {
+            conversationMapper.insert(entity);
+            log.debug("[Persist] AI_CHAT 会话初始化 sessionId={}", sessionId);
+        } catch (DuplicateKeyException e) {
+            // 已存在（可能已升级为 WAITING/ACTIVE），静默跳过
+            log.debug("[Persist] AI_CHAT 会话已存在，跳过 sessionId={}", sessionId);
         }
     }
 

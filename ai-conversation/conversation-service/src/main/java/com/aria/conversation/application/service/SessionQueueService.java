@@ -116,63 +116,33 @@ public class SessionQueueService {
     }
 
     /**
-     * 查询最近历史会话，供座席工作台「已结束」Tab 展示。
-     * 按结束/最后活跃时间倒序，最多返回 50 条。
+     * 幂等初始化 AI_CHAT 会话记录（ChatAppService 在首条消息时调用）。
+     * 若记录已存在，静默跳过；若已是 WAITING/ACTIVE，同样跳过（转人工流程已覆盖）。
      *
-     * <p>合并两类来源：
-     * <ol>
-     *   <li>转人工后已关闭的会话（cs_conversation 表，status=CLOSED）</li>
-     *   <li>纯 AI 对话（cs_conversation_message 有记录，但 cs_conversation 无对应行）</li>
-     * </ol>
+     * @param sessionId 会话唯一标识
+     */
+    public void initAiChatSession(String sessionId) {
+        persistRepository.initAiChatSession(sessionId,
+                java.time.OffsetDateTime.now());
+    }
+
+    /**
+     * 查询最近历史会话，供座席工作台「已结束」Tab 展示。
+     * 包含 status=CLOSED（转人工已结束）和 status=AI_CHAT（纯 AI 对话）两类，
+     * 按 updated_at 倒序，最多返回 50 条。
      */
     public List<SessionQueueItem> getClosedSessions() {
-        // 1. 转人工已关闭的会话
-        List<SessionQueueItem> closed = persistRepository.getClosedConversations(50).stream()
+        return persistRepository.getClosedConversations(50).stream()
                 .map(e -> new SessionQueueItem(
                         e.getSessionId(),
                         e.getVisitorName(),
                         e.getTransferReason(),
                         e.getTag(),
-                        e.getEndedAt() != null ? e.getEndedAt().toEpochSecond() : 0L,
-                        SessionStatus.CLOSED,
+                        e.getUpdatedAt() != null ? e.getUpdatedAt().toEpochSecond()
+                                : e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
+                        e.getStatus(),
                         e.getAgentId()))
                 .toList();
-
-        // 已收录 sessionId 的集合（用于去重）
-        java.util.Set<String> knownIds = closed.stream()
-                .map(SessionQueueItem::sessionId)
-                .collect(java.util.stream.Collectors.toSet());
-
-        // 2. 纯 AI 对话：从消息表取最近 100 个 session，过滤掉已在 cs_conversation 中的
-        List<java.util.Map<String, Object>> recent =
-                persistRepository.getRecentSessionIds(100);
-
-        List<SessionQueueItem> aiOnly = recent.stream()
-                .filter(row -> {
-                    String sid = String.valueOf(row.get("session_id"));
-                    return !knownIds.contains(sid);
-                })
-                .map(row -> {
-                    String sid = String.valueOf(row.get("session_id"));
-                    Object lastActive = row.get("last_active_at");
-                    long epochSec = 0L;
-                    if (lastActive instanceof java.time.OffsetDateTime odt) {
-                        epochSec = odt.toEpochSecond();
-                    } else if (lastActive instanceof java.time.LocalDateTime ldt) {
-                        epochSec = ldt.toEpochSecond(java.time.ZoneOffset.UTC);
-                    }
-                    return new SessionQueueItem(
-                            sid, "访客", "AI 对话", "咨询",
-                            epochSec, SessionStatus.CLOSED, null);
-                })
-                .toList();
-
-        // 3. 合并并按时间倒序，取前 50 条
-        List<SessionQueueItem> merged = new java.util.ArrayList<>();
-        merged.addAll(closed);
-        merged.addAll(aiOnly);
-        merged.sort((a, b) -> Long.compare(b.waitSince(), a.waitSince()));
-        return merged.size() > 50 ? merged.subList(0, 50) : merged;
     }
 
     /**

@@ -117,6 +117,9 @@ public class ChatAppService {
         if (StringUtils.isNotBlank(domainCode)) {
             // 所有阻塞操作（Redis、小模型路由）均在 boundedElastic 线程完成
             return Mono.fromCallable(() -> {
+                        // 0. 幂等初始化 AI_CHAT 会话记录（首条消息时建档，已存在则跳过）
+                        sessionQueueService.initAiChatSession(sessionId);
+
                         // 1. 读取/写入 session 激活域（首次进入写入 INITIAL 记录）
                         Optional<String> existingDomain = sessionDomainRepo.find(sessionId);
                         String activeDomain;
@@ -186,6 +189,8 @@ public class ChatAppService {
      */
     private Flux<ChatEvent> streamFaq(String sessionId, String message) {
         return Mono.fromCallable(() -> {
+                    // 幂等初始化 AI_CHAT 会话记录（首条消息时建档，已存在则跳过）
+                    sessionQueueService.initAiChatSession(sessionId);
                     historyRepository.append(sessionId, ROLE_USER, message);
                     List<KnowledgeSearchResult.Hit> hits = searchHits(message);
                     IntentResult intent = intentClassifier.classify(message);
