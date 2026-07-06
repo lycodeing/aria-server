@@ -116,6 +116,23 @@ public class SessionQueueService {
     }
 
     /**
+     * 查询最近已关闭的会话（CLOSED），供座席工作台「已结束」Tab 展示。
+     * 按结束时间倒序，最多返回 50 条。
+     */
+    public List<SessionQueueItem> getClosedSessions() {
+        return persistRepository.getClosedConversations(50).stream()
+                .map(e -> new SessionQueueItem(
+                        e.getSessionId(),
+                        e.getVisitorName(),
+                        e.getTransferReason(),
+                        e.getTag(),
+                        e.getEndedAt() != null ? e.getEndedAt().toEpochSecond() : 0L,
+                        SessionStatus.CLOSED,
+                        e.getAgentId()))
+                .toList();
+    }
+
+    /**
      * 座席接入会话，状态 WAITING → ACTIVE。
      * CAS 原子操作由 {@link SessionQueueRepository#compareAndSetStatus} 保证，
      * 防止两名座席并发抢接同一会话。

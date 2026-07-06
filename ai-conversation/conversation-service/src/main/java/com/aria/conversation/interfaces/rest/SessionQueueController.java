@@ -94,6 +94,15 @@ public class SessionQueueController {
     }
 
     /**
+     * 获取最近已关闭的会话（最多 50 条，按结束时间倒序）。
+     * 供座席工作台「已结束」Tab 查看历史会话记录。
+     */
+    @GetMapping("/closed")
+    public R<List<SessionQueueItem>> getClosed() {
+        return R.ok(queueService.getClosedSessions());
+    }
+
+    /**
      * 座席接入会话。
      * Sa-Token 拦截器已完成登录校验，直接从当前会话获取座席 ID。
      */

@@ -99,8 +99,19 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     }
 
     /**
-     * 将会话状态更新为 CLOSED，记录结束时间。
-     * 使用 LambdaUpdateWrapper，仅当状态非 CLOSED 时更新（乐观检查，幂等）。
+     * 查询最近 N 条已关闭会话，供座席工作台「已结束」Tab 展示。
+     * 按 ended_at 倒序（最近结束的优先），限制返回条数防止列表过长。
+     *
+     * @param limit 返回条数上限（建议 50 以内）
+     * @return CLOSED 会话列表，按 ended_at 倒序
+     */
+    default List<ConversationEntity> selectClosedConversations(@Param("limit") int limit) {
+        return selectList(Wrappers.lambdaQuery(ConversationEntity.class)
+                .eq(ConversationEntity::getStatus, SessionStatus.CLOSED.getValue())
+                .orderByDesc(ConversationEntity::getEndedAt)
+                .last("LIMIT " + limit)
+        );
+    }
      *
      * @param sessionId 会话唯一标识
      * @param endedAt   结束时间

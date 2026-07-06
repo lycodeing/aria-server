@@ -102,7 +102,30 @@ public class ConversationPersistRepository {
     }
 
     /**
-     * 查询所有进行中（ACTIVE）的会话，供座席工作台刷新后恢复。
+     * 查询最近已关闭的会话列表（按 ended_at 倒序，最多返回 limit 条）。
+     * 供座席工作台「已结束」Tab 展示历史会话。
+     *
+     * @param limit 返回条数上限
+     * @return CLOSED 会话列表
+     */
+    public List<ConversationEntity> getClosedConversations(int limit) {
+        return conversationMapper.selectClosedConversations(limit);
+    }
+
+    /**
+     * 查询所有 WAITING 状态的会话（Redis 过期时的 DB 兜底）。
+     *
+     * @return WAITING 会话列表，按 started_at 升序
+     */
+    public List<ConversationEntity> getWaitingConversations() {
+        return conversationMapper.selectList(
+                com.baomidou.mybatisplus.core.toolkit.Wrappers
+                        .lambdaQuery(ConversationEntity.class)
+                        .eq(ConversationEntity::getStatus,
+                                com.aria.conversation.domain.SessionStatus.WAITING.getValue())
+                        .orderByAsc(ConversationEntity::getStartedAt)
+        );
+    }
      * 从 DB 读取，不依赖 Redis，重启后仍可正确恢复。
      *
      * @return ACTIVE 会话列表，按 started_at 升序
