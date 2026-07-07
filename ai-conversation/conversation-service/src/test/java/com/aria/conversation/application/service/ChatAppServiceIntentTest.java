@@ -1,5 +1,7 @@
 package com.aria.conversation.application.service;
 
+import com.aria.conversation.application.service.payload.ErrorPayload;
+import com.aria.conversation.application.service.payload.TokenPayload;
 import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.domain.model.IntentResult;
@@ -66,7 +68,7 @@ class ChatAppServiceIntentTest {
     // -------------------------------------------------------
 
     @Test
-    @DisplayName("FAQ_QUERY: 返回 ChatEvent.data token 流，调用 LLM")
+    @DisplayName("FAQ_QUERY: 返回 JSON 信封的 token 事件流，调用 LLM")
     void faqQuery_returnsDataEvents() {
         when(intentClassifier.classify(anyString()))
                 .thenReturn(new IntentResult(IntentType.FAQ_QUERY, 0.9));
@@ -77,13 +79,32 @@ class ChatAppServiceIntentTest {
 
         StepVerifier.create(result)
                 .assertNext(e -> {
-                    assertThat(e.eventType()).isNull();  // 普通数据 token
-                    assertThat(e.data()).isEqualTo("这是");
+                    // token 事件：eventType == null，data 为 {"content":"..."} JSON 信封
+                    assertThat(e.eventType()).isNull();
+                    assertThat(readTokenContent(e)).isEqualTo("这是");
                 })
-                .assertNext(e -> assertThat(e.data()).isEqualTo("回答"))
+                .assertNext(e -> assertThat(readTokenContent(e)).isEqualTo("回答"))
                 .verifyComplete();
         verify(aiClient).streamChat(anyList(), anyString());
         verify(sessionQueueService, never()).enqueue(any(), any(), any(), any());
+    }
+
+    /** 从 token 事件解出 content 字段，隔离测试与 wire format 的耦合。 */
+    private String readTokenContent(ChatEvent event) {
+        try {
+            return objectMapper.readValue(event.data(), TokenPayload.class).content();
+        } catch (Exception e) {
+            throw new AssertionError("token payload 解析失败: " + event.data(), e);
+        }
+    }
+
+    /** 从 error 事件解出 message 字段。 */
+    private String readErrorMessage(ChatEvent event) {
+        try {
+            return objectMapper.readValue(event.data(), ErrorPayload.class).message();
+        } catch (Exception e) {
+            throw new AssertionError("error payload 解析失败: " + event.data(), e);
+        }
     }
 
     // -------------------------------------------------------
@@ -144,7 +165,7 @@ class ChatAppServiceIntentTest {
     // -------------------------------------------------------
 
     @Test
-    @DisplayName("OUT_OF_SCOPE: 返回拒答 data token，不调 LLM")
+    @DisplayName("OUT_OF_SCOPE: 返回拒答 token 事件（JSON 信封），不调 LLM")
     void outOfScope_returnsDataWithTemplate() {
         when(intentClassifier.classify(anyString()))
                 .thenReturn(new IntentResult(IntentType.OUT_OF_SCOPE, 0.88));
@@ -154,7 +175,7 @@ class ChatAppServiceIntentTest {
         StepVerifier.create(result)
                 .assertNext(e -> {
                     assertThat(e.eventType()).isNull();
-                    assertThat(e.data()).contains("只能回答业务相关");
+                    assertThat(readTokenContent(e)).contains("只能回答业务相关");
                 })
                 .verifyComplete();
         verify(aiClient, never()).streamChat(anyList(), anyString());
@@ -178,7 +199,7 @@ class ChatAppServiceIntentTest {
         Flux<ChatEvent> result = service.stream("s5", "你好", null);
 
         StepVerifier.create(result)
-                .assertNext(e -> assertThat(e.data()).isEqualTo("你好！"))
+                .assertNext(e -> assertThat(readTokenContent(e)).isEqualTo("你好！"))
                 .verifyComplete();
         // skipRag=true 时 systemPrompt 不拼入参考资料
         verify(aiClient).streamChat(anyList(), argThat(prompt -> !prompt.contains("【参考资料】")));
@@ -199,9 +220,54 @@ class ChatAppServiceIntentTest {
         Flux<ChatEvent> result = service.stream("s6", "随便问个问题", null);
 
         StepVerifier.create(result)
-                .assertNext(e -> assertThat(e.data()).isEqualTo("正常回答"))
+                .assertNext(e -> assertThat(readTokenContent(e)).isEqualTo("正常回答"))
                 .verifyComplete();
         verify(aiClient).streamChat(anyList(), anyString());
+    }
+
+    // -------------------------------------------------------
+    // Token wire format 契约（JSON 信封）
+    // -------------------------------------------------------
+
+    @Test
+    @DisplayName("token 事件的 data 是合法 JSON，且 content 精确保留前导空格与换行")
+    void tokenEvent_preservesWhitespaceViaJsonEnvelope() {
+        when(intentClassifier.classify(anyString()))
+                .thenReturn(new IntentResult(IntentType.FAQ_QUERY, 0.9));
+        // 模拟 LLM 分词器输出：token 天然带前导空格 + 换行
+        when(aiClient.streamChat(anyList(), anyString()))
+                .thenReturn(Flux.just("### ", " 🔴 ", "实时天气", "\n\n"));
+
+        Flux<ChatEvent> result = service.stream("s-tok", "查天气", null);
+
+        StepVerifier.create(result)
+                .assertNext(e -> assertThat(readTokenContent(e)).isEqualTo("### "))
+                .assertNext(e -> assertThat(readTokenContent(e)).isEqualTo(" 🔴 "))
+                .assertNext(e -> assertThat(readTokenContent(e)).isEqualTo("实时天气"))
+                .assertNext(e -> assertThat(readTokenContent(e)).isEqualTo("\n\n"))
+                .verifyComplete();
+    }
+
+    // -------------------------------------------------------
+    // 错误路径：JSON 信封
+    // -------------------------------------------------------
+
+    @Test
+    @DisplayName("LLM 异常：走 event:error 事件（JSON 信封），data 为 {\"message\":\"...\"}")
+    void llmError_emitsErrorEventWithJsonEnvelope() {
+        when(intentClassifier.classify(anyString()))
+                .thenReturn(new IntentResult(IntentType.FAQ_QUERY, 0.9));
+        when(aiClient.streamChat(anyList(), anyString()))
+                .thenReturn(Flux.error(new RuntimeException("上游超时")));
+
+        Flux<ChatEvent> result = service.stream("s-err", "问点啥", null);
+
+        StepVerifier.create(result)
+                .assertNext(e -> {
+                    assertThat(e.eventType()).isEqualTo(ChatEvent.EventType.ERROR);
+                    assertThat(readErrorMessage(e)).contains("AI 服务暂时不可用");
+                })
+                .verifyComplete();
     }
 
     // -------------------------------------------------------

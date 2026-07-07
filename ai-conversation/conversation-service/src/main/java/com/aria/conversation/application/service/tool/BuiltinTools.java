@@ -85,7 +85,7 @@ public class BuiltinTools {
             domainSwitchRepo.record(new DomainSwitchRecord(
                     ctx.sessionId(), ctx.currentDomainCode(), targetDomainCode,
                     SwitchType.LLM_TOOL, ctx.userMessage(), safeReason, null));
-            ctx.eventSink().tryEmitNext(ChatEvent.domainSwitch(targetDomainCode));
+            ctx.eventSink().tryEmitNext(ChatEvent.domainSwitch(targetDomainCode, objectMapper));
         } catch (Exception e) {
             log.error("[BuiltinTool] switch_domain 持久化失败 sessionId={} target={}",
                     ctx.sessionId(), targetDomainCode, e);

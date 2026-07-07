@@ -6,6 +6,7 @@ import com.aria.conversation.application.service.ChatEvent;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.SessionStatus;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -51,6 +52,8 @@ public class ChatController {
             java.util.regex.Pattern.compile("^[a-zA-Z0-9_\\-]{1,64}$");
 
     private final ChatAppService chatService;
+    /** Jackson ObjectMapper 用于将 ChatEvent 的 error/token 等 payload 序列化为 JSON 信封 */
+    private final ObjectMapper objectMapper;
 
     /**
      * SSE 流式对话接口（访客公开，允许任意跨域）。
@@ -66,11 +69,9 @@ public class ChatController {
         }
         String sessionId = resolveSessionId(req.getSessionId());
         if (sessionId == null) {
+            // 与业务错误一致：走 ChatEvent.error 保证 data 是 {"message":"..."} JSON 信封
             return Flux.concat(
-                    Flux.just(ServerSentEvent.<String>builder()
-                            .event(ChatEvent.EventType.ERROR)
-                            .data("非法的 sessionId 格式")
-                            .build()),
+                    Flux.just(toSse(ChatEvent.error("非法的 sessionId 格式", objectMapper))),
                     doneStream()
             );
         }

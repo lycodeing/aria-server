@@ -138,12 +138,12 @@ public class DomainAgentService {
 
         // 7. 合并 AI 令牌流与工具事件流
         Flux<ChatEvent> tokenFlux = assistant.chat(sessionId, userMessage)
-                .map(ChatEvent::data)
+                .map(content -> ChatEvent.token(content, objectMapper))
                 .doFinally(signal -> eventSink.tryEmitComplete());
 
         return Flux.merge(tokenFlux, eventSink.asFlux())
                 .doOnError(e -> log.error("[DomainAgent] error sessionId={}", sessionId, e))
-                .onErrorResume(e -> Flux.just(ChatEvent.error(e.getMessage())));
+                .onErrorResume(e -> Flux.just(ChatEvent.error(e.getMessage(), objectMapper)));
     }
 
     // -------------------------------------------------------

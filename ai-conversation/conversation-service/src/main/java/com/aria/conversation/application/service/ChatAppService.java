@@ -1,5 +1,6 @@
 package com.aria.conversation.application.service;
 
+import com.aria.conversation.application.service.payload.TokenPayload;
 import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.SessionQueueItem;
@@ -111,7 +112,7 @@ public class ChatAppService {
         // 已接入人工 → 存历史，返回提示，不走 AI
         if (sessionQueueService.isActive(sessionId)) {
             historyRepository.append(sessionId, ROLE_USER, message);
-            return Flux.just(ChatEvent.data(AGENT_HINT_MSG));
+            return Flux.just(ChatEvent.token(AGENT_HINT_MSG, objectMapper));
         }
 
         // 有 domainCode → 域路由 + DomainAgentService
@@ -318,14 +319,14 @@ public class ChatAppService {
                 return Flux.just(ChatEvent.transfer(transferJson));
             } catch (JsonProcessingException e) {
                 log.warn("[Chat] FAQ transfer payload 序列化失败 sessionId={}", sessionId, e);
-                return Flux.just(ChatEvent.data(reply));
+                return Flux.just(ChatEvent.token(reply, objectMapper));
             }
         }
 
         // 路由：超出业务范围
         if (intent.intent() == IntentType.OUT_OF_SCOPE) {
             historyRepository.append(sessionId, ROLE_ASSISTANT, OUT_OF_SCOPE_REPLY);
-            return Flux.just(ChatEvent.data(OUT_OF_SCOPE_REPLY));
+            return Flux.just(ChatEvent.token(OUT_OF_SCOPE_REPLY, objectMapper));
         }
 
         // 路由：闲聊 → 跳过 RAG
@@ -337,10 +338,11 @@ public class ChatAppService {
         Flux<ChatEvent> aiStream = aiClient.streamChat(aiPrompt, systemPrompt)
                 .map(content -> {
                     assistantReply.append(content);
-                    return ChatEvent.data(content);
+                    return ChatEvent.token(content, objectMapper);
                 })
                 .doOnError(e -> log.warn("[AI] 流式对话失败 sessionId={}", sessionId, e))
-                .onErrorResume(e -> Flux.just(ChatEvent.data("抱歉，AI 服务暂时不可用，请稍后重试。")))
+                // 与 DomainAgentService 对齐：LLM 异常统一走 error 事件（JSON 信封），前端只需一套错误分支
+                .onErrorResume(e -> Flux.just(ChatEvent.error("抱歉，AI 服务暂时不可用，请稍后重试。", objectMapper)))
                 .doFinally(signal -> {
                     if (!assistantReply.isEmpty()) {
                         historyRepository.append(sessionId, ROLE_ASSISTANT, assistantReply.toString());
@@ -448,8 +450,15 @@ public class ChatAppService {
     public Flux<String> streamChat(String sessionId, String userMessage) {
         return streamFaq(sessionId, userMessage)
                 .flatMap(e -> {
+                    // token 事件：data 是 {"content":"..."} JSON 信封，解出 content
                     if (e.eventType() == null) {
-                        return Flux.just(e.data());
+                        try {
+                            TokenPayload token = objectMapper.readValue(e.data(), TokenPayload.class);
+                            return Flux.just(token.content() != null ? token.content() : "");
+                        } catch (Exception ex) {
+                            log.warn("[Chat] token payload 解析失败，降级返回原始 data", ex);
+                            return Flux.just(e.data());
+                        }
                     }
                     if (ChatEvent.EventType.TRANSFER.equals(e.eventType())) {
                         try {
