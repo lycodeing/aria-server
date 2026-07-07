@@ -2,11 +2,11 @@ package com.aria.auth.interfaces.rest;
 
 import com.aria.auth.application.service.AiModelConfigService;
 import com.aria.auth.infrastructure.persistence.ai.AiModelConfigDO;
+import com.aria.auth.infrastructure.security.internal.InternalSecretVerifier;
 import com.aria.common.web.ai.AiModelConfig;
 import com.aria.common.web.response.R;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -35,14 +35,35 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class InternalAiModelController {
 
-    private final AiModelConfigService service;
+    /** 未认证：内部接口拒绝访问的 HTTP 状态语义码。 */
+    private static final int FORBIDDEN_CODE = 403;
 
-    /**
-     * 内部共享密钥，通过环境变量注入。
-     * 调用方（conversation-service/knowledge-service）请求时须在 X-Internal-Secret 头携带此值。
-     */
-    @Value("${aria.internal.secret}")
-    private String internalSecret;
+    /** 资源不存在：未找到激活模型配置。 */
+    private static final int NOT_FOUND_CODE = 404;
+
+    /** CHAT 场景缺省 temperature。 */
+    private static final double DEFAULT_CHAT_TEMPERATURE = 0.7D;
+    /** CHAT 场景缺省 max tokens。 */
+    private static final int DEFAULT_CHAT_MAX_TOKENS = 2048;
+    /** CHAT 场景缺省超时秒数。 */
+    private static final int DEFAULT_CHAT_TIMEOUT_SEC = 60;
+
+    /** EMBEDDING 场景缺省 temperature。 */
+    private static final double DEFAULT_EMBEDDING_TEMPERATURE = 0.0D;
+    /** EMBEDDING 场景缺省 max tokens（0 表示不限制）。 */
+    private static final int DEFAULT_EMBEDDING_MAX_TOKENS = 0;
+    /** EMBEDDING 场景缺省超时秒数。 */
+    private static final int DEFAULT_EMBEDDING_TIMEOUT_SEC = 30;
+
+    /** ROUTER 场景缺省 temperature（0.0，追求确定性）。 */
+    private static final double DEFAULT_ROUTER_TEMPERATURE = 0.0D;
+    /** ROUTER 场景缺省 max tokens（32，短决策）。 */
+    private static final int DEFAULT_ROUTER_MAX_TOKENS = 32;
+    /** ROUTER 场景缺省超时秒数（5，低延迟要求）。 */
+    private static final int DEFAULT_ROUTER_TIMEOUT_SEC = 5;
+
+    private final AiModelConfigService service;
+    private final InternalSecretVerifier secretVerifier;
 
     /**
      * 返回当前激活（默认）的 CHAT 模型配置，api_key 为解密后明文。
@@ -53,15 +74,15 @@ public class InternalAiModelController {
     @GetMapping("/active")
     public R<AiModelConfig> getActive(
             @RequestHeader(value = "X-Internal-Secret", required = false) String secret) {
-        if (internalSecret == null || !internalSecret.equals(secret)) {
-            log.warn("[InternalAiModel] 内部密钥校验失败，拒绝访问");
-            return R.fail(403, "内部接口禁止访问");
+        if (!secretVerifier.matches(secret)) {
+            log.warn("[InternalAiModel] 内部密钥校验失败，拒绝访问 /active");
+            return R.fail(FORBIDDEN_CODE, "内部接口禁止访问");
         }
-        AiModelConfigDO do_ = service.getActiveConfig();
-        if (do_ == null) {
-            return R.fail(404, "未找到激活的 AI 模型配置，请在后台设置默认配置");
+        AiModelConfigDO d = service.getActiveConfig();
+        if (d == null) {
+            return R.fail(NOT_FOUND_CODE, "未找到激活的 AI 模型配置，请在后台设置默认配置");
         }
-        return R.ok(toConfig(do_, 0.7, 2048, 60));
+        return R.ok(toConfig(d, DEFAULT_CHAT_TEMPERATURE, DEFAULT_CHAT_MAX_TOKENS, DEFAULT_CHAT_TIMEOUT_SEC));
     }
 
     /**
@@ -73,15 +94,15 @@ public class InternalAiModelController {
     @GetMapping("/active-embedding")
     public R<AiModelConfig> getActiveEmbedding(
             @RequestHeader(value = "X-Internal-Secret", required = false) String secret) {
-        if (internalSecret == null || !internalSecret.equals(secret)) {
+        if (!secretVerifier.matches(secret)) {
             log.warn("[InternalAiModel] 内部密钥校验失败，拒绝访问 /active-embedding");
-            return R.fail(403, "内部接口禁止访问");
+            return R.fail(FORBIDDEN_CODE, "内部接口禁止访问");
         }
-        AiModelConfigDO do_ = service.getActiveEmbeddingConfig();
-        if (do_ == null) {
-            return R.fail(404, "未找到激活的向量模型配置，请在后台 AI 模型配置页面设置默认 EMBEDDING 配置");
+        AiModelConfigDO d = service.getActiveEmbeddingConfig();
+        if (d == null) {
+            return R.fail(NOT_FOUND_CODE, "未找到激活的向量模型配置，请在后台 AI 模型配置页面设置默认 EMBEDDING 配置");
         }
-        return R.ok(toConfig(do_, 0.0, 0, 30));
+        return R.ok(toConfig(d, DEFAULT_EMBEDDING_TEMPERATURE, DEFAULT_EMBEDDING_MAX_TOKENS, DEFAULT_EMBEDDING_TIMEOUT_SEC));
     }
 
     /**
@@ -93,16 +114,15 @@ public class InternalAiModelController {
     @GetMapping("/active-router")
     public R<AiModelConfig> getActiveRouter(
             @RequestHeader(value = "X-Internal-Secret", required = false) String secret) {
-        if (internalSecret == null || !internalSecret.equals(secret)) {
+        if (!secretVerifier.matches(secret)) {
             log.warn("[InternalAiModel] 内部密钥校验失败，拒绝访问 /active-router");
-            return R.fail(403, "内部接口禁止访问");
+            return R.fail(FORBIDDEN_CODE, "内部接口禁止访问");
         }
-        AiModelConfigDO do_ = service.getActiveRouterConfig();
-        if (do_ == null) {
-            return R.fail(404, "未找到激活的 ROUTER 模型配置，请在后台 AI 模型配置页面设置默认 ROUTER 配置");
+        AiModelConfigDO d = service.getActiveRouterConfig();
+        if (d == null) {
+            return R.fail(NOT_FOUND_CODE, "未找到激活的 ROUTER 模型配置，请在后台 AI 模型配置页面设置默认 ROUTER 配置");
         }
-        // ROUTER 模型: temperature=0.0, maxTokens=32, timeoutSec=5
-        return R.ok(toConfig(do_, 0.0, 32, 5));
+        return R.ok(toConfig(d, DEFAULT_ROUTER_TEMPERATURE, DEFAULT_ROUTER_MAX_TOKENS, DEFAULT_ROUTER_TIMEOUT_SEC));
     }
 
     // ---- 内部工具 ----

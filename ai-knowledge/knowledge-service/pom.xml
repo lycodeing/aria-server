@@ -28,6 +28,15 @@
             <artifactId>spring-boot-starter-aop</artifactId>
         </dependency>
 
+        <!--
+            WebFlux（WebClient）：仅 TranslateController 调试接口使用；
+            common-web 已剥离 webflux 依赖，故在此显式声明。
+        -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-webflux</artifactId>
+        </dependency>
+
         <!-- ORM + 数据库 -->
         <dependency>
             <groupId>com.baomidou</groupId>

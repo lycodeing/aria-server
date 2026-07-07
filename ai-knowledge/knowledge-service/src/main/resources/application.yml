@@ -70,10 +70,18 @@ sa-token:
   is-read-header: true
   is-read-cookie: false
 
-# aria 内部服务密钥（与 auth-service 的 aria.internal.secret 保持一致）
+# auth-client SDK 配置（拉取 EMBEDDING 模型），共享密钥必须与 auth-service 一致
 aria:
   auth:
-    internal-url: ${ARIA_AUTH_INTERNAL_URL:http://localhost:8083}
+    client:
+      # base-url 兼容旧变量 ARIA_AUTH_INTERNAL_URL
+      base-url: ${ARIA_AUTH_URL:${ARIA_AUTH_INTERNAL_URL:http://localhost:8083}}
+      # shared-secret 必填，未配置 SDK 启动即失败（fail-fast）
+      shared-secret: ${ARIA_INTERNAL_SECRET:${INTERNAL_SECRET:}}
+      connect-timeout-ms: 3000
+      read-timeout-ms: 5000
+      max-retries: 2
+  # 兼容 knowledge-service 内部其它调用继续读取此密钥
   internal:
     secret: ${INTERNAL_SECRET:change-this-in-production}
 

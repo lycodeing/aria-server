@@ -1,12 +1,12 @@
 package com.aria.auth.interfaces.rest;
 
 import cn.dev33.satoken.stp.StpUtil;
+import com.aria.auth.infrastructure.security.internal.InternalSecretVerifier;
 import com.aria.common.web.response.R;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
@@ -30,8 +30,10 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class InternalAuthController {
 
-    @Value("${aria.internal.secret}")
-    private String internalSecret;
+    /** 未认证：内部接口拒绝访问的 HTTP 状态语义码。 */
+    private static final int FORBIDDEN_CODE = 403;
+
+    private final InternalSecretVerifier secretVerifier;
 
     /**
      * 验证 Bearer Token 有效性，返回用户 ID。
@@ -44,9 +46,9 @@ public class InternalAuthController {
     public R<Map<String, Object>> verify(
             @RequestHeader(value = "X-Internal-Secret", required = false) String secret,
             @RequestBody VerifyRequest req) {
-        if (internalSecret == null || !internalSecret.equals(secret)) {
+        if (!secretVerifier.matches(secret)) {
             log.warn("[InternalAuth] 内部密钥校验失败，拒绝访问");
-            return R.fail(403, "内部接口禁止访问");
+            return R.fail(FORBIDDEN_CODE, "内部接口禁止访问");
         }
         Object loginId = StpUtil.getLoginIdByToken(req.getToken());
         if (loginId == null) {

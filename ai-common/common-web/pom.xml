@@ -42,10 +42,17 @@
             <artifactId>lombok</artifactId>
             <scope>provided</scope>
         </dependency>
-        <!-- WebClient：AiModelConfigProvider 拉取 auth-service 配置 -->
+        <!-- auth-service 内网接口 SDK：CHAT/EMBEDDING/ROUTER 配置拉取 -->
+        <dependency>
+            <groupId>com.aria</groupId>
+            <artifactId>auth-client</artifactId>
+        </dependency>
+
+        <!-- ===== 测试 ===== -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-webflux</artifactId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 </project>

@@ -14,6 +14,7 @@
     <description>客服系统独立认证服务：用户/角色/菜单/数据权限，不依赖 ai-dev-platform</description>
 
     <modules>
+        <module>auth-client</module>
         <module>auth-service</module>
     </modules>
 </project>

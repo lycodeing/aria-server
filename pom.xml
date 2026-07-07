@@ -70,6 +70,11 @@
                 <artifactId>aria-common-client</artifactId>
                 <version>${cs.common.version}</version>
             </dependency>
+            <dependency>
+                <groupId>com.aria</groupId>
+                <artifactId>auth-client</artifactId>
+                <version>${cs.common.version}</version>
+            </dependency>
 
             <!-- ===== ORM ===== -->
             <dependency>
@@ -125,6 +130,12 @@
             <dependency>
                 <groupId>com.squareup.okhttp3</groupId>
                 <artifactId>okhttp</artifactId>
+                <version>${okhttp.version}</version>
+            </dependency>
+            <!-- 单元测试用的内嵌 HTTP Server，仅在 test scope 使用 -->
+            <dependency>
+                <groupId>com.squareup.okhttp3</groupId>
+                <artifactId>mockwebserver</artifactId>
                 <version>${okhttp.version}</version>
             </dependency>
 
