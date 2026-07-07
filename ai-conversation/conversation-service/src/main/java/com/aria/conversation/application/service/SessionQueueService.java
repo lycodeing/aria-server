@@ -223,6 +223,29 @@ public class SessionQueueService {
     }
 
     /**
+     * 查询会话当前状态（供前端 onMounted 兜底检测转接状态使用）。
+     *
+     * <p>优先查 Redis，Redis 缺失（TTL 过期或 Redis 重启）时兜底查 DB。
+     * 若会话不存在，返回 {@link SessionStatus#AI_CHAT}。
+     *
+     * @param sessionId 会话 ID
+     * @return 当前会话状态
+     */
+    public SessionStatus getSessionStatus(String sessionId) {
+        return queueRepository.findById(sessionId)
+                .map(SessionQueueItem::status)
+                .orElseGet(() -> {
+                    SessionStatus dbStatus = persistRepository.getStatusFromDb(sessionId);
+                    if (dbStatus != null) {
+                        log.debug("[SessionQueue] Redis 缺失，DB 兜底查询 status={} sessionId={}",
+                                dbStatus, sessionId);
+                        return dbStatus;
+                    }
+                    return SessionStatus.AI_CHAT;
+                });
+    }
+
+    /**
      * 转交会话给指定座席（当前座席 → 目标座席，状态保持 ACTIVE）。
      * CAS 原子操作由 {@link SessionQueueRepository#compareAndSetAgentId} 保证。
      */

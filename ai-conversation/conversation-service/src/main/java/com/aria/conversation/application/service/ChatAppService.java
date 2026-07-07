@@ -9,6 +9,7 @@ import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.domain.model.IntentResult;
 import com.aria.conversation.domain.model.IntentType;
 import com.aria.conversation.domain.service.IntentService;
+import com.aria.conversation.domain.SessionStatus;
 import com.aria.conversation.infrastructure.dit.domain.DomainSwitchRecord;
 import com.aria.conversation.infrastructure.dit.domain.SwitchType;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
@@ -115,46 +116,126 @@ public class ChatAppService {
 
         // 有 domainCode → 域路由 + DomainAgentService
         if (StringUtils.isNotBlank(domainCode)) {
-            // 所有阻塞操作（Redis、小模型路由）均在 boundedElastic 线程完成
-            return Mono.fromCallable(() -> {
-                        // 0. 幂等初始化 AI_CHAT 会话记录（首条消息时建档，已存在则跳过）
-                        sessionQueueService.initAiChatSession(sessionId);
-
-                        // 1. 读取/写入 session 激活域（首次进入写入 INITIAL 记录）
-                        Optional<String> existingDomain = sessionDomainRepo.find(sessionId);
-                        String activeDomain;
-                        if (existingDomain.isPresent()) {
-                            activeDomain = existingDomain.get();
-                        } else {
-                            sessionDomainRepo.save(sessionId, domainCode);
-                            domainSwitchRepo.record(new DomainSwitchRecord(
-                                    sessionId, null, domainCode,
-                                    SwitchType.INITIAL, message, "用户进入服务入口", null));
-                            activeDomain = domainCode;
-                        }
-
-                        // 2. ROUTER 小模型域路由（~50-200ms，失败时降级保持当前域）
-                        List<ConversationMessage> recentHistory = historyRepository.findAll(sessionId);
-                        DomainRoutingService.RouteResult routing =
-                                domainRoutingService.route(message, activeDomain, recentHistory);
-                        if (routing.shouldSwitch()) {
-                            String newDomain = routing.suggestedDomain();
-                            sessionDomainRepo.save(sessionId, newDomain);
-                            domainSwitchRepo.record(new DomainSwitchRecord(
-                                    sessionId, activeDomain, newDomain,
-                                    SwitchType.ROUTER_MODEL, message, "小模型检测切换", null));
-                            return newDomain;
-                        }
-                        return activeDomain;
-                    })
+            // 将阻塞操作（Redis 读写、小模型推理）放到 boundedElastic 线程池执行，
+            // 避免阻塞 Netty event-loop；解析完成后切换为流式 AI 回复
+            return Mono.fromCallable(() -> resolveActiveDomain(sessionId, message, domainCode))
                     .subscribeOn(Schedulers.boundedElastic())
-                    // 3. DomainAgentService — LangChain4j function-calling
                     .flatMapMany(activeDomain ->
                             domainAgentService.streamChat(sessionId, activeDomain, message));
         }
 
         // 通用 FAQ 流程：RAG + 意图路由 + LLM，含 sources event
         return streamFaq(sessionId, message);
+    }
+
+    // -------------------------------------------------------
+    // 域路由编排（从 stream 中提取，职责单一化）
+    // -------------------------------------------------------
+
+    /**
+     * 解析当前会话的活跃域，完整编排三步流程：
+     * <ol>
+     *   <li>幂等初始化 AI_CHAT 会话记录</li>
+     *   <li>读取或首次写入 session 激活域</li>
+     *   <li>ROUTER 小模型域路由决策</li>
+     * </ol>
+     *
+     * <p><b>注意：</b>本方法包含 Redis 读写和小模型推理等阻塞操作，
+     * 必须在 {@link Schedulers#boundedElastic()} 线程中调用。
+     *
+     * @param sessionId  会话 ID
+     * @param message    用户原始消息（用于域切换记录和路由上下文）
+     * @param domainCode 入口传入的默认域标识
+     * @return 最终确定的活跃域编码
+     */
+    private String resolveActiveDomain(String sessionId, String message, String domainCode) {
+        // Step 0: 幂等初始化 AI_CHAT 会话记录（首条消息时建档，已存在则跳过）
+        sessionQueueService.initAiChatSession(sessionId);
+
+        // Step 1: 读取已有激活域，首次进入时以 domainCode 作为初始域并记录 INITIAL 切换
+        String activeDomain = resolveOrInitDomain(sessionId, message, domainCode);
+
+        // Step 2: 小模型路由决策，判断是否需要切换到其他域
+        return routeDomainIfNeeded(sessionId, message, activeDomain);
+    }
+
+    /**
+     * 读取 session 当前激活域；若不存在（首次进入），则以 {@code domainCode} 初始化
+     * 并写入一条 {@link SwitchType#INITIAL} 类型的域切换记录。
+     *
+     * @param sessionId  会话 ID
+     * @param message    用户消息（记录到域切换日志中）
+     * @param domainCode 默认域标识，仅在首次进入时使用
+     * @return 当前激活域编码
+     */
+    private String resolveOrInitDomain(String sessionId, String message, String domainCode) {
+        Optional<String> existing = sessionDomainRepo.find(sessionId);
+        if (existing.isPresent()) {
+            log.debug("[DomainRoute] sessionId={} 已有激活域={}", sessionId, existing.get());
+            return existing.get();
+        }
+        // 首次进入：绑定初始域并记录切换日志
+        saveDomainSwitch(sessionId, null, domainCode, SwitchType.INITIAL, message, "用户进入服务入口");
+        log.info("[DomainRoute] sessionId={} 初始化激活域={}", sessionId, domainCode);
+        return domainCode;
+    }
+
+    /**
+     * 使用 ROUTER 小模型进行域路由决策。
+     * <ul>
+     *   <li>若模型建议切换 → 更新 session 激活域并记录 {@link SwitchType#ROUTER_MODEL} 切换</li>
+     *   <li>若模型建议保持 → 返回当前域不变</li>
+     *   <li>若路由过程异常 → 降级保持当前域，打印 warn 日志</li>
+     * </ul>
+     *
+     * @param sessionId    会话 ID
+     * @param message      用户原始消息
+     * @param activeDomain 当前激活域
+     * @return 路由决策后的活跃域编码
+     */
+    private String routeDomainIfNeeded(String sessionId, String message, String activeDomain) {
+        try {
+            // 获取最近对话历史作为路由上下文（小模型需要多轮信息判断意图漂移）
+            List<ConversationMessage> recentHistory = historyRepository.findAll(sessionId);
+            DomainRoutingService.RouteResult routing =
+                    domainRoutingService.route(message, activeDomain, recentHistory);
+
+            if (routing.shouldSwitch()) {
+                String newDomain = routing.suggestedDomain();
+                log.info("[DomainRoute] sessionId={} 域切换 {} -> {} (reason=小模型检测)",
+                        sessionId, activeDomain, newDomain);
+                saveDomainSwitch(sessionId, activeDomain, newDomain,
+                        SwitchType.ROUTER_MODEL, message, "小模型检测切换");
+                return newDomain;
+            }
+
+            log.debug("[DomainRoute] sessionId={} 保持当前域={}", sessionId, activeDomain);
+            return activeDomain;
+        } catch (Exception e) {
+            // 路由失败不应阻断对话流程，降级保持当前域继续处理
+            log.warn("[DomainRoute] sessionId={} 路由异常，降级保持当前域={}", sessionId, activeDomain, e);
+            return activeDomain;
+        }
+    }
+
+    /**
+     * 统一保存域绑定关系并记录域切换日志。
+     * <p>封装了 {@link SessionDomainRepository#save} 和
+     * {@link SessionDomainSwitchRepository#record} 的组合操作，
+     * 确保每次域变更都同时更新绑定和审计记录。
+     *
+     * @param sessionId  会话 ID
+     * @param fromDomain 切换前的域（首次进入时为 null）
+     * @param toDomain   切换后的目标域
+     * @param switchType 切换类型常量（{@link SwitchType}）
+     * @param message    触发切换的用户消息
+     * @param reason     切换原因描述
+     */
+    private void saveDomainSwitch(String sessionId, String fromDomain, String toDomain,
+                                  String switchType, String message, String reason) {
+        sessionDomainRepo.save(sessionId, toDomain);
+        domainSwitchRepo.record(new DomainSwitchRecord(
+                sessionId, fromDomain, toDomain, switchType, message, reason, null));
     }
 
     /**
@@ -169,6 +250,16 @@ public class ChatAppService {
     public SessionQueueItem requestTransfer(String sessionId, String userName,
                                              String transferReason, String tag) {
         return sessionQueueService.enqueue(sessionId, userName, transferReason, tag);
+    }
+
+    /**
+     * 查询会话当前状态（供 ChatController GET /api/v1/chat/state 使用）。
+     *
+     * @param sessionId 会话 ID
+     * @return 当前会话状态
+     */
+    public SessionStatus getSessionStatus(String sessionId) {
+        return sessionQueueService.getSessionStatus(sessionId);
     }
 
     // -------------------------------------------------------

@@ -99,6 +99,20 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     }
 
     /**
+     * 从 DB 查询会话当前状态（Redis 丢失时的兜底查询）。
+     *
+     * @param sessionId 会话唯一标识
+     * @return 会话状态，会话不存在时返回 null
+     */
+    default SessionStatus getStatusFromDb(@Param("sessionId") String sessionId) {
+        ConversationEntity entity = selectOne(Wrappers.lambdaQuery(ConversationEntity.class)
+                .select(ConversationEntity::getStatus)
+                .eq(ConversationEntity::getSessionId, sessionId)
+        );
+        return entity != null ? entity.getStatus() : null;
+    }
+
+    /**
      * 查询最近已关闭或 AI 对话的会话（status IN ('CLOSED','AI_CHAT')），
      * 供座席工作台「已结束」Tab 展示。按 updated_at 倒序，限制返回条数。
      *

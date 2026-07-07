@@ -118,6 +118,22 @@ knowledge:
     # 检索超时（秒），超时后降级为纯 AI 回复
     timeout-seconds: 5
 
+# -------- MCP（Model Context Protocol）工具服务端配置 --------
+# servers 列表为空时 MCP 工具自动禁用，不影响域工具和内置工具正常运行
+# 示例（取消注释并按实际填写）：
+# mcp:
+#   servers:
+#     - key: my-tools
+#       type: STDIO
+#       command: ["/usr/bin/node", "/opt/my-mcp/index.js"]
+#       enabled: true
+#     - key: remote-tools
+#       type: HTTP
+#       url: http://localhost:3001/sse
+#       enabled: false
+mcp:
+  servers: []
+
 logging:
   level:
     # 生产环境通过环境变量 LOGGING_LEVEL_COM_AIDEVPLATFORM_CONVERSATION=DEBUG 开启详细日志

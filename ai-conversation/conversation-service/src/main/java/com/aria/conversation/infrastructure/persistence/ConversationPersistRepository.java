@@ -172,6 +172,16 @@ public class ConversationPersistRepository {
     }
 
     /**
+     * 从 DB 查询会话当前状态（Redis 丢失时的兜底查询）。
+     *
+     * @param sessionId 会话唯一标识
+     * @return 会话状态，会话不存在时返回 null
+     */
+    public SessionStatus getStatusFromDb(String sessionId) {
+        return conversationMapper.getStatusFromDb(sessionId);
+    }
+
+    /**
      * 关闭会话记录（SESSION_END 事件触发）。
      * 若会话不存在或已关闭，静默忽略。
      *

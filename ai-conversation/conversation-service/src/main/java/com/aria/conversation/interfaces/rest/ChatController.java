@@ -5,6 +5,7 @@ import com.aria.conversation.application.service.ChatAppService;
 import com.aria.conversation.application.service.ChatEvent;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.ConversationMessage;
+import com.aria.conversation.domain.SessionStatus;
 import jakarta.validation.Valid;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -140,6 +141,26 @@ public class ChatController {
         return R.ok(chatService.requestTransfer(req.getSessionId(), req.getUserName(), reason, tag));
     }
 
+    /**
+     * 查询会话当前状态（前端 onMounted 兜底检测转接状态）。
+     *
+     * <p>当用户在 AI 工具触发转接后关闭页面，重新打开时前端无法从 localStorage
+     * 得知转接已发生（因为 localStorage 标志由前端自行写入，页面关闭前来不及写）。
+     * 此接口允许前端主动拉取后端 session 状态，若为 WAITING/ACTIVE 则自动恢复 WS 连接。
+     *
+     * @param sessionId 会话 ID
+     * @return 当前会话状态字符串（AI_CHAT / WAITING / ACTIVE / CLOSED）
+     */
+    @CrossOrigin(origins = "*")
+    @GetMapping("/state")
+    public R<Map<String, String>> sessionState(@RequestParam String sessionId) {
+        if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {
+            return R.fail(400, "非法的 sessionId 格式");
+        }
+        String status = chatService.getSessionStatus(sessionId).getValue();
+        return R.ok(Map.of("sessionId", sessionId, "status", status));
+    }
+
     // ---- 私有工具方法 ----
 
     /**
@@ -153,7 +174,9 @@ public class ChatController {
         return SESSION_ID_PATTERN.matcher(sessionId).matches() ? sessionId : null;
     }
 
-    /** 将 ChatEvent 转换为 ServerSentEvent。 */
+    /**
+     * 将 ChatEvent 转换为 ServerSentEvent。
+     */
     private ServerSentEvent<String> toSse(ChatEvent event) {
         ServerSentEvent.Builder<String> builder = ServerSentEvent.builder(event.data());
         if (event.eventType() != null) {
@@ -162,7 +185,9 @@ public class ChatController {
         return builder.build();
     }
 
-    /** 终止 SSE 流的 done 事件。 */
+    /**
+     * 终止 SSE 流的 done 事件。
+     */
     private Flux<ServerSentEvent<String>> doneStream() {
         return Flux.just(ServerSentEvent.<String>builder()
                 .event(ChatEvent.EventType.DONE)
@@ -174,9 +199,13 @@ public class ChatController {
 
     @Data
     public static class ChatRequest {
-        /** 会话 ID，访客可传 null 由后端生成 */
+        /**
+         * 会话 ID，访客可传 null 由后端生成
+         */
         private String sessionId;
-        /** 用户消息内容 */
+        /**
+         * 用户消息内容
+         */
         private String message;
         /**
          * 领域标识（可选）。传入时走 DIT Pipeline，支持意图识别和工具调用。
@@ -189,8 +218,8 @@ public class ChatController {
     public static class TransferRequest {
         @jakarta.validation.constraints.NotBlank(message = "sessionId 不能为空")
         @jakarta.validation.constraints.Pattern(
-            regexp = "^[a-zA-Z0-9_\\-]{1,64}$",
-            message = "sessionId 格式非法（只允许字母、数字、下划线、连字符，长度 1~64）")
+                regexp = "^[a-zA-Z0-9_\\-]{1,64}$",
+                message = "sessionId 格式非法（只允许字母、数字、下划线、连字符，长度 1~64）")
         private String sessionId;
 
         @jakarta.validation.constraints.NotBlank(message = "userName 不能为空")

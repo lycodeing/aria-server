@@ -1,6 +1,7 @@
 package com.aria.conversation.domain;
 
 import com.baomidou.mybatisplus.annotation.EnumValue;
+import lombok.Getter;
 
 /**
  * 会话状态枚举，实现状态机转换规则。
@@ -16,38 +17,43 @@ import com.baomidou.mybatisplus.annotation.EnumValue;
  *   AI_CHAT  → CLOSED  （AI 对话结束，暂保留扩展）
  * </pre>
  */
+@Getter
 public enum SessionStatus {
 
-    /** 等待座席接入 */
-    WAITING("WAITING"),
-
-    /** 座席已接入，对话进行中 */
-    ACTIVE("ACTIVE"),
-
-    /** 纯 AI 对话（无转人工），由系统在首条消息时自动创建 */
+    /**
+     * 纯 AI 对话（无转人工），由系统在首条消息时自动创建
+     */
     AI_CHAT("AI_CHAT"),
 
-    /** 会话已结束（终止状态，不可再转换） */
+    /**
+     * 等待座席接入
+     */
+    WAITING("WAITING"),
+
+    /**
+     * 座席已接入，对话进行中
+     */
+    ACTIVE("ACTIVE"),
+
+    /**
+     * 会话已结束（终止状态，不可再转换）
+     */
     CLOSED("CLOSED");
 
     /**
      * DB 存储值（与数据库列 VARCHAR 值一一对应）。
      * 【强制】{@link EnumValue} 标注此字段，MyBatis-Plus 以该值与数据库列双向映射。
+     * -- GETTER --
+     *  获取 DB 存储值。
+     *
+     * @return 大写状态字符串（WAITING / ACTIVE / CLOSED）
+
      */
     @EnumValue
     private final String value;
 
     SessionStatus(String value) {
         this.value = value;
-    }
-
-    /**
-     * 获取 DB 存储值。
-     *
-     * @return 大写状态字符串（WAITING / ACTIVE / CLOSED）
-     */
-    public String getValue() {
-        return value;
     }
 
     /**

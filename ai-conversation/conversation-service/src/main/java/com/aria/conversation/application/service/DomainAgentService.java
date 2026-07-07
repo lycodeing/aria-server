@@ -2,16 +2,16 @@ package com.aria.conversation.application.service;
 
 import com.aria.conversation.application.service.payload.ToolCallPayload;
 import com.aria.conversation.application.service.payload.ToolDonePayload;
-import com.aria.conversation.infrastructure.ai.BuiltinToolNames;
+import com.aria.conversation.application.service.tool.BuiltinTools;
+import com.aria.conversation.application.service.tool.DomainSummary;
+import com.aria.conversation.application.service.tool.InvocationParameters;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.infrastructure.ai.SessionChatMemoryStore;
+import com.aria.conversation.infrastructure.ai.mcp.McpClientRegistry;
 import com.aria.conversation.infrastructure.dit.config.IntentToolBinding;
 import com.aria.conversation.infrastructure.dit.config.ToolConfig;
-import com.aria.conversation.infrastructure.dit.domain.DomainDO;
 import com.aria.conversation.infrastructure.dit.pipeline.ToolCallResult;
 import com.aria.conversation.infrastructure.dit.pipeline.HttpToolRunner;
-import com.aria.conversation.infrastructure.dit.domain.DomainSwitchRecord;
-import com.aria.conversation.infrastructure.dit.domain.SwitchType;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
 import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
@@ -22,7 +22,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
+import dev.langchain4j.model.chat.request.json.JsonArraySchema;
+import dev.langchain4j.model.chat.request.json.JsonBooleanSchema;
+import dev.langchain4j.model.chat.request.json.JsonIntegerSchema;
+import dev.langchain4j.model.chat.request.json.JsonNumberSchema;
 import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonSchemaElement;
 import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.MemoryId;
@@ -32,6 +37,7 @@ import dev.langchain4j.service.tool.ToolProvider;
 import dev.langchain4j.service.tool.ToolProviderResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
@@ -68,6 +74,10 @@ public class DomainAgentService {
     private final ObjectMapper objectMapper;
     private final SessionDomainRepository sessionDomainRepo;
     private final SessionDomainSwitchRepository domainSwitchRepo;
+    /** MCP 工具注册表，提供来自外部 MCP 服务端的动态工具 */
+    private final McpClientRegistry mcpClientRegistry;
+    /** 转接入队服务，由 BuiltinTools.transferToAgent() 直接调用 */
+    private final SessionQueueService sessionQueueService;
 
     /**
      * LangChain4j AiService 流式对话接口。
@@ -88,24 +98,32 @@ public class DomainAgentService {
     public Flux<ChatEvent> streamChat(String sessionId, String domainCode, String userMessage) {
         log.debug("[DomainAgent] start sessionId={} domain={}", sessionId, domainCode);
 
-        // 1. RAG：同步检索知识库（在调用线程上执行）
-        List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
-        String systemPrompt = SystemPromptBuilder.build(hits);
+        // 1. 预查询所有域，在 application 层转为 DomainSummary（隔离持久化实体流转）
+        List<DomainSummary> allDomains = domainRepo.findAllEnabledSummary().stream()
+                .map(d -> new DomainSummary(d.getCode(), d.getDescription()))
+                .toList();
+        String domainAddon = buildDomainAddon(allDomains);
 
-        // 2. Sink：用于发射 tool_call / tool_done / domain_switch / transfer 事件
+        // 2. RAG + system prompt（域列表通过 addon 写入，LLM 从 system prompt 获知可切换域）
+        List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
+        String systemPrompt = SystemPromptBuilder.build(hits, domainAddon, null);
+
+        // 3. Sink：用于发射 tool_call / tool_done / domain_switch / transfer 事件
         Sinks.Many<ChatEvent> eventSink = Sinks.many().unicast().onBackpressureBuffer();
 
-        // 3. 收集域范围内的工具列表
+        // 4. 域范围内的工具列表
         List<ToolConfig> domainTools = getToolsForDomain(domainCode);
 
-        // 4. 构建 ToolProvider（域工具 + 内置工具）
-        ToolProvider toolProvider = buildToolProvider(sessionId, domainCode, userMessage, domainTools, eventSink);
+        // 5. per-request 内置工具实例（@Tool 静态注册，上下文通过构造器注入）
+        InvocationParameters params = new InvocationParameters(
+                sessionId, domainCode, userMessage, allDomains, eventSink);
+        BuiltinTools builtinTools = new BuiltinTools(params, sessionDomainRepo, domainSwitchRepo, objectMapper, sessionQueueService);
 
-        // 5. 构建每次请求独立的 DomainAssistant
-        //    ⚠️ 此处每次请求都重新 build，是有意为之，不可改为单例：
+        // 6. 构建每次请求独立的 DomainAssistant
+        //    ⚠️ 每次请求重新 build 是有意为之：
         //    - systemMessageProvider 依赖 RAG 闭包（每次请求独立检索结果）
+        //    - builtinTools 依赖 per-request 上下文（sessionId / eventSink 等）
         //    - toolProvider 依赖 domainCode 和 domainTools（不同域工具集不同）
-        //    AiServices.builder 本身是轻量级操作，性能代价可忽略。
         DomainAssistant assistant = AiServices.builder(DomainAssistant.class)
                 .streamingChatModel(modelFactory.getStreamingChatModel())
                 .systemMessageProvider(id -> systemPrompt)
@@ -114,10 +132,11 @@ public class DomainAgentService {
                         .maxMessages(CHAT_MEMORY_MAX_MESSAGES)
                         .chatMemoryStore(memoryStore)
                         .build())
-                .toolProvider(toolProvider)
+                .tools(builtinTools)                                          // @Tool 静态内置工具
+                .toolProvider(buildDynamicToolProvider(domainTools, eventSink)) // 动态工具：MCP + 域 HTTP
                 .build();
 
-        // 6. 合并 AI 令牌流与工具事件流
+        // 7. 合并 AI 令牌流与工具事件流
         Flux<ChatEvent> tokenFlux = assistant.chat(sessionId, userMessage)
                 .map(ChatEvent::data)
                 .doFinally(signal -> eventSink.tryEmitComplete());
@@ -142,49 +161,56 @@ public class DomainAgentService {
     }
 
     // -------------------------------------------------------
-    // ToolProvider 构造
+    // ToolProvider 构造（仅动态工具：MCP + 域 HTTP）
     // -------------------------------------------------------
 
-    private ToolProvider buildToolProvider(String sessionId, String domainCode,
-                                            String userMessage, List<ToolConfig> tools,
-                                            Sinks.Many<ChatEvent> eventSink) {
-        // 预计算域列表，用于 switch_domain 描述
-        List<DomainDO> allDomains = domainRepo.findAllEnabledSummary();
-        String domainDesc = allDomains.stream()
-                .map(d -> d.getCode() + "(" + d.getDescription() + ")")
-                .collect(Collectors.joining(", "));
-
+    /**
+     * 构建动态 {@link ToolProvider}，每次请求调用前执行，返回两层工具：
+     * <ol>
+     *   <li>MCP 工具（最低优先级，由 {@link McpClientRegistry} 聚合）</li>
+     *   <li>域 HTTP 工具（覆盖同名 MCP 工具）</li>
+     * </ol>
+     * 内置工具（{@code switch_domain} / {@code transfer_to_agent}）通过 {@code @Tool} 静态注册，
+     * 由 LangChain4j 框架与此 provider 结果自动合并，优先级最高。
+     */
+    private ToolProvider buildDynamicToolProvider(List<ToolConfig> tools,
+                                                   Sinks.Many<ChatEvent> eventSink) {
         return request -> {
             Map<ToolSpecification, ToolExecutor> toolMap = new LinkedHashMap<>();
 
-            // 域内业务工具
+            // 第一层：MCP 工具（先写，优先级最低）
+            try {
+                ToolProviderResult mcpResult =
+                        mcpClientRegistry.getToolProvider().provideTools(request);
+                if (mcpResult != null && mcpResult.tools() != null) {
+                    toolMap.putAll(mcpResult.tools());
+                    log.debug("[DomainAgent] 已加载 MCP 工具数={}", mcpResult.tools().size());
+                }
+            } catch (Exception e) {
+                log.warn("[DomainAgent] MCP 工具加载失败，已跳过", e);
+            }
+
+            // 第二层：域 HTTP 工具（覆盖同名 MCP 工具）
             for (ToolConfig tc : tools) {
                 toolMap.put(buildToolSpec(tc), buildHttpToolExecutor(tc, eventSink));
             }
 
-            // 内置工具：switch_domain
-            ToolSpecification switchDomainSpec = ToolSpecification.builder()
-                    .name(BuiltinToolNames.SWITCH_DOMAIN)
-                    .description("当用户问题与当前服务域无关时调用。可用域：" + domainDesc)
-                    .parameters(JsonObjectSchema.builder()
-                            .addStringProperty("target_domain_code", "目标域 code")
-                            .addStringProperty("reason", "切换原因")
-                            .required("target_domain_code")
-                            .build())
-                    .build();
-            toolMap.put(switchDomainSpec,
-                    buildSwitchDomainExecutor(sessionId, domainCode, userMessage, eventSink));
-
-            // 内置工具：transfer_to_agent
-            ToolSpecification transferSpec = ToolSpecification.builder()
-                    .name(BuiltinToolNames.TRANSFER_TO_AGENT)
-                    .description("当用户明确要求转接人工客服时调用")
-                    .parameters(JsonObjectSchema.builder().build())
-                    .build();
-            toolMap.put(transferSpec, buildTransferExecutor(eventSink));
-
             return new ToolProviderResult(toolMap);
         };
+    }
+
+    /**
+     * 将所有启用域拼装为 system prompt addon，告知 LLM 可切换的域列表。
+     * 格式示例：「当前可用服务域：ecommerce（电商购物），logistics（物流配送）」
+     */
+    private String buildDomainAddon(List<DomainSummary> allDomains) {
+        if (allDomains == null || allDomains.isEmpty()) {
+            return null;
+        }
+        String domainList = allDomains.stream()
+                .map(d -> d.code() + "（" + d.description() + "）")
+                .collect(Collectors.joining("，"));
+        return "当前可用服务域：" + domainList;
     }
 
     // -------------------------------------------------------
@@ -216,71 +242,126 @@ public class DomainAgentService {
         };
     }
 
-    private ToolExecutor buildSwitchDomainExecutor(String sessionId, String currentDomain,
-                                                     String userMessage,
-                                                     Sinks.Many<ChatEvent> eventSink) {
-        return (ToolExecutionRequest req, Object memId) -> {
-            try {
-                Map<String, Object> args = parseArguments(req.arguments());
-                String targetDomain = (String) args.get("target_domain_code");
-                if (targetDomain == null || targetDomain.isBlank()) {
-                    log.warn("[DomainAgent] switch_domain missing target_domain_code");
-                    return "域切换参数缺失，保持当前服务域。";
-                }
-                String reason = (String) args.getOrDefault("reason", "");
-                log.info("[DomainAgent] switch_domain {} → {} reason={}", currentDomain, targetDomain, reason);
-
-                // 持久化 session 激活域（与 ChatAppService ROUTER 路径保持一致）
-                sessionDomainRepo.save(sessionId, targetDomain);
-                domainSwitchRepo.record(new DomainSwitchRecord(
-                        sessionId, currentDomain, targetDomain,
-                        SwitchType.LLM_TOOL, userMessage,
-                        reason.isBlank() ? "LLM 工具触发切换" : reason, null));
-
-                eventSink.tryEmitNext(ChatEvent.domainSwitch(targetDomain));
-            } catch (Exception e) {
-                log.warn("[DomainAgent] switch_domain parse error", e);
-            }
-            return "正在为您切换到对应服务...";
-        };
-    }
-
-    private ToolExecutor buildTransferExecutor(Sinks.Many<ChatEvent> eventSink) {
-        return (ToolExecutionRequest req, Object memId) -> {
-            eventSink.tryEmitNext(ChatEvent.transfer("{\"intentCode\":\"agent_transfer\"}"));
-            return "已为您转接人工客服，请稍候。";
-        };
-    }
 
     // -------------------------------------------------------
     // 工具规格（ToolSpecification）构造
     // -------------------------------------------------------
 
+    /**
+     * 根据 {@link ToolConfig#paramSchema()} 构建 LangChain4j {@link ToolSpecification}。
+     *
+     * <p>{@code paramSchema} 是标准 JSON Schema 字符串，格式示例：
+     * <pre>{@code
+     * {
+     *   "properties": {
+     *     "orderId":  { "type": "string",  "description": "订单号" },
+     *     "quantity": { "type": "integer", "description": "数量" },
+     *     "express":  { "type": "boolean", "description": "是否加急" }
+     *   },
+     *   "required": ["orderId"]
+     * }
+     * }</pre>
+     *
+     * <p>支持 type → JsonSchemaElement 映射：
+     * string → {@link JsonStringSchema}，integer → {@link JsonIntegerSchema}，
+     * number → {@link JsonNumberSchema}，boolean → {@link JsonBooleanSchema}，
+     * array → {@link JsonArraySchema}（items 默认 string），
+     * object / 未知 → {@link JsonStringSchema}（降级）。
+     *
+     * @param tc 工具配置
+     * @return 完整的 ToolSpecification，包含 name、description 和 parameters
+     */
     private ToolSpecification buildToolSpec(ToolConfig tc) {
         JsonObjectSchema.Builder schemaBuilder = JsonObjectSchema.builder();
+
+        if (StringUtils.isBlank(tc.paramSchema())) {
+            return buildFinalSpec(tc, schemaBuilder);
+        }
+
         try {
-            if (tc.paramSchema() != null && !tc.paramSchema().isBlank()) {
-                Map<String, Object> schema = objectMapper.readValue(
-                        tc.paramSchema(), new TypeReference<>() {});
-                @SuppressWarnings("unchecked")
-                Map<String, Object> properties =
-                        (Map<String, Object>) schema.getOrDefault("properties", Map.of());
-                properties.forEach((name, def) -> {
-                    String desc = def instanceof Map<?, ?> m
-                            ? String.valueOf(m.get("description") != null ? m.get("description") : "")
-                            : "";
-                    schemaBuilder.addProperty(name,
-                            JsonStringSchema.builder().description(desc).build());
-                });
-                @SuppressWarnings("unchecked")
-                List<String> required = (List<String>) schema.get("required");
-                if (required != null && !required.isEmpty()) {
-                    schemaBuilder.required(required);
-                }
-            }
+            Map<String, Object> schema = objectMapper.readValue(tc.paramSchema(), new TypeReference<>() {});
+
+            // 解析 properties：逐个属性按 type 映射为对应的 JsonSchemaElement
+            parseProperties(schema, schemaBuilder);
+
+            // 解析 required 字段列表
+            parseRequired(schema, schemaBuilder);
+
         } catch (Exception e) {
             log.error("[DomainAgent] paramSchema 解析失败，工具参数定义将为空 tool={}", tc.code(), e);
         }
+
+        return buildFinalSpec(tc, schemaBuilder);
+    }
+
+    /**
+     * 从 JSON Schema 的 "properties" 节点中提取每个属性的类型和描述，
+     * 并添加到 {@link JsonObjectSchema.Builder} 中。
+     *
+     * <p>每个属性的 "type" 字段决定映射到哪种 {@link JsonSchemaElement}，
+     * "description" 字段作为 LLM 的参数说明。缺失或非法 type 时降级为 string。
+     */
+    private void parseProperties(Map<String, Object> schema, JsonObjectSchema.Builder builder) {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> properties = (Map<String, Object>) schema.getOrDefault("properties", Map.of());
+
+        properties.forEach((name, def) -> {
+            if (!(def instanceof Map<?, ?> propDef)) {
+                // 非 Map 格式的 property 定义，降级为无描述的 string
+                builder.addProperty(name, JsonStringSchema.builder().build());
+                return;
+            }
+
+            String description = safeString(propDef.get("description"));
+            String type = safeString(propDef.get("type"));
+            JsonSchemaElement element = mapTypeToSchema(type, description);
+            builder.addProperty(name, element);
+        });
+    }
+
+    /**
+     * 将 JSON Schema 的 type 字符串映射为 LangChain4j 的 {@link JsonSchemaElement}。
+     *
+     * @param type        JSON Schema type 值（string/integer/number/boolean/array/object）
+     * @param description 属性描述文本
+     * @return 对应的 JsonSchemaElement 实例
+     */
+    private JsonSchemaElement mapTypeToSchema(String type, String description) {
+        return switch (type) {
+            case "integer" -> JsonIntegerSchema.builder().description(description).build();
+            case "number"  -> JsonNumberSchema.builder().description(description).build();
+            case "boolean" -> JsonBooleanSchema.builder().description(description).build();
+            case "array"   -> JsonArraySchema.builder()
+                    .description(description)
+                    .items(JsonStringSchema.builder().build())
+                    .build();
+            // "string"、"object"、空值、未知类型均降级为 string
+            default -> JsonStringSchema.builder().description(description).build();
+        };
+    }
+
+    /**
+     * 从 JSON Schema 根节点提取 "required" 数组并设置到 builder。
+     */
+    private void parseRequired(Map<String, Object> schema, JsonObjectSchema.Builder builder) {
+        @SuppressWarnings("unchecked")
+        List<String> required = (List<String>) schema.get("required");
+        if (required != null && !required.isEmpty()) {
+            builder.required(required);
+        }
+    }
+
+    /**
+     * 安全地将 Object 转为 String，null 或非 String 类型返回空串。
+     */
+    private String safeString(Object value) {
+        return value instanceof String s ? s : "";
+    }
+
+    /**
+     * 使用 schemaBuilder 构建最终的 {@link ToolSpecification}。
+     */
+    private ToolSpecification buildFinalSpec(ToolConfig tc, JsonObjectSchema.Builder schemaBuilder) {
         return ToolSpecification.builder()
                 .name(tc.code())
                 .description(tc.description())

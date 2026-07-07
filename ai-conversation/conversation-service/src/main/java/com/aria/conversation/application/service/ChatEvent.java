@@ -21,31 +21,45 @@ public record ChatEvent(String eventType, String data) {
     // 前端 currentEvent 判断逻辑必须与此处保持一致
     // ----------------------------------------------------------------
     public static final class EventType {
-        /** 知识库溯源标签，data 为 JSON 数组 [{docId, label}] */
-        public static final String SOURCES    = "sources";
-        /** 槽位缺失，等待用户文字输入，data 为提示语字符串 */
-        public static final String SLOT_ASK   = "slot_ask";
-        /** 槽位发现候选项，等待用户选择，data 为 JSON 数组 [{id, label}] */
+        /**
+         * 知识库溯源标签，data 为 JSON 数组 [{docId, label}]
+         */
+        public static final String SOURCES = "sources";
+        /**
+         * 槽位缺失，等待用户文字输入，data 为提示语字符串
+         */
+        public static final String SLOT_ASK = "slot_ask";
+        /**
+         * 槽位发现候选项，等待用户选择，data 为 JSON 数组 [{id, label}]
+         */
         public static final String CANDIDATES = "candidates";
-        /** 工具调用开始，data 为 ToolCallPayload JSON */
-        public static final String TOOL_CALL  = "tool_call";
-        /** 工具调用完成，data 为 ToolDonePayload JSON */
-        public static final String TOOL_DONE  = "tool_done";
+        /**
+         * 工具调用开始，data 为 ToolCallPayload JSON
+         */
+        public static final String TOOL_CALL = "tool_call";
+        /**
+         * 工具调用完成，data 为 ToolDonePayload JSON
+         */
+        public static final String TOOL_DONE = "tool_done";
         /**
          * 自动转人工信号，data 为 TransferPayload JSON。
          * 前端收到后必须：切换 transferred 状态 → 持久化 localStorage → 建立 WebSocket。
          */
-        public static final String TRANSFER   = "transfer";
-        /** 业务错误，data 为错误描述字符串 */
-        public static final String ERROR         = "error";
-        /** 域切换信号，data 为目标域 code */
+        public static final String TRANSFER = "transfer";
+        /**
+         * 业务错误，data 为错误描述字符串
+         */
+        public static final String ERROR = "error";
+        /**
+         * 域切换信号，data 为目标域 code
+         */
         public static final String DOMAIN_SWITCH = "domain_switch";
 
         /**
          * SSE 流结束信号，data 固定为 "[DONE]"。
          * Controller 在 Flux 末尾追加此事件，前端据此关闭流并结束 loading 状态。
          */
-        public static final String DONE       = "done";
+        public static final String DONE = "done";
 
         private EventType() { /* 工具类，不允许实例化 */ }
     }
@@ -54,32 +68,44 @@ public record ChatEvent(String eventType, String data) {
     // 工厂方法（每个方法只使用 EventType 常量，不出现字符串字面量）
     // ----------------------------------------------------------------
 
-    /** 普通 AI 回复 token（无 event 字段，SSE 默认事件） */
+    /**
+     * 普通 AI 回复 token（无 event 字段，SSE 默认事件）
+     */
     public static ChatEvent data(String data) {
         return new ChatEvent(null, data);
     }
 
-    /** 知识库溯源标签 */
+    /**
+     * 知识库溯源标签
+     */
     public static ChatEvent sources(String json) {
         return new ChatEvent(EventType.SOURCES, json);
     }
 
-    /** 槽位缺失询问 */
+    /**
+     * 槽位缺失询问
+     */
     public static ChatEvent slotAsk(String json) {
         return new ChatEvent(EventType.SLOT_ASK, json);
     }
 
-    /** 槽位候选项 */
+    /**
+     * 槽位候选项
+     */
     public static ChatEvent candidates(String json) {
         return new ChatEvent(EventType.CANDIDATES, json);
     }
 
-    /** 工具调用开始 */
+    /**
+     * 工具调用开始
+     */
     public static ChatEvent toolCall(String json) {
         return new ChatEvent(EventType.TOOL_CALL, json);
     }
 
-    /** 工具调用完成 */
+    /**
+     * 工具调用完成
+     */
     public static ChatEvent toolDone(String json) {
         return new ChatEvent(EventType.TOOL_DONE, json);
     }
@@ -98,12 +124,16 @@ public record ChatEvent(String eventType, String data) {
         return new ChatEvent(EventType.TRANSFER, json);
     }
 
-    /** 业务错误信号 */
+    /**
+     * 业务错误信号
+     */
     public static ChatEvent error(String message) {
         return new ChatEvent(EventType.ERROR, message);
     }
 
-    /** 域切换信号，data 为目标域 code */
+    /**
+     * 域切换信号，data 为目标域 code
+     */
     public static ChatEvent domainSwitch(String targetDomain) {
         return new ChatEvent(EventType.DOMAIN_SWITCH, targetDomain);
     }
