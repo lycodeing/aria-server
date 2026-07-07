@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.repository;
 
+import com.aria.common.core.util.JsonUtils;
 import com.aria.common.web.redis.RedisCacheHelper;
 import com.aria.common.web.redis.RedisLockHelper;
 import com.aria.conversation.domain.ConversationMessage;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Repository;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -27,15 +29,23 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>双写策略：
  * <pre>
- *   append() / appendAgentMessage()
- *     ├─ Redis List  chat:session:{id}  （热数据，四元组 [role, content, seq, timestamp]，TTL 24h）
- *     └─ RabbitMQ MESSAGE 事件（含 seq） （冷存储，异步持久化至 DB）
+ *   append() / appendAgentMessage() / saveAll()
+ *     ├─ Redis List  chat:session:{id}  （热数据，每条消息一个 JSON 字符串，TTL 24h）
+ *     └─ RabbitMQ MESSAGE 事件（含 seq / toolRequestId / toolName / toolCalls）
+ *          └→ Consumer 异步持久化至 PostgreSQL
  * </pre>
+ *
+ * <p>Redis List 存储格式（三种向后兼容）：
+ * <ul>
+ *   <li>【新】JSON-per-slot：每个元素是 {@link ConversationMessage} 的 JSON 字符串（含 tool_calls 完整信息）</li>
+ *   <li>【旧】4 元组：{@code [role, content, seq, timestamp]}，长度整体 % 4 == 0，元素为纯文本</li>
+ *   <li>【旧】3 元组：{@code [role, content, seq]}，长度 % 4 != 0 且 % 3 == 0，滚动部署过渡期兼容</li>
+ * </ul>
  *
  * <p>角色约定：
  * <ul>
- *   <li>Redis List / AI 请求：user / assistant（OpenAI 标准）</li>
- *   <li>DB 持久化：user / assistant（AI）/ agent（人工座席，便于质检分析）</li>
+ *   <li>Redis List / AI 请求：user / assistant / tool（LangChain4j 标准）</li>
+ *   <li>DB 持久化：user / assistant / agent / tool / system</li>
  * </ul>
  */
 @Slf4j
@@ -82,8 +92,11 @@ public class ConversationHistoryRepository {
 
     private static final long TTL_HOURS         = 24L;
     private static final int  MAX_HISTORY_TURNS = 20;
-    /** Redis List 中每条消息占用的元素数（role / content / seq / timestamp 四元组） */
-    private static final int  ELEMENTS_PER_MSG  = 4;
+
+    /** 旧 4 元组格式（role / content / seq / timestamp）在滚动升级窗口内保留兼容读能力 */
+    private static final int LEGACY_QUAD_STEP = 4;
+    /** 旧 3 元组格式（role / content / seq）在最早版本历史里出现 */
+    private static final int LEGACY_TRIPLE_STEP = 3;
 
     private static final String ROLE_ASSISTANT = "assistant";
     private static final String ROLE_AGENT     = "agent";
@@ -115,7 +128,7 @@ public class ConversationHistoryRepository {
      * 此时清除标记并用 DB max 重新修正基准值，防止 seq 从 1 重新开始与 DB 已有记录冲突。
      */
     private final Set<String> initializedSessions = ConcurrentHashMap.newKeySet();
-    
+
     /**
      * 生成 session 内的下一个单调递增 seq（Redis Lua 原子 INCR + DB 兜底）。
      *
@@ -128,17 +141,17 @@ public class ConversationHistoryRepository {
     public long nextSeq(String sessionId) {
         String key = SEQ_KEY_PREFIX + sessionId;
         boolean alreadyInitialized = initializedSessions.contains(sessionId);
-    
+
         // 冷路径：首次访问，查 DB 获取基准值
         long seq = coldPathInitSeq(key, sessionId, alreadyInitialized);
-    
+
         // 热路径兜底：seq==1 且本地标记为已初始化，说明 Redis key TTL 已过期被重建
         if (seq == 1L && alreadyInitialized) {
             seq = hotPathRecoverSeq(key, sessionId);
         }
         return seq;
     }
-    
+
     /**
      * 冷路径：初始化 seq 计数器。
      * 首次访问时查 DB 获取基准值，通过 Lua 原子初始化后再 INCR。
@@ -153,7 +166,7 @@ public class ConversationHistoryRepository {
         if (!alreadyInitialized) {
             initializedSessions.add(sessionId);
         }
-    
+
         Long seq = lockHelper.executeLua(
                 INIT_AND_INCR_SCRIPT,
                 Collections.singletonList(key),
@@ -165,7 +178,7 @@ public class ConversationHistoryRepository {
         }
         return seq;
     }
-    
+
     /**
      * 热路径恢复：Redis key TTL 过期后重新以 DB max 为基准修正 seq。
      * 防止与已持久化的 seq 产生冲突。
@@ -203,8 +216,10 @@ public class ConversationHistoryRepository {
      */
     public long append(String sessionId, String role, String content) {
         long seq = nextSeq(sessionId);
-        writeToListWithTrim(sessionId, role, content, seq);
-        publishMessageEvent(sessionId, role, content, seq);
+        ConversationMessage msg = new ConversationMessage(
+                role, content, seq, System.currentTimeMillis(), null, null, null);
+        writeToListWithTrim(sessionId, msg);
+        publishMessageEvent(sessionId, msg, role);
         return seq;
     }
 
@@ -216,8 +231,10 @@ public class ConversationHistoryRepository {
      */
     public long appendAgentMessage(String sessionId, String content) {
         long seq = nextSeq(sessionId);
-        writeToListWithTrim(sessionId, ROLE_ASSISTANT, content, seq);
-        publishMessageEvent(sessionId, ROLE_AGENT, content, seq);
+        ConversationMessage msg = new ConversationMessage(
+                ROLE_ASSISTANT, content, seq, System.currentTimeMillis(), null, null, null);
+        writeToListWithTrim(sessionId, msg);
+        publishMessageEvent(sessionId, msg, ROLE_AGENT);
         return seq;
     }
 
@@ -234,7 +251,7 @@ public class ConversationHistoryRepository {
         if (raw == null || raw.isEmpty()) {
             return new ArrayList<>();
         }
-        List<ConversationMessage> messages = parseQuadruples(raw);
+        List<ConversationMessage> messages = parseMessages(raw);
         if (messages.size() > MAX_HISTORY_TURNS) {
             messages = messages.subList(messages.size() - MAX_HISTORY_TURNS, messages.size());
         }
@@ -254,7 +271,7 @@ public class ConversationHistoryRepository {
      */
     public List<ConversationMessage> findSince(String sessionId, long sinceSeq) {
         List<String> raw = cache.lRange(KEY_PREFIX + sessionId, 0, -1);
-        List<ConversationMessage> redisMsgs = parseQuadruples(raw);
+        List<ConversationMessage> redisMsgs = parseMessages(raw);
 
         // 校验 Redis 数据健康：含 seq≤0 的脏数据时整体回退 DB
         boolean redisHealthy = redisMsgs.stream().allMatch(m -> m.seq() > 0L);
@@ -282,23 +299,31 @@ public class ConversationHistoryRepository {
     /**
      * 全量原子替换 Redis List（AI 流式回复完成后调用）。
      * 使用 Pipeline 完成 DEL + RPUSH + EXPIRE，避免并发场景下的竞态。
+     *
+     * <p>为每一条 seq 从未出现在 Redis 快照里的新消息发布 MQ 事件；tool_call / tool_result
+     * 中间态也会入库，让 DB 保存完整多轮工具调用链。
      */
     public void saveAll(String sessionId, List<ConversationMessage> messages) {
-        List<String> elements = new ArrayList<>(messages.size() * ELEMENTS_PER_MSG);
+        // 快照 Redis 已存在的 seq，用于识别本次新增
+        List<ConversationMessage> existing = findAll(sessionId);
+        Set<Long> existingSeqs = new HashSet<>(existing.size());
+        for (ConversationMessage m : existing) {
+            if (m.seq() > 0L) existingSeqs.add(m.seq());
+        }
+
+        // 序列化整个 List 为 JSON 元素（每条一个 slot）
+        List<String> elements = new ArrayList<>(messages.size());
         for (ConversationMessage msg : messages) {
-            elements.add(msg.role());
-            elements.add(msg.content());
-            elements.add(String.valueOf(msg.seq()));
-            elements.add(msg.timestamp() != null ? String.valueOf(msg.timestamp()) : "");
+            elements.add(toJson(msg));
         }
         cache.replaceListAtomically(KEY_PREFIX + sessionId, elements, Duration.ofHours(TTL_HOURS));
 
-        // 发布最后一条 assistant 消息的 MQ 事件（使用已有 seq，不重新生成）
-        if (!messages.isEmpty()) {
-            ConversationMessage last = messages.get(messages.size() - 1);
-            if (ROLE_ASSISTANT.equals(last.role()) && last.seq() > 0) {
-                publishMessageEvent(sessionId, ROLE_ASSISTANT, last.content(), last.seq());
+        // 发布本次新增消息到 MQ（含 tool_call / tool_result 中间态，确保 DB 保存完整链路）
+        for (ConversationMessage msg : messages) {
+            if (msg.seq() <= 0L || existingSeqs.contains(msg.seq())) {
+                continue;
             }
+            publishMessageEvent(sessionId, msg, msg.role());
         }
     }
 
@@ -314,59 +339,105 @@ public class ConversationHistoryRepository {
     // -------------------------------------------------------
 
     /**
-     * 原子写入 Redis List 四元组 [role, content, seq, timestamp] 并 LTRIM 保留最新历史。
-     * 一次 RPUSH 多个元素，避免三次单独 push 之间被其他命令插入导致元组错位。
+     * 将单条消息序列化为 JSON 后 RPUSH 到 Redis List，同时 LTRIM 保留最新 N 条。
      */
-    private void writeToListWithTrim(String sessionId, String role, String content, long seq) {
+    private void writeToListWithTrim(String sessionId, ConversationMessage msg) {
         String key = KEY_PREFIX + sessionId;
-        cache.lRightPushAll(key, role, content, String.valueOf(seq),
-                String.valueOf(System.currentTimeMillis()));
-        cache.lTrim(key, -(MAX_HISTORY_TURNS * (long) ELEMENTS_PER_MSG), -1);
+        cache.lRightPushAll(key, toJson(msg));
+        cache.lTrim(key, -MAX_HISTORY_TURNS, -1);
         cache.expire(key, Duration.ofHours(TTL_HOURS));
     }
 
     /**
      * 将 Redis List 原始字符串序列解析为 {@link ConversationMessage} 列表。
      *
-     * <p>兼容两种格式：
+     * <p>兼容三种格式（滚动升级期）：
      * <ul>
-     *   <li>新格式（4元组）：[role, content, seq, timestamp]，ELEMENTS_PER_MSG=4</li>
-     *   <li>旧格式（3元组）：[role, content, seq]，历史数据或滚动部署窗口内可能出现</li>
+     *   <li>【新】JSON-per-slot：首元素以 {@code '{'} 开头（可选前导空白），每个 slot 即一条 JSON 消息</li>
+     *   <li>【旧】4 元组：size % 4 == 0 且首元素不是 JSON</li>
+     *   <li>【旧】3 元组：size % 3 == 0 且不满足 4 元组</li>
      * </ul>
-     * 长度不是 3 或 4 的整数倍时，跳过尾部不完整记录（脏数据容错）。
+     * 任何格式的尾部残缺 slot / 单元素反序列化异常都会 WARN 后跳过，不阻断整体读路径。
      */
-    private List<ConversationMessage> parseQuadruples(List<String> raw) {
+    List<ConversationMessage> parseMessages(List<String> raw) {
         if (raw == null || raw.isEmpty()) {
             return new ArrayList<>();
         }
-        // 探测格式：4元组优先；若 size%4!=0 且 size%3==0 则按旧格式解析
-        int step = ELEMENTS_PER_MSG;
-        if (raw.size() % ELEMENTS_PER_MSG != 0 && raw.size() % 3 == 0) {
-            step = 3;
-            log.debug("[History] 检测到旧3元组格式数据，按兼容模式解析，size={}", raw.size());
+        if (isNewJsonFormat(raw)) {
+            return parseJsonSlots(raw);
         }
-        List<ConversationMessage> messages = new ArrayList<>(raw.size() / step);
-        for (int i = 0; i + step - 1 < raw.size(); i += step) {
+        return parseLegacyTuples(raw);
+    }
+
+    /**
+     * 判定是否为新 JSON-per-slot 格式：仅检查首元素首字符是否为 '{'（跳过空白）。
+     * 旧 4/3 元组场景下首元素总是 role 字符串（user/assistant/...），永不以 '{' 开头。
+     */
+    private boolean isNewJsonFormat(List<String> raw) {
+        String head = raw.get(0);
+        if (head == null) return false;
+        for (int i = 0; i < head.length(); i++) {
+            char c = head.charAt(i);
+            if (Character.isWhitespace(c)) continue;
+            return c == '{';
+        }
+        return false;
+    }
+
+    private List<ConversationMessage> parseJsonSlots(List<String> raw) {
+        List<ConversationMessage> messages = new ArrayList<>(raw.size());
+        for (int i = 0; i < raw.size(); i++) {
+            String slot = raw.get(i);
+            if (slot == null || slot.isBlank()) {
+                log.warn("[History] 跳过空 slot，index={}", i);
+                continue;
+            }
+            try {
+                ConversationMessage msg = JsonUtils.parseObject(slot, ConversationMessage.class);
+                if (msg != null) messages.add(msg);
+            } catch (RuntimeException e) {
+                log.warn("[History] JSON slot 反序列化失败，跳过，index={} raw={}", i, slot, e);
+            }
+        }
+        return messages;
+    }
+
+    private List<ConversationMessage> parseLegacyTuples(List<String> raw) {
+        int size = raw.size();
+        int step;
+        if (size % LEGACY_QUAD_STEP == 0) {
+            step = LEGACY_QUAD_STEP;
+        } else if (size % LEGACY_TRIPLE_STEP == 0) {
+            step = LEGACY_TRIPLE_STEP;
+            log.debug("[History] 检测到旧 3 元组格式数据，按兼容模式解析，size={}", size);
+        } else {
+            log.warn("[History] Redis List 长度既非 4 也非 3 的倍数，尝试 4 元组解析剩余部分，size={}", size);
+            step = LEGACY_QUAD_STEP;
+        }
+
+        List<ConversationMessage> messages = new ArrayList<>(size / step);
+        for (int i = 0; i + step - 1 < size; i += step) {
             String role    = raw.get(i);
             String content = raw.get(i + 1);
-            long   seq     = parseSeq(raw.get(i + 2));
-            Long   timestamp = (step == 4) ? parseTimestamp(raw.get(i + 3)) : null;
+            long   seq     = parseLong(raw.get(i + 2), 0L);
+            Long   timestamp = (step == LEGACY_QUAD_STEP) ? parseLongOrNull(raw.get(i + 3)) : null;
             messages.add(new ConversationMessage(role, content, seq, timestamp));
         }
         return messages;
     }
 
-    /** 容错解析 seq 字符串，非法时返回 0（旧数据走 DB 兜底）。 */
-    private long parseSeq(String raw) {
+    /** 容错解析 long，非法时返回默认值。 */
+    private long parseLong(String raw, long fallback) {
+        if (raw == null) return fallback;
         try {
             return Long.parseLong(raw);
         } catch (NumberFormatException e) {
-            return 0L;
+            return fallback;
         }
     }
 
-    /** 容错解析 timestamp 字符串，空或非法时返回 null。 */
-    private Long parseTimestamp(String raw) {
+    /** 容错解析 long，空或非法时返回 null。 */
+    private Long parseLongOrNull(String raw) {
         if (raw == null || raw.isBlank()) return null;
         try {
             return Long.parseLong(raw);
@@ -375,16 +446,28 @@ public class ConversationHistoryRepository {
         }
     }
 
+    /** 消息序列化为 JSON；失败时抛异常（写入路径失败必须暴露，避免默默丢消息）。 */
+    private String toJson(ConversationMessage msg) {
+        String json = JsonUtils.toJsonString(msg);
+        if (json == null) {
+            // JsonUtils.toJsonString(null) 返回 null；此处 msg 已由上层保证非 null，仅做兜底
+            throw new IllegalStateException("消息序列化为 null，msg=" + msg);
+        }
+        return json;
+    }
+
     /**
      * 通过 RabbitMQ Publisher 发布消息事件（异步持久化至 DB）。
      * Publisher 内置重试（3次），耗尽后捕获异常并打印 WARN，不阻断主流程。
+     *
+     * @param dbRole DB 侧使用的角色（如 assistant 消息在 DB 里可能标记为 agent 便于质检）
      */
-    private void publishMessageEvent(String sessionId, String role, String content, long seq) {
+    private void publishMessageEvent(String sessionId, ConversationMessage msg, String dbRole) {
         try {
-            publisher.publishMessage(sessionId, role, content, seq);
+            publisher.publishMessage(sessionId, dbRole, msg);
         } catch (RuntimeException e) {
             log.warn("[History] MQ 发布失败（3次重试后），消息仅存 Redis List，sessionId={} seq={}",
-                    sessionId, seq, e);
+                    sessionId, msg.seq(), e);
         }
     }
 }

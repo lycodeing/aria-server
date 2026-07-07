@@ -50,4 +50,20 @@ public class ConversationMessageEntity {
 
     /** 消息时间（从 MQ/Stream 事件的 timestamp 恢复，单位 epoch seconds） */
     private OffsetDateTime createdAt;
+
+    /**
+     * LangChain4j {@code ToolExecutionRequest} ID，role=tool 时填充。
+     * 与 assistant 消息的 tool_calls[i].id 一一对应，用于跨会话恢复
+     * "AI 请求工具 → 工具返回结果" 的多轮上下文。
+     */
+    private String toolRequestId;
+
+    /** 工具名称，role=tool 时填充。 */
+    private String toolName;
+
+    /**
+     * assistant 触发的 tool_calls JSON 数组：{@code [{"id":"...","name":"...","arguments":"..."}]}。
+     * 仅 role=assistant 且模型返回 tool_calls 时非空。JSON 反序列化在应用层完成。
+     */
+    private String toolCallsJson;
 }

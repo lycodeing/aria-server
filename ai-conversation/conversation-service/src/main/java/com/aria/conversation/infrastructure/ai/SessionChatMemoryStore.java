@@ -2,6 +2,7 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
@@ -28,9 +29,12 @@ import java.util.Map;
  * <p>角色映射：
  * <ul>
  *   <li>user      ↔ {@link UserMessage}</li>
- *   <li>assistant ↔ {@link AiMessage}</li>
- *   <li>tool      ↔ {@link ToolExecutionResultMessage}，id/toolName 通过扩展字段传递</li>
+ *   <li>assistant ↔ {@link AiMessage}（含 tool_calls 请求，通过 {@link ConversationMessage#toolCalls()} 承载）</li>
+ *   <li>tool      ↔ {@link ToolExecutionResultMessage}，id/toolName 通过 {@code toolRequestId}/{@code toolName} 传递</li>
  * </ul>
+ *
+ * <p>关键：assistant 消息的 tool_calls 必须与后续 tool 结果消息的 id 严格对齐，
+ * 否则 LangChain4j 复读历史时会因 tool_call ↔ tool_result 不配对而抛异常。
  */
 @Slf4j
 @Component
@@ -52,40 +56,35 @@ public class SessionChatMemoryStore implements ChatMemoryStore {
      * <p>LangChain4j 在每轮对话后会调用此方法回写全量消息。如果直接将所有消息的
      * seq 设为 0，会破坏断线重连增量同步机制（{@code getHistorySince} 依赖 seq > 0）。
      *
-     * <p>策略：通过 role + content 匹配已有消息以保留其 seq；同 role+content 的多条消息
-     * 按先后顺序依次消费（Deque 队列），避免重复内容碰撞导致 seq 复用；
+     * <p>策略：优先按 {@code toolRequestId}（tool 消息）或 tool_calls 内容匹配已有消息以保留其 seq；
+     * 兜底按 role + content Deque 匹配，避免重复内容碰撞导致 seq 复用；
      * 新增消息从当前最大 seq+1 开始分配。
      */
     @Override
     public void updateMessages(Object memoryId, List<ChatMessage> messages) {
         String sessionId = memoryId.toString();
         try {
-            // 读取已有消息，构建 role|content → seq 队列的索引
-            // 使用 Deque 而非单值 Map，确保同 role+content 的多条消息按顺序各自获得独立 seq
             List<ConversationMessage> existing = historyRepo.findAll(sessionId);
+            // 使用 Deque 而非单值 Map，确保同 role+content 的多条消息按顺序各自获得独立 seq
             Map<String, Deque<Long>> seqIndex = new LinkedHashMap<>(existing.size() * 2);
             long maxSeq = 0L;
             for (ConversationMessage em : existing) {
-                seqIndex.computeIfAbsent(em.role() + "|" + em.content(), k -> new ArrayDeque<>())
-                        .offer(em.seq());
+                seqIndex.computeIfAbsent(matchKey(em), k -> new ArrayDeque<>()).offer(em.seq());
                 if (em.seq() > maxSeq) {
                     maxSeq = em.seq();
                 }
             }
 
-            // 转换消息并分配 seq
             List<ConversationMessage> toSave = new ArrayList<>(messages.size());
             long nextSeq = maxSeq;
             for (ChatMessage m : messages) {
                 ConversationMessage dm = toDomainMessage(m);
-                String key = dm.role() + "|" + dm.content();
-                // poll() 按入队顺序消费，同内容第二条不会复用第一条的 seq
-                Deque<Long> seqQueue = seqIndex.get(key);
+                Deque<Long> seqQueue = seqIndex.get(matchKey(dm));
                 Long existingSeq = (seqQueue != null) ? seqQueue.poll() : null;
                 long seq = (existingSeq != null && existingSeq > 0) ? existingSeq : ++nextSeq;
                 toSave.add(new ConversationMessage(
                         dm.role(), dm.content(), seq, dm.timestamp(),
-                        dm.toolRequestId(), dm.toolName()));
+                        dm.toolRequestId(), dm.toolName(), dm.toolCalls()));
             }
             historyRepo.saveAll(sessionId, toSave);
         } catch (Exception e) {
@@ -103,28 +102,90 @@ public class SessionChatMemoryStore implements ChatMemoryStore {
     // 内部转换
     // -------------------------------------------------------
 
+    /**
+     * 构造匹配 key，用于 seq 保留匹配：
+     * <ul>
+     *   <li>tool 结果消息：优先按 toolRequestId 匹配（全局唯一）</li>
+     *   <li>assistant 带 tool_calls：按 role + tool_calls ids 联合匹配（content 可能为 null）</li>
+     *   <li>其他：按 role + content 匹配</li>
+     * </ul>
+     */
+    private String matchKey(ConversationMessage m) {
+        if ("tool".equals(m.role()) && m.toolRequestId() != null) {
+            return "tool|id=" + m.toolRequestId();
+        }
+        if ("assistant".equals(m.role()) && m.toolCalls() != null && !m.toolCalls().isEmpty()) {
+            StringBuilder sb = new StringBuilder("assistant|calls=");
+            for (ConversationMessage.ToolCall tc : m.toolCalls()) {
+                sb.append(tc.id()).append(',');
+            }
+            return sb.toString();
+        }
+        return m.role() + "|" + m.content();
+    }
+
     private ChatMessage toLangChain4jMessage(ConversationMessage m) {
+        if (m.role() == null) {
+            return UserMessage.from(m.content() != null ? m.content() : "");
+        }
         return switch (m.role()) {
-            case "assistant" -> AiMessage.from(m.content());
+            case "assistant" -> toAiMessage(m);
             case "tool"      -> ToolExecutionResultMessage.from(
                     m.toolRequestId() != null ? m.toolRequestId() : "",
                     m.toolName()      != null ? m.toolName()      : "",
-                    m.content());
-            default          -> UserMessage.from(m.content());
+                    m.content() != null ? m.content() : "");
+            default          -> UserMessage.from(m.content() != null ? m.content() : "");
         };
+    }
+
+    /**
+     * 从领域消息反向重建 {@link AiMessage}。
+     * <ul>
+     *   <li>无 tool_calls：走 {@code AiMessage.from(text)}；文本为 null 时兜底空串，避免 LangChain4j 内部 NPE</li>
+     *   <li>有 tool_calls：{@code AiMessage.builder().text(...).toolExecutionRequests(...)}，
+     *       保留 tool_call id/name/arguments，让后续 tool 结果消息能正确配对</li>
+     * </ul>
+     */
+    private AiMessage toAiMessage(ConversationMessage m) {
+        List<ConversationMessage.ToolCall> calls = m.toolCalls();
+        if (calls == null || calls.isEmpty()) {
+            return AiMessage.from(m.content() != null ? m.content() : "");
+        }
+        List<ToolExecutionRequest> requests = new ArrayList<>(calls.size());
+        for (ConversationMessage.ToolCall tc : calls) {
+            requests.add(ToolExecutionRequest.builder()
+                    .id(tc.id() != null ? tc.id() : "")
+                    .name(tc.name() != null ? tc.name() : "")
+                    .arguments(tc.arguments() != null ? tc.arguments() : "")
+                    .build());
+        }
+        AiMessage.Builder builder = AiMessage.builder().toolExecutionRequests(requests);
+        if (m.content() != null && !m.content().isEmpty()) {
+            builder.text(m.content());
+        }
+        return builder.build();
     }
 
     private ConversationMessage toDomainMessage(ChatMessage m) {
         if (m instanceof AiMessage ai) {
-            return new ConversationMessage("assistant", ai.text(), 0L, null, null, null);
+            List<ConversationMessage.ToolCall> toolCalls = null;
+            if (ai.hasToolExecutionRequests()) {
+                List<ToolExecutionRequest> requests = ai.toolExecutionRequests();
+                toolCalls = new ArrayList<>(requests.size());
+                for (ToolExecutionRequest r : requests) {
+                    toolCalls.add(new ConversationMessage.ToolCall(r.id(), r.name(), r.arguments()));
+                }
+            }
+            // ai.text() 在纯 tool_call 消息里可能为 null，向下透传
+            return new ConversationMessage("assistant", ai.text(), 0L, null, null, null, toolCalls);
         }
         if (m instanceof ToolExecutionResultMessage tr) {
             return new ConversationMessage("tool", tr.text(), 0L, null,
-                    tr.id(), tr.toolName());
+                    tr.id(), tr.toolName(), null);
         }
         if (m instanceof UserMessage um) {
-            return new ConversationMessage("user", um.singleText(), 0L, null, null, null);
+            return new ConversationMessage("user", um.singleText(), 0L, null, null, null, null);
         }
-        return new ConversationMessage("user", m.toString(), 0L, null, null, null);
+        return new ConversationMessage("user", m.toString(), 0L, null, null, null, null);
     }
 }

@@ -13,9 +13,10 @@ import com.baomidou.mybatisplus.annotation.EnumValue;
  * <p>角色约定：
  * <ul>
  *   <li>{@link #USER}      — 访客消息，存储值：{@code user}</li>
- *   <li>{@link #ASSISTANT} — AI 回复，存储值：{@code assistant}（与 OpenAI 标准一致）</li>
+     *   <li>{@link #ASSISTANT} — AI 回复，存储值：{@code assistant}（与 OpenAI 标准一致）</li>
  *   <li>{@link #AGENT}     — 人工座席回复，存储值：{@code agent}（DB 专用，区分 AI 和人工）</li>
  *   <li>{@link #SYSTEM}    — 系统消息，存储值：{@code system}（用于发送系统级通知，如接入提示、会话超时等）</li>
+ *   <li>{@link #TOOL}      — 工具执行结果消息，存储值：{@code tool}（LangChain4j ToolExecutionResultMessage 落库用）</li>
  * </ul>
  */
 public enum MessageRole {
@@ -40,7 +41,15 @@ public enum MessageRole {
      * </ul>
      * 前端展示时建议使用居中气泡样式，与普通对话消息视觉区分。
      */
-    SYSTEM("system");
+    SYSTEM("system"),
+
+    /**
+     * 工具执行结果消息。
+     * 用于持久化 LangChain4j {@code ToolExecutionResultMessage}，
+     * 与 {@code assistant} 的 tool_calls 请求配对，重建历史时用于恢复
+     * "AI 请求工具 → 工具返回结果 → AI 综合回复" 的多轮上下文。
+     */
+    TOOL("tool");
 
     /**
      * DB 存储值（小写字符串）。

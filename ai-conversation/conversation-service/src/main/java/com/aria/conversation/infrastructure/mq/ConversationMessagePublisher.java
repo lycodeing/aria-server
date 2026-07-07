@@ -1,5 +1,7 @@
 package com.aria.conversation.infrastructure.mq;
 
+import com.aria.common.core.util.JsonUtils;
+import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.MessageRole;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -9,6 +11,8 @@ import org.springframework.retry.annotation.Retryable;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -55,16 +59,51 @@ public class ConversationMessagePublisher {
      */
     @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 1000, multiplier = 2))
     public void publishMessage(String sessionId, String role, String content, long seq) {
-        Map<String, Object> payload = Map.of(
-            ConversationStreamEvent.FIELD_TYPE,       ConversationStreamEvent.Type.MESSAGE.name(),
-            ConversationStreamEvent.FIELD_SESSION_ID, sessionId,
-            ConversationStreamEvent.FIELD_ROLE,       role,
-            ConversationStreamEvent.FIELD_CONTENT,    content,
-            ConversationStreamEvent.FIELD_SEQ,        seq,
-            ConversationStreamEvent.FIELD_TIMESTAMP,  Instant.now().getEpochSecond()
-        );
+        ConversationMessage msg = new ConversationMessage(
+                role, content, seq, System.currentTimeMillis(), null, null, null);
+        publishMessage(sessionId, role, msg);
+    }
+
+    /**
+     * 发布单条对话消息（MESSAGE 类型），承载完整 tool 上下文。
+     *
+     * <p>与四参数重载相比，本方法支持 {@link ConversationMessage#toolRequestId()}、
+     * {@link ConversationMessage#toolName()}、{@link ConversationMessage#toolCalls()} 落库，
+     * 让 DB 保存完整 LangChain4j tool_call ↔ tool_result 链路。
+     *
+     * <p>{@code Map.of} 不允许 null value，故改用 {@link LinkedHashMap} 组装，
+     * 可选 tool 字段仅在非空时写入 payload。
+     *
+     * @param sessionId 会话 ID
+     * @param dbRole    DB 侧使用的角色（assistant 消息在 DB 里可能标记为 agent 便于质检）
+     * @param msg       消息领域对象
+     */
+    @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 1000, multiplier = 2))
+    public void publishMessage(String sessionId, String dbRole, ConversationMessage msg) {
+        Map<String, Object> payload = new LinkedHashMap<>(10);
+        payload.put(ConversationStreamEvent.FIELD_TYPE,       ConversationStreamEvent.Type.MESSAGE.name());
+        payload.put(ConversationStreamEvent.FIELD_SESSION_ID, sessionId);
+        payload.put(ConversationStreamEvent.FIELD_ROLE,       dbRole);
+        // content 可能为 null（tool_call-only assistant 消息），Consumer 端负责空串兜底
+        payload.put(ConversationStreamEvent.FIELD_CONTENT,    msg.content() != null ? msg.content() : "");
+        payload.put(ConversationStreamEvent.FIELD_SEQ,        msg.seq());
+        payload.put(ConversationStreamEvent.FIELD_TIMESTAMP,  Instant.now().getEpochSecond());
+
+        if (msg.toolRequestId() != null) {
+            payload.put(ConversationStreamEvent.FIELD_TOOL_REQUEST_ID, msg.toolRequestId());
+        }
+        if (msg.toolName() != null) {
+            payload.put(ConversationStreamEvent.FIELD_TOOL_NAME, msg.toolName());
+        }
+        List<ConversationMessage.ToolCall> toolCalls = msg.toolCalls();
+        if (toolCalls != null && !toolCalls.isEmpty()) {
+            // 序列化为 JSON 字符串，避免 RabbitMQ Jackson converter 对嵌套 record 的类型推断问题
+            payload.put(ConversationStreamEvent.FIELD_TOOL_CALLS, JsonUtils.toJsonString(toolCalls));
+        }
+
         rabbitTemplate.convertAndSend(exchange, routingKey, payload);
-        log.debug("[MQ] MESSAGE published sessionId={} role={} seq={}", sessionId, role, seq);
+        log.debug("[MQ] MESSAGE published sessionId={} role={} seq={} hasToolCalls={}",
+                sessionId, dbRole, msg.seq(), toolCalls != null && !toolCalls.isEmpty());
     }
 
     /**

@@ -54,6 +54,12 @@ public final class ConversationStreamEvent {
     public static final String FIELD_FROM_AGENT_ID   = "fromAgentId";
     /** 转交事件的目标座席 ID（仅 SESSION_TRANSFER 有效） */
     public static final String FIELD_TO_AGENT_ID     = "toAgentId";
+    /** LangChain4j ToolExecutionRequest ID，仅 MESSAGE 且 role=tool 时有效 */
+    public static final String FIELD_TOOL_REQUEST_ID = "toolRequestId";
+    /** 工具名称，仅 MESSAGE 且 role=tool 时有效 */
+    public static final String FIELD_TOOL_NAME       = "toolName";
+    /** assistant 触发的 tool_calls JSON 数组（{@code [{id,name,arguments}, ...]}），仅 MESSAGE 且 role=assistant 有工具调用时有效 */
+    public static final String FIELD_TOOL_CALLS      = "toolCalls";
 
     /**
      * 消息类型枚举

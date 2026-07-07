@@ -136,7 +136,9 @@ public class ConversationMessageConsumer {
         ConversationMessageEntity entity = new ConversationMessageEntity();
         entity.setSessionId(sessionId);
         entity.setRole(role);
-        entity.setContent(str(payload, ConversationStreamEvent.FIELD_CONTENT));
+        // content 可能是 null（tool_call-only assistant 消息），DB NOT NULL 约束下用空串兜底
+        String content = str(payload, ConversationStreamEvent.FIELD_CONTENT);
+        entity.setContent(content != null ? content : "");
         // seq 由 ConversationHistoryRepository.nextSeq 生成，缺失（旧版本兼容）则置 null
         Object rawSeq = payload.get(ConversationStreamEvent.FIELD_SEQ);
         if (rawSeq != null) {
@@ -147,6 +149,10 @@ public class ConversationMessageConsumer {
             }
         }
         entity.setCreatedAt(toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)));
+        // tool 相关字段（可选，仅在 assistant 触发 tool_calls 或 tool 结果消息时非空）
+        entity.setToolRequestId(str(payload, ConversationStreamEvent.FIELD_TOOL_REQUEST_ID));
+        entity.setToolName(str(payload, ConversationStreamEvent.FIELD_TOOL_NAME));
+        entity.setToolCallsJson(str(payload, ConversationStreamEvent.FIELD_TOOL_CALLS));
         persistRepository.saveMessages(List.of(entity));
     }
 
