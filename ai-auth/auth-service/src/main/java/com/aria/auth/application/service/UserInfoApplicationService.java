@@ -39,7 +39,7 @@ public class UserInfoApplicationService {
     /**
      * 超级管理员首页路由
      */
-    private static final String HOME_PATH_ANALYTICS = "/dashboard/analytics";
+    private static final String HOME_PATH_ANALYTICS = "/dashboard/analysis";
 
     /**
      * 客服角色首页路由
