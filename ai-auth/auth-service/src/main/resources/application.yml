@@ -53,10 +53,17 @@ cs:
     lock-duration-minutes: 30
 
 # 内部服务间通信密钥（微服务间调用 /internal/** 接口时须在 X-Internal-Secret 头携带此值）
-# 生产环境必须通过环境变量 INTERNAL_SECRET 覆盖，禁止使用默认值
+# 无默认值：INTERNAL_SECRET / ARIA_INTERNAL_SECRET 未设置时，
+# InternalSecretVerifier.validateOnStartup() 会阻止服务启动。
 aria:
   internal:
-    secret: ${INTERNAL_SECRET:change-this-in-production}
+    secret: ${ARIA_INTERNAL_SECRET:${INTERNAL_SECRET:}}
+  # auth-service 自身不需要通过 auth-client SDK 调用自己，
+  # 关闭 auth-client 自动装配以避免自调自己与循环依赖。
+  # LocalAiModelConfigProvider 会以 @Primary 提供本地实现直查数据库。
+  auth:
+    client:
+      enabled: false
 
 logging:
   level:

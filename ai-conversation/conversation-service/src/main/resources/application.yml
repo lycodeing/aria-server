@@ -100,10 +100,20 @@ visitor:
     # 连续错误最大次数，超出后锁定 10 分钟
     max-attempts: 5
 
-# aria-auth 服务地址（AiModelConfigProvider 从此拉取激活的 AI 模型配置）
+# aria-auth 服务地址与内部共享密钥（auth-client SDK 从此拉取激活 AI 模型配置）
 aria:
   auth:
-    internal-url: ${ARIA_AUTH_INTERNAL_URL:http://localhost:8083}
+    client:
+      # base-url 兼容旧变量 ARIA_AUTH_INTERNAL_URL
+      base-url: ${ARIA_AUTH_URL:${ARIA_AUTH_INTERNAL_URL:http://localhost:8083}}
+      # shared-secret 必填，未配置 SDK 启动即失败（fail-fast）
+      shared-secret: ${ARIA_INTERNAL_SECRET:${INTERNAL_SECRET:}}
+      connect-timeout-ms: 3000
+      read-timeout-ms: 5000
+      max-retries: 2
+  # 兼容 conversation-service 内部其它调用（如 KnowledgeClient）继续读取此密钥
+  internal:
+    secret: ${INTERNAL_SECRET:change-this-in-production}
 
 # -------- 知识库检索配置（RAG） --------
 knowledge:

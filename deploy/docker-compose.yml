@@ -91,7 +91,9 @@ services:
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ""
       JWT_SECRET_KEY: cs-auth-lycodeing-secret-key-2024
+      # 兼容旧变量与新命名，两处指向同一密钥
       INTERNAL_SECRET: aria-internal-lycodeing-2024
+      ARIA_INTERNAL_SECRET: aria-internal-lycodeing-2024
       SPRING_DATASOURCE_URL: jdbc:postgresql://ai-cs-postgres:5432/ai_customerservice
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 8083 || exit 1"]
@@ -128,6 +130,11 @@ services:
       MINIO_ACCESS_KEY: minioadmin
       MINIO_SECRET_KEY: Lycodeing@2024
       AI_CTYUN_API_KEY: ""
+      # auth-client SDK：拉取 EMBEDDING 模型配置
+      ARIA_AUTH_URL: http://ai-cs-auth:8083
+      ARIA_AUTH_INTERNAL_URL: http://ai-cs-auth:8083
+      INTERNAL_SECRET: aria-internal-lycodeing-2024
+      ARIA_INTERNAL_SECRET: aria-internal-lycodeing-2024
       SPRING_DATASOURCE_URL: jdbc:postgresql://ai-cs-postgres:5432/ai_knowledge
     healthcheck:
       test: ["CMD-SHELL", "nc -z localhost 8081 || exit 1"]

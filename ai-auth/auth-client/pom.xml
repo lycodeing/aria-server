@@ -5,21 +5,34 @@
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>com.aria</groupId>
-        <artifactId>ai-common</artifactId>
+        <artifactId>ai-auth</artifactId>
         <version>1.0.0-SNAPSHOT</version>
     </parent>
-    <artifactId>aria-common-client</artifactId>
-    <name>CS Common Client</name>
-    <description>OkHttp HTTP 客户端基础设施（BaseClient、AK/SK 签名拦截器、自动重试）</description>
+    <artifactId>auth-client</artifactId>
+    <name>AI Auth Client SDK</name>
+    <description>auth-service 内网接口 SDK：AI 模型配置拉取、Token 校验等，X-Internal-Secret 鉴权</description>
 
     <dependencies>
         <dependency>
             <groupId>com.aria</groupId>
-            <artifactId>aria-common-core</artifactId>
+            <artifactId>aria-common-client</artifactId>
+        </dependency>
+
+        <!-- Spring Boot 自动装配所需的最小依赖（consumer 已引入完整 starter，此处仅按需） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+            <optional>true</optional>
         </dependency>
         <dependency>
-            <groupId>com.squareup.okhttp3</groupId>
-            <artifactId>okhttp</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-configuration-processor</artifactId>
+            <optional>true</optional>
+        </dependency>
+        <!-- @Validated + @NotBlank/@Min，用于 AuthClientProperties 启动期 fail-fast -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>

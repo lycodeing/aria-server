@@ -20,8 +20,12 @@ export MINIO_ACCESS_KEY=minioadmin
 export MINIO_SECRET_KEY=minioadmin
 export MINIO_BUCKET=ai-knowledge
 export JWT_SECRET_KEY=cs-auth-dev-secret-key-change-in-production
+# 内部服务密钥：ARIA_INTERNAL_SECRET 为新命名，兼容旧变量 INTERNAL_SECRET
 export INTERNAL_SECRET=change-this-in-production
+export ARIA_INTERNAL_SECRET=change-this-in-production
 export AI_CTYUN_API_KEY=${AI_CTYUN_API_KEY:-}
+# auth-service 内网地址：ARIA_AUTH_URL 为新命名，兼容旧变量 ARIA_AUTH_INTERNAL_URL
+export ARIA_AUTH_URL=http://localhost:8083
 export ARIA_AUTH_INTERNAL_URL=http://localhost:8083
 export KNOWLEDGE_SERVICE_BASE_URL=http://localhost:8081
 export APP_CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5666,http://localhost:5667,http://localhost:5668
