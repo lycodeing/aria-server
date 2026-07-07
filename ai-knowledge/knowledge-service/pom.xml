@@ -22,6 +22,12 @@
             <artifactId>aria-common-web</artifactId>
         </dependency>
 
+        <!-- auth-client SDK：RemoteAiModelConfigProvider 依赖 AuthClient Bean -->
+        <dependency>
+            <groupId>com.aria</groupId>
+            <artifactId>auth-client</artifactId>
+        </dependency>
+
         <!-- AOP（DataScopeAspect，common-web 未引入） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

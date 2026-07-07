@@ -1,15 +1,6 @@
 spring:
   application:
     name: aria-knowledge
-
-# Sa-Token（与 auth-service 共享 JWT 密钥，用于验证管理员 token）
-sa-token:
-  token-name: Authorization
-  timeout: 28800
-  token-prefix: "Bearer"
-  is-read-header: true
-  is-read-cookie: false
-  jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}
   datasource:
     url: jdbc:postgresql://localhost:5432/ai_knowledge
     username: ${DB_USERNAME:postgres}
@@ -63,12 +54,14 @@ mybatis-plus:
 server:
   port: 8084
 
-# Sa-Token Redis Session 配置（与 auth-service 共享同一 Redis，直接验 token session）
+# Sa-Token（与 auth-service 共享 JWT 密钥，用于验证管理员 token）
 sa-token:
   token-name: Authorization
+  timeout: 28800
   token-prefix: "Bearer"
   is-read-header: true
   is-read-cookie: false
+  jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}
 
 # auth-client SDK 配置（拉取 EMBEDDING 模型），共享密钥必须与 auth-service 一致
 aria:
