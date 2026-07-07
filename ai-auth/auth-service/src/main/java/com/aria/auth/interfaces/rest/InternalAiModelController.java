@@ -4,6 +4,7 @@ import com.aria.auth.application.service.AiModelConfigService;
 import com.aria.auth.infrastructure.persistence.ai.AiModelConfigDO;
 import com.aria.auth.infrastructure.security.internal.InternalSecretVerifier;
 import com.aria.common.web.ai.AiModelConfig;
+import com.aria.common.web.ai.AiModelScopeDefaults;
 import com.aria.common.web.response.R;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -41,27 +42,6 @@ public class InternalAiModelController {
     /** 资源不存在：未找到激活模型配置。 */
     private static final int NOT_FOUND_CODE = 404;
 
-    /** CHAT 场景缺省 temperature。 */
-    private static final double DEFAULT_CHAT_TEMPERATURE = 0.7D;
-    /** CHAT 场景缺省 max tokens。 */
-    private static final int DEFAULT_CHAT_MAX_TOKENS = 2048;
-    /** CHAT 场景缺省超时秒数。 */
-    private static final int DEFAULT_CHAT_TIMEOUT_SEC = 60;
-
-    /** EMBEDDING 场景缺省 temperature。 */
-    private static final double DEFAULT_EMBEDDING_TEMPERATURE = 0.0D;
-    /** EMBEDDING 场景缺省 max tokens（0 表示不限制）。 */
-    private static final int DEFAULT_EMBEDDING_MAX_TOKENS = 0;
-    /** EMBEDDING 场景缺省超时秒数。 */
-    private static final int DEFAULT_EMBEDDING_TIMEOUT_SEC = 30;
-
-    /** ROUTER 场景缺省 temperature（0.0，追求确定性）。 */
-    private static final double DEFAULT_ROUTER_TEMPERATURE = 0.0D;
-    /** ROUTER 场景缺省 max tokens（32，短决策）。 */
-    private static final int DEFAULT_ROUTER_MAX_TOKENS = 32;
-    /** ROUTER 场景缺省超时秒数（5，低延迟要求）。 */
-    private static final int DEFAULT_ROUTER_TIMEOUT_SEC = 5;
-
     private final AiModelConfigService service;
     private final InternalSecretVerifier secretVerifier;
 
@@ -82,7 +62,7 @@ public class InternalAiModelController {
         if (d == null) {
             return R.fail(NOT_FOUND_CODE, "未找到激活的 AI 模型配置，请在后台设置默认配置");
         }
-        return R.ok(toConfig(d, DEFAULT_CHAT_TEMPERATURE, DEFAULT_CHAT_MAX_TOKENS, DEFAULT_CHAT_TIMEOUT_SEC));
+        return R.ok(toConfig(d, AiModelScopeDefaults.CHAT));
     }
 
     /**
@@ -102,7 +82,7 @@ public class InternalAiModelController {
         if (d == null) {
             return R.fail(NOT_FOUND_CODE, "未找到激活的向量模型配置，请在后台 AI 模型配置页面设置默认 EMBEDDING 配置");
         }
-        return R.ok(toConfig(d, DEFAULT_EMBEDDING_TEMPERATURE, DEFAULT_EMBEDDING_MAX_TOKENS, DEFAULT_EMBEDDING_TIMEOUT_SEC));
+        return R.ok(toConfig(d, AiModelScopeDefaults.EMBEDDING));
     }
 
     /**
@@ -122,19 +102,16 @@ public class InternalAiModelController {
         if (d == null) {
             return R.fail(NOT_FOUND_CODE, "未找到激活的 ROUTER 模型配置，请在后台 AI 模型配置页面设置默认 ROUTER 配置");
         }
-        return R.ok(toConfig(d, DEFAULT_ROUTER_TEMPERATURE, DEFAULT_ROUTER_MAX_TOKENS, DEFAULT_ROUTER_TIMEOUT_SEC));
+        return R.ok(toConfig(d, AiModelScopeDefaults.ROUTER));
     }
 
     // ---- 内部工具 ----
 
     /**
-     * 将 DO 转换为 AiModelConfig，使用传入的缺省值填充 null 字段。
-     * temperature/maxTokens/timeoutSec 的缺省值因模型类型而异，由调用处传入。
+     * 将 DO 转换为 AiModelConfig，使用 {@link AiModelScopeDefaults} 填充 null 字段。
+     * 缺省值统一由枚举管理，避免服务端与客户端各自硬编码魔法值。
      */
-    private AiModelConfig toConfig(AiModelConfigDO do_,
-                                   double defaultTemperature,
-                                   int defaultMaxTokens,
-                                   int defaultTimeoutSec) {
+    private AiModelConfig toConfig(AiModelConfigDO do_, AiModelScopeDefaults defaults) {
         return new AiModelConfig(
                 do_.getId(),
                 do_.getName(),
@@ -143,9 +120,9 @@ public class InternalAiModelController {
                 do_.getBaseUrl(),
                 service.decryptApiKey(do_.getApiKeyEnc()),
                 do_.getModelName(),
-                do_.getTemperature() != null ? do_.getTemperature().doubleValue() : defaultTemperature,
-                do_.getMaxTokens() != null ? do_.getMaxTokens() : defaultMaxTokens,
-                do_.getTimeoutSec() != null ? do_.getTimeoutSec() : defaultTimeoutSec
+                do_.getTemperature() != null ? do_.getTemperature().doubleValue() : defaults.defaultTemperature(),
+                do_.getMaxTokens() != null ? do_.getMaxTokens() : defaults.defaultMaxTokens(),
+                do_.getTimeoutSec() != null ? do_.getTimeoutSec() : defaults.defaultTimeoutSec()
         );
     }
 }
