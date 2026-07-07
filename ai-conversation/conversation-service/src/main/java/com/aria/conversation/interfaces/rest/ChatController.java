@@ -148,10 +148,12 @@ public class ChatController {
      * 得知转接已发生（因为 localStorage 标志由前端自行写入，页面关闭前来不及写）。
      * 此接口允许前端主动拉取后端 session 状态，若为 WAITING/ACTIVE 则自动恢复 WS 连接。
      *
+     * <p>CORS：与 /history 等接口一致，由全局 {@code app.cors.allowed-origins} 管控，
+     * 禁止通配符放行，避免任意源枚举会话状态。
+     *
      * @param sessionId 会话 ID
      * @return 当前会话状态字符串（AI_CHAT / WAITING / ACTIVE / CLOSED）
      */
-    @CrossOrigin(origins = "*")
     @GetMapping("/state")
     public R<Map<String, String>> sessionState(@RequestParam String sessionId) {
         if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {

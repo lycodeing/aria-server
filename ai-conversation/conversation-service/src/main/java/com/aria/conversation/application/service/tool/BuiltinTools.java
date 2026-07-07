@@ -67,6 +67,15 @@ public class BuiltinTools {
             return "域切换参数缺失，保持当前服务域。";
         }
 
+        // 校验目标域是否在已知域列表中，防止 LLM 幻觉出不存在的域 code 被持久化到 Redis
+        boolean knownDomain = ctx.allDomains().stream()
+                .anyMatch(d -> d.code().equals(targetDomainCode));
+        if (!knownDomain) {
+            log.warn("[BuiltinTool] switch_domain 目标域 {} 不存在，保持当前服务域 sessionId={}",
+                    targetDomainCode, ctx.sessionId());
+            return "指定的服务域不存在，保持当前服务域。";
+        }
+
         String safeReason = (reason == null || reason.isBlank()) ? "LLM 工具触发切换" : reason;
         log.info("[BuiltinTool] switch_domain {} → {} reason={} sessionId={}",
                 ctx.currentDomainCode(), targetDomainCode, safeReason, ctx.sessionId());

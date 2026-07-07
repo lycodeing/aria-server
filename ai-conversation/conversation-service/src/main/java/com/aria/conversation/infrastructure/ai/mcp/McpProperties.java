@@ -1,6 +1,7 @@
 package com.aria.conversation.infrastructure.ai.mcp;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotBlank;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -66,6 +67,21 @@ public class McpProperties {
 
         /** 是否打印传输层事件日志（调试用） */
         private boolean logEvents = false;
+
+        /**
+         * 跨字段校验：STDIO 模式必须提供 command，HTTP 模式必须提供 url。
+         * 配置错误在属性绑定阶段即告失败，而非延迟到运行时 @PostConstruct。
+         */
+        @AssertTrue(message = "STDIO 模式必须指定 command，HTTP 模式必须指定 url")
+        public boolean isConfigValid() {
+            if (type == TransportType.STDIO) {
+                return command != null && !command.isEmpty();
+            }
+            if (type == TransportType.HTTP) {
+                return url != null && !url.isBlank();
+            }
+            return true;
+        }
     }
 
     /** MCP 传输层协议类型 */

@@ -112,6 +112,7 @@ aria:
       read-timeout-ms: 5000
       max-retries: 2
   # 兼容 conversation-service 内部其它调用（如 KnowledgeClient）继续读取此密钥
+  # 【安全】生产环境必须通过环境变量 INTERNAL_SECRET 注入，不允许使用默认值
   internal:
     secret: ${INTERNAL_SECRET:change-this-in-production}
 
