@@ -2,11 +2,13 @@ package com.aria.common.web.ai;
 
 import com.aria.common.web.redis.RedisCacheHelper;
 import com.aria.sdk.auth.AuthClient;
+import com.aria.sdk.auth.AuthClientAutoConfig;
 import com.aria.sdk.auth.model.AiModelConfigDTO;
 import com.aria.sdk.auth.model.ModelScope;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
@@ -33,6 +35,7 @@ import java.time.Duration;
  */
 @Slf4j
 @AutoConfiguration
+@AutoConfigureAfter(AuthClientAutoConfig.class)
 @ConditionalOnBean(AuthClient.class)
 public class RemoteAiModelConfigProvider implements AiModelConfigProvider, MessageListener {
 
