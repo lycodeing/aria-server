@@ -130,6 +130,29 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     }
 
     /**
+     * 查询指定访客的历史会话列表，排除当前进行中的会话。
+     *
+     * <p>按 started_at 倒序返回最近 limit 条，用于座席工作台「历史工单」抽屉展示。
+     *
+     * @param visitorName     访客名称
+     * @param excludeSessionId 排除的会话 ID（通常为当前会话）
+     * @param limit           返回条数上限
+     * @return 历史会话列表，按 started_at 倒序
+     */
+    default List<ConversationEntity> selectByVisitorName(
+            @Param("visitorName") String visitorName,
+            @Param("excludeSessionId") String excludeSessionId,
+            @Param("limit") int limit) {
+        return selectList(Wrappers.lambdaQuery(ConversationEntity.class)
+                .eq(ConversationEntity::getVisitorName, visitorName)
+                .ne(excludeSessionId != null && !excludeSessionId.isBlank(),
+                        ConversationEntity::getSessionId, excludeSessionId)
+                .orderByDesc(ConversationEntity::getStartedAt)
+                .last("LIMIT " + limit)
+        );
+    }
+
+    /**
      * 将会话状态更新为 CLOSED，记录结束时间。
      * 仅当会话非 CLOSED 状态时才更新（幂等），防止重复关闭。
      *

@@ -61,6 +61,35 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
     }
 
     /**
+     * 批量统计多个会话的消息总数，避免 N+1 查询。
+     *
+     * <p>结果 Map：key=sessionId，value=消息数量；没有消息的 sessionId 不在 Map 中（调用方默认取 0）。
+     *
+     * @param sessionIds 会话 ID 列表，不得为空
+     * @return sessionId → 消息数量 的 Map
+     */
+    default Map<String, Long> countBySessionIds(@Param("sessionIds") List<String> sessionIds) {
+        if (sessionIds == null || sessionIds.isEmpty()) {
+            return java.util.Collections.emptyMap();
+        }
+        // 利用 QueryWrapper 的 groupBy + in 实现一条 SQL 批量聚合
+        List<Map<String, Object>> rows = selectMaps(
+                new com.baomidou.mybatisplus.core.conditions.query.QueryWrapper<ConversationMessageEntity>()
+                        .select("session_id, COUNT(*) AS cnt")
+                        .in("session_id", sessionIds)
+                        .groupBy("session_id"));
+        Map<String, Long> result = new java.util.HashMap<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            Object sessionId = row.get("session_id");
+            Object cnt       = row.get("cnt");
+            if (sessionId != null && cnt != null) {
+                result.put(sessionId.toString(), ((Number) cnt).longValue());
+            }
+        }
+        return result;
+    }
+
+    /**
      * 查询指定 session 当前最大 seq（用于 Redis 计数器失效后从 DB 恢复初始值）。
      *
      * @param sessionId 会话唯一标识

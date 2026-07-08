@@ -13,6 +13,7 @@ import org.springframework.stereotype.Repository;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 对话持久化 Repository。
@@ -179,6 +180,30 @@ public class ConversationPersistRepository {
      */
     public SessionStatus getStatusFromDb(String sessionId) {
         return conversationMapper.getStatusFromDb(sessionId);
+    }
+
+    /**
+     * 查询同一访客的历史会话列表，排除当前会话。
+     *
+     * @param visitorName      访客名称
+     * @param excludeSessionId 要排除的会话 ID（当前会话）
+     * @param limit            返回条数上限
+     * @return 历史会话列表，按 started_at 倒序
+     */
+    public List<ConversationEntity> getVisitorHistory(String visitorName,
+                                                      String excludeSessionId,
+                                                      int limit) {
+        return conversationMapper.selectByVisitorName(visitorName, excludeSessionId, limit);
+    }
+
+    /**
+     * 批量统计多个会话的消息总数，避免 N+1 查询。
+     *
+     * @param sessionIds 会话 ID 列表
+     * @return sessionId → 消息数量 Map，无消息的 sessionId 不在 Map 中（调用方默认取 0）
+     */
+    public Map<String, Long> batchGetMessageCount(List<String> sessionIds) {
+        return messageMapper.countBySessionIds(sessionIds);
     }
 
     /**

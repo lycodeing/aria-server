@@ -3,14 +3,22 @@ package com.aria.conversation.interfaces.rest;
 import cn.dev33.satoken.annotation.SaIgnore;
 import cn.dev33.satoken.stp.StpUtil;
 import com.aria.common.web.response.R;
+import com.aria.conversation.application.dto.ReplySuggestionDTO;
+import com.aria.conversation.application.dto.VisitorHistoryDTO;
+import com.aria.conversation.application.service.AiSummaryService;
+import com.aria.conversation.application.service.ReplySuggestionService;
 import com.aria.conversation.application.service.SessionQueueService;
 import com.aria.conversation.application.service.SessionQueueService.OnlineAgentVO;
+import com.aria.conversation.application.service.VisitorHistoryService;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.infrastructure.mq.SessionEventSubscriber;
+import com.aria.conversation.interfaces.rest.vo.ReplySuggestionVO;
+import com.aria.conversation.interfaces.rest.vo.VisitorHistoryVO;
 import jakarta.annotation.PreDestroy;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -54,6 +62,9 @@ public class SessionQueueController {
     private final SessionEventSubscriber eventSubscriber;
     /** WS Handler，close 时主动以 NORMAL 状态关闭访客 WS（触发前端 code=1000 流程） */
     private final com.aria.conversation.infrastructure.websocket.ChatWebSocketHandler chatWebSocketHandler;
+    private final AiSummaryService             aiSummaryService;
+    private final ReplySuggestionService       replySuggestionService;
+    private final VisitorHistoryService        visitorHistoryService;
 
     /**
      * 全局单任务心跳调度器（单线程即可，心跳任务串行执行）。
@@ -211,6 +222,102 @@ public class SessionQueueController {
         return emitter;
     }
 
+    // ---- 新增接口 ----
+
+    /**
+     * 查询同一访客的历史会话列表（不含当前会话）。
+     *
+     * @param visitorName      访客名称，必填，最大 128 字符
+     * @param excludeSessionId 排除的会话 ID（通常为当前会话，可选）
+     * @return 历史会话列表，按 startedAt 倒序，最多 20 条
+     */
+    @GetMapping("/visitor-history")
+    public R<List<VisitorHistoryVO>> getVisitorHistory(
+            @RequestParam @NotBlank(message = "visitorName 不能为空") @Size(max = 128) String visitorName,
+            @RequestParam(required = false)
+            @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "excludeSessionId 格式非法")
+            String excludeSessionId) {
+        List<VisitorHistoryDTO> dtos = visitorHistoryService.getVisitorHistory(visitorName, excludeSessionId);
+        List<VisitorHistoryVO> vos = dtos.stream()
+                .map(d -> new VisitorHistoryVO(
+                        d.sessionId(), d.tag(), d.status(),
+                        d.startedAt(), d.endedAt(), d.msgCount(), d.aiSummary()))
+                .toList();
+        return R.ok(vos);
+    }
+
+    /**
+     * 获取缓存的 AI 会话摘要。
+     *
+     * @param sessionId 会话唯一标识
+     * @return AI 摘要文本，未生成时 data 为 null
+     */
+    @GetMapping("/{sessionId}/ai-summary")
+    public R<String> getAiSummary(
+            @PathVariable
+            @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "sessionId 格式非法")
+            String sessionId) {
+        return R.ok(aiSummaryService.getCachedSummary(sessionId));
+    }
+
+    /**
+     * 首次生成 AI 会话摘要并以 SSE 流式推送。
+     *
+     * <p>Redis 已有缓存时，以单条 {@code cached} 事件推送缓存内容并结束；
+     * 否则调用 LLM 流式生成，完成后写入 Redis 缓存 7 天。
+     * 流结束时发送 {@code done} 事件（data="[DONE]"）。
+     *
+     * <p>注：浏览器 EventSource 不支持自定义 Header，token 通过 query param 传入，
+     * 此处手动校验登录态。鉴权失败时触发 SSE error 事件（HTTP 状态仍为 200，
+     * 前端应监听 error 事件处理未授权场景）。
+     *
+     * @param sessionId 会话唯一标识
+     * @param token     Sa-Token 登录凭证
+     * @return SSE 事件流
+     */
+    @SaIgnore
+    @GetMapping(value = "/{sessionId}/ai-summary/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter streamAiSummary(
+            @PathVariable
+            @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "sessionId 格式非法")
+            String sessionId,
+            @RequestParam(required = false) String token) {
+        String agentId = resolveAgentIdFromToken(token);
+        if (agentId == null) {
+            // EventSource 无法收到非 200 响应，以 error 事件通知前端
+            SseEmitter rejected = new SseEmitter();
+            try {
+                rejected.send(SseEmitter.event().name("error").data("未登录或登录已过期"));
+            } catch (IOException ignored) {}
+            rejected.complete();
+            return rejected;
+        }
+        return aiSummaryService.streamSummary(sessionId);
+    }
+
+    /**
+     * 获取 AI 回复建议列表。
+     *
+     * <p>并行调用知识库向量检索（KB 来源）和 LLM 上下文推理（CONTEXT 来源），
+     * 合并去重后返回，KB 结果置前。2 秒内重复请求返回缓存（防抖兜底）。
+     *
+     * @param sessionId 会话唯一标识
+     * @param req       请求体，含 lastMessage 字段
+     * @return 建议列表
+     */
+    @PostMapping("/{sessionId}/reply-suggestions")
+    public R<List<ReplySuggestionVO>> getReplySuggestions(
+            @PathVariable
+            @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "sessionId 格式非法")
+            String sessionId,
+            @RequestBody @Valid ReplySuggestionsRequest req) {
+        List<ReplySuggestionDTO> dtos = replySuggestionService.getSuggestions(sessionId, req.getLastMessage());
+        List<ReplySuggestionVO> vos = dtos.stream()
+                .map(d -> new ReplySuggestionVO(d.id(), d.content(), d.confidence(), d.source()))
+                .toList();
+        return R.ok(vos);
+    }
+
     // ---- 工具方法 ----
 
     /**
@@ -244,5 +351,12 @@ public class SessionQueueController {
         /** 目标座席 ID */
         @NotBlank(message = "目标座席 ID 不能为空")
         private String targetAgentId;
+    }
+
+    @Data
+    public static class ReplySuggestionsRequest {
+        /** 访客最新消息文本，用于知识库检索和上下文推理 */
+        @NotBlank(message = "lastMessage 不能为空")
+        private String lastMessage;
     }
 }
