@@ -2,6 +2,8 @@ package com.aria.sdk.auth;
 
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
+import lombok.Data;
+import lombok.ToString;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.validation.annotation.Validated;
 
@@ -27,6 +29,7 @@ import org.springframework.validation.annotation.Validated;
  * @author lycodeing
  * @since 2026-07
  */
+@Data
 @Validated
 @ConfigurationProperties(prefix = "aria.auth.client")
 public class AuthClientProperties {
@@ -37,6 +40,7 @@ public class AuthClientProperties {
 
     /** 与 auth-service 的 {@code aria.internal.secret} 一致的共享密钥（必填）。 */
     @NotBlank
+    @ToString.Exclude  // 防止密钥出现在日志 / Spring 条件报告中
     private String sharedSecret;
 
     /** 连接超时，毫秒。 */
@@ -55,19 +59,4 @@ public class AuthClientProperties {
      */
     @Min(0)
     private Integer maxRetries = 0;
-
-    public String getBaseUrl() { return baseUrl; }
-    public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
-
-    public String getSharedSecret() { return sharedSecret; }
-    public void setSharedSecret(String sharedSecret) { this.sharedSecret = sharedSecret; }
-
-    public Integer getConnectTimeoutMs() { return connectTimeoutMs; }
-    public void setConnectTimeoutMs(Integer connectTimeoutMs) { this.connectTimeoutMs = connectTimeoutMs; }
-
-    public Integer getReadTimeoutMs() { return readTimeoutMs; }
-    public void setReadTimeoutMs(Integer readTimeoutMs) { this.readTimeoutMs = readTimeoutMs; }
-
-    public Integer getMaxRetries() { return maxRetries; }
-    public void setMaxRetries(Integer maxRetries) { this.maxRetries = maxRetries; }
 }

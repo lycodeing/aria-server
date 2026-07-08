@@ -68,15 +68,15 @@ aria:
   auth:
     client:
       # base-url 兼容旧变量 ARIA_AUTH_INTERNAL_URL
-      base-url: ${ARIA_AUTH_URL:${ARIA_AUTH_INTERNAL_URL:http://localhost:8083}}
+      base-url: ${ARIA_AUTH_URL:http://localhost:8083}
       # shared-secret 必填，未配置 SDK 启动即失败（fail-fast）
-      shared-secret: ${ARIA_INTERNAL_SECRET:${INTERNAL_SECRET:}}
+      shared-secret: ${ARIA_INTERNAL_SECRET:aria-internal-lycodeing-2024}
       connect-timeout-ms: 3000
       read-timeout-ms: 5000
       max-retries: 2
   # 兼容 knowledge-service 内部其它调用继续读取此密钥
   internal:
-    secret: ${INTERNAL_SECRET:change-this-in-production}
+    secret: ${ARIA_INTERNAL_SECRET:aria-internal-lycodeing-2024}
 
 knowledge:
   # 文档摄取 MQ 配置（RabbitMQ，替换原 Redis Streams 摄取队列）

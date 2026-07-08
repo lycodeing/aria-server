@@ -49,7 +49,6 @@ import java.util.concurrent.*;
 @RestController
 @RequestMapping("/api/v1/sessions")
 @RequiredArgsConstructor
-@CrossOrigin(origins = "${app.cors.allowed-origins}")
 public class SessionQueueController {
 
     private static final long HEARTBEAT_INTERVAL_SEC = 20L;
@@ -310,8 +309,9 @@ public class SessionQueueController {
             @PathVariable
             @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "sessionId 格式非法")
             String sessionId,
-            @RequestBody @Valid ReplySuggestionsRequest req) {
-        List<ReplySuggestionDTO> dtos = replySuggestionService.getSuggestions(sessionId, req.getLastMessage());
+            @RequestBody(required = false) ReplySuggestionsRequest req) {
+        String lastMessage = (req != null) ? req.getLastMessage() : null;
+        List<ReplySuggestionDTO> dtos = replySuggestionService.getSuggestions(sessionId, lastMessage);
         List<ReplySuggestionVO> vos = dtos.stream()
                 .map(d -> new ReplySuggestionVO(d.id(), d.content(), d.confidence(), d.source()))
                 .toList();

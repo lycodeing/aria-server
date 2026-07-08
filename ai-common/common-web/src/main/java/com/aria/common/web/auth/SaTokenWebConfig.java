@@ -28,6 +28,7 @@ public class SaTokenWebConfig implements WebMvcConfigurer {
                             "/internal/**",
                             "/api/v1/chat/**",
                             "/api/v1/visitor/**",
+                            "/ws/**",          // WebSocket 握手走 query param token，由 HandshakeInterceptor 鉴权
                             "/actuator/**",
                             "/swagger-ui/**",
                             "/v3/api-docs/**",

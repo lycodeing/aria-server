@@ -36,10 +36,12 @@ import java.util.regex.Pattern;
 public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     // ---- 消息类型常量 ----
-    private static final String MSG_TYPE_CONNECTED = "CONNECTED";
-    private static final String MSG_TYPE_MESSAGE = "MESSAGE";
+    private static final String MSG_TYPE_CONNECTED   = "CONNECTED";
+    private static final String MSG_TYPE_MESSAGE     = "MESSAGE";
     private static final String MSG_TYPE_AGENT_JOINED = "AGENT_JOINED";
-    private static final String MSG_TYPE_ERROR = "ERROR";
+    private static final String MSG_TYPE_ERROR       = "ERROR";
+    /** 访客输入中信号：仅转发给座席，不写入对话历史 */
+    private static final String MSG_TYPE_TYPING      = "TYPING";
 
     // ---- 路径常量 ----
     private static final String PATH_SEGMENT_CHAT = "chat";
@@ -126,8 +128,24 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
         String role = (String) session.getAttributes().get(ATTR_ROLE);
         String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
-        String content = parseMessageContent(session, message, sessionId);
         long ts = Instant.now().getEpochSecond();
+
+        // 尝试解析完整 JSON body，取 type + content
+        Map<String, Object> body = parseBody(message.getPayload(), sessionId);
+        String msgType = (String) body.getOrDefault("type", MSG_TYPE_MESSAGE);
+        String content = extractContent(body, message.getPayload());
+
+        // TYPING 信号：任何角色发送都只转发/忽略，不写历史
+        if (MSG_TYPE_TYPING.equals(msgType)) {
+            // 仅访客的 typing 信号需要转发给座席；座席发来的直接丢弃
+            if (PATH_SEGMENT_CHAT.equals(role)) {
+                notifyAgent(sessionId, Map.of(
+                        "type", MSG_TYPE_TYPING,
+                        "sessionId", sessionId,
+                        "timestamp", ts));
+            }
+            return;
+        }
 
         if (PATH_SEGMENT_CHAT.equals(role)) {
             handleVisitorMessage(sessionId, content, ts);
@@ -155,23 +173,25 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     }
 
     /**
-     * 解析消息内容：尝试解析 JSON 取 content 字段，失败时降级为纯文本。
-     *
-     * @param session   WebSocket 会话
-     * @param message   接收到的消息
-     * @param sessionId 会话 ID（用于日志）
-     * @return 消息正文内容
+     * 解析消息 JSON body，失败时返回含原始 payload 的 Map（调用方降级为纯文本）。
      */
-    private String parseMessageContent(WebSocketSession session, TextMessage message, String sessionId) {
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> parseBody(String payload, String sessionId) {
         try {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> body = objectMapper.readValue(message.getPayload(), Map.class);
-            return (String) body.getOrDefault("content", message.getPayload());
+            return objectMapper.readValue(payload, Map.class);
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
-            // 客户端可能直接发送纯文本而非 JSON，降级处理
             log.debug("[WS] message payload is not JSON, treat as plain text sessionId={}", sessionId);
-            return message.getPayload();
+            return Map.of("content", payload);
         }
+    }
+
+    /**
+     * 从 JSON body 中安全提取 content 字段。
+     * 若字段不存在或类型非 String，降级返回原始 payload。
+     */
+    private String extractContent(Map<String, Object> body, String fallback) {
+        Object val = body.get("content");
+        return val instanceof String s ? s : fallback;
     }
 
     /**

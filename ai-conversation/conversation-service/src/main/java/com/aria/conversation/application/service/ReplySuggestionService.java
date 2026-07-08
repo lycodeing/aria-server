@@ -93,6 +93,14 @@ public class ReplySuggestionService {
      * @return 建议列表，KB 结果在前，CONTEXT 结果在后
      */
     public List<ReplySuggestionDTO> getSuggestions(String sessionId, String lastMessage) {
+        // lastMessage 未传时，从历史记录取最后一条访客消息
+        String resolvedMessage = (lastMessage == null || lastMessage.isBlank())
+                ? resolveLastUserMessage(sessionId)
+                : lastMessage;
+        if (resolvedMessage == null || resolvedMessage.isBlank()) {
+            log.warn("[Suggestion] 会话 {} 无有效访客消息，返回空建议", sessionId);
+            return List.of();
+        }
         String cacheKey = KEY_PREFIX + sessionId;
 
         // 幂等缓存命中：2 秒内重复请求直接返回
@@ -112,13 +120,13 @@ public class ReplySuggestionService {
 
         // 并行：KB 检索 + LLM 上下文推理，各自独立降级，互不影响
         CompletableFuture<List<ReplySuggestionDTO>> kbFuture = CompletableFuture
-                .supplyAsync(() -> searchKb(lastMessage), suggestionExecutor)
+                .supplyAsync(() -> searchKb(resolvedMessage), suggestionExecutor)
                 .exceptionally(e -> {
                     log.warn("[Suggestion] KB 检索失败，降级为空列表 sessionId={}", sessionId, e);
                     return List.of();
                 });
         CompletableFuture<List<ReplySuggestionDTO>> contextFuture = CompletableFuture
-                .supplyAsync(() -> generateContextSuggestions(sessionId, lastMessage), suggestionExecutor)
+                .supplyAsync(() -> generateContextSuggestions(sessionId, resolvedMessage), suggestionExecutor)
                 .exceptionally(e -> {
                     log.warn("[Suggestion] LLM 推理失败，降级为空列表 sessionId={}", sessionId, e);
                     return List.of();
@@ -144,6 +152,21 @@ public class ReplySuggestionService {
     }
 
     // ---- 内部方法 ----
+
+    /**
+     * 从对话历史取最后一条访客消息文本，供 lastMessage 未传时兜底使用。
+     * 若历史为空或无用户消息，返回 null。
+     */
+    private String resolveLastUserMessage(String sessionId) {
+        List<ConversationMessage> history = historyRepository.findAll(sessionId);
+        for (int i = history.size() - 1; i >= 0; i--) {
+            ConversationMessage msg = history.get(i);
+            if ("user".equals(msg.role()) && msg.content() != null && !msg.content().isBlank()) {
+                return msg.content();
+            }
+        }
+        return null;
+    }
 
     /**
      * 知识库向量检索：取 topK 条 chunk，转换为 KB 来源建议。
