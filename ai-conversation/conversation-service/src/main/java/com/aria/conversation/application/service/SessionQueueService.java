@@ -280,6 +280,21 @@ public class SessionQueueService {
         log.info("[SessionQueue] 会话转交 sessionId={} {} → {}", sessionId, fromAgentId, targetAgentId);
     }
 
+    /**
+     * 查询会话当前负责的座席 ID。
+     *
+     * <p>用于 WS 消息路由：{@code ChatWebSocketHandler.notifyAgent} 通过此方法
+     * 将 sessionId 转换为 agentId，再交由 {@code AgentConnectionRegistry} 广播。
+     *
+     * @param sessionId 会话 ID
+     * @return 负责此会话的座席 ID；会话处于 WAITING 状态或不存在时返回 {@code null}
+     */
+    public String getAgentId(String sessionId) {
+        return queueRepository.findById(sessionId)
+                .map(SessionQueueItem::agentId)
+                .orElse(null);
+    }
+
     // ---- 在线座席注册表 ----
 
     /** 注册座席上线（SSE 连接建立时调用）。 */
