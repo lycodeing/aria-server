@@ -451,13 +451,22 @@ public record WsDeliveryCommand(
         }
     }
 
-    /** 从 payload 对象提取对应的 WsMessageType 枚举 */
+    /** 从 payload 对象提取对应的 WsMessageType 枚举。
+     *
+     * <p>注意：{@link WsMessageType#KICKED_OUT} 不在此 switch 中，这是故意的。
+     * KICK 消息走的是 {@link WsDeliveryCommand.TargetType#KICK_AGENT} 路径，
+     * 消费端收到 KICK_AGENT 命令后直接本地构造 {@link WsKickedOutMessage#INSTANCE} 广播，
+     * 不需要通过 payloadJson 序列化/反序列化传递。
+     * {@code KICKED_OUT} 枚举值只用于前端消息协议（前端识别消息类型），
+     * 不会出现在 {@code WsDeliveryCommand.wsMessageType} 字段中。
+     */
     private static WsMessageType extractMessageType(Object payload) {
         return switch (payload) {
-            case WsChatMessage    ignored -> WsMessageType.MESSAGE;
-            case WsTypingMessage  ignored -> WsMessageType.TYPING;
+            case WsChatMessage      ignored -> WsMessageType.MESSAGE;
+            case WsTypingMessage    ignored -> WsMessageType.TYPING;
             case WsConnectedMessage ignored -> WsMessageType.CONNECTED;
-            case WsErrorMessage   ignored -> WsMessageType.ERROR;
+            case WsErrorMessage     ignored -> WsMessageType.ERROR;
+            // WsKickedOutMessage 不走此路径，由 KICK_AGENT targetType 直接处理
             default -> throw new IllegalArgumentException(
                     "不支持跨 Pod 投递的消息类型: " + payload.getClass().getSimpleName());
         };
