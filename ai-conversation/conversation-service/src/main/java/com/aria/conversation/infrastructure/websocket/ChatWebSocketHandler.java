@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.websocket;
 
+import com.aria.conversation.application.service.SessionQueueService;
 import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -63,17 +64,13 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
      */
     private static final int MAX_MESSAGE_BYTES = 65536;
     /**
-     * S-03 合法 role 白名单，仅允许 "chat"（访客）和 "agent"（座席）
+     * S-03 合法 role 白名单，仅允许 "chat"（访客）
      */
-    private static final java.util.Set<String> VALID_ROLES = java.util.Set.of("chat", "agent");
+    private static final java.util.Set<String> VALID_ROLES = java.util.Set.of("chat");
     /**
      * 访客 WS 会话注册表: sessionId → WebSocketSession
      */
     private final ConcurrentHashMap<String, WebSocketSession> visitorSessions = new ConcurrentHashMap<>();
-    /**
-     * 座席 WS 会话注册表: sessionId → WebSocketSession
-     */
-    private final ConcurrentHashMap<String, WebSocketSession> agentSessions = new ConcurrentHashMap<>();
     /**
      * S-02 线程安全：每个 sessionId 对应一把发送锁，串行化 sendMessage 调用。
      * {@link org.springframework.web.socket.WebSocketSession#sendMessage} 非线程安全；
@@ -84,6 +81,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
     private final ConcurrentHashMap<String, Object> sendLocks = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper;
     private final ConversationHistoryRepository historyRepository;
+    private final SessionQueueService sessionQueueService;
+    private final AgentConnectionRegistry agentConnectionRegistry;
 
     // ----------------------------------------------------------------
     // 连接生命周期
@@ -108,14 +107,6 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
             closeStaleSession(oldVisitor);
             log.info("[WS] visitor connected sessionId={}", sessionId);
             sendJson(session, Map.of("type", MSG_TYPE_CONNECTED, "sessionId", sessionId, "role", MessageRole.USER.getValue()));
-        } else {
-            WebSocketSession oldAgent = agentSessions.put(sessionId, session);
-            closeStaleSession(oldAgent);
-            log.info("[WS] agent connected sessionId={}", sessionId);
-            sendJson(session, Map.of("type", MSG_TYPE_CONNECTED, "sessionId", sessionId, "role", MessageRole.AGENT.getValue()));
-            // 通知访客人工已接入
-            notifyVisitor(sessionId,
-                    Map.of("type", MSG_TYPE_AGENT_JOINED, "sessionId", sessionId, "content", "人工客服已接入，请稍候"));
         }
     }
 
@@ -149,8 +140,6 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
 
         if (PATH_SEGMENT_CHAT.equals(role)) {
             handleVisitorMessage(sessionId, content, ts);
-        } else {
-            handleAgentMessage(sessionId, content, ts);
         }
     }
 
@@ -215,27 +204,6 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
         log.debug("[WS] user→agent sessionId={} seq={}", sessionId, seq);
     }
 
-    /**
-     * 处理座席消息：存储历史并转发给访客。
-     *
-     * @param sessionId 会话 ID
-     * @param content   消息内容
-     * @param timestamp 时间戳
-     */
-    private void handleAgentMessage(String sessionId, String content, long timestamp) {
-        // 座席 → appendAgentMessage（Redis List 写 assistant，DB 写 agent，便于质检分析）→ 转发给访客
-        long seq = historyRepository.appendAgentMessage(sessionId, content);
-        Map<String, Object> msg = Map.of(
-                "type", MSG_TYPE_MESSAGE, "sessionId", sessionId,
-                "role", MessageRole.AGENT.getValue(),
-                "content", content,
-                "seq", seq,
-                "timestamp", timestamp
-        );
-        notifyVisitor(sessionId, msg);
-        log.debug("[WS] agent→user sessionId={} seq={}", sessionId, seq);
-    }
-
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         String role = (String) session.getAttributes().get(ATTR_ROLE);
@@ -252,12 +220,6 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
         if (PATH_SEGMENT_CHAT.equals(role)) {
             visitorSessions.remove(sessionId);
             log.info("[WS] visitor disconnected sessionId={}", sessionId);
-        } else {
-            agentSessions.remove(sessionId);
-            // 注意：座席 WS 断开（刷新页面、网络抖动）不等于会话结束，不在此处关闭会话。
-            // 会话关闭只由座席主动调用 /sessions/{id}/close 接口触发，
-            // 防止座席临时断线导致进行中的会话被意外终止。
-            log.info("[WS] agent disconnected sessionId={}", sessionId);
         }
     }
 
@@ -278,10 +240,6 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
         // 这里主动清理 map，防止僵尸 session 积累
         if (PATH_SEGMENT_CHAT.equals(role)) {
             visitorSessions.remove(sessionId);
-        } else {
-            agentSessions.remove(sessionId);
-            // 注意：transport error（网络抖动/超时）不等于会话结束，不在此处关闭会话。
-            // 会话关闭只由座席主动调用 /sessions/{id}/close 接口触发。
         }
     }
 
@@ -322,13 +280,26 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
     }
 
     /**
-     * 通知座席
+     * 通知座席。通过应用层查询 agentId，再由 {@link AgentConnectionRegistry} 广播。
+     *
+     * <p>TYPING 信号为 ephemeral，允许丢失，在入口直接跳过，不走 Redis 查询。
+     *
+     * @param sessionId 会话 ID
+     * @param payload   消息对象
      */
     public void notifyAgent(String sessionId, Object payload) {
-        WebSocketSession as = agentSessions.get(sessionId);
-        if (as != null && as.isOpen()) {
-            sendJson(as, payload);
+        // TYPING 是 ephemeral 信号，允许丢失，跳过 Redis 路由
+        if (payload instanceof Map<?, ?> m && MSG_TYPE_TYPING.equals(m.get("type"))) {
+            log.debug("[WS] notifyAgent 跳过 TYPING sessionId={}", sessionId);
+            return;
         }
+
+        String agentId = sessionQueueService.getAgentId(sessionId);
+        if (agentId == null) {
+            log.warn("[WS] notifyAgent 跳过：sessionId={} 尚未分配座席或会话已关闭", sessionId);
+            return;
+        }
+        agentConnectionRegistry.broadcast(agentId, payload);
     }
 
     // ----------------------------------------------------------------
