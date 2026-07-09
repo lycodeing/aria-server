@@ -17,4 +17,10 @@ public final class ConversationCacheKeys {
 
     /** AI 回复建议缓存前缀，格式：{@code reply_suggestions:{sessionId}} */
     public static final String REPLY_SUGGESTIONS_PREFIX = "reply_suggestions:";
+
+    /** WS 访客 presence key 前缀，格式：{@code ws:visitor:pod:{sessionId}} */
+    public static final String WS_VISITOR_POD_PREFIX = "ws:visitor:pod:";
+
+    /** WS 座席 presence key 前缀，格式：{@code ws:agent:pods:{agentId}} */
+    public static final String WS_AGENT_PODS_PREFIX = "ws:agent:pods:";
 }
