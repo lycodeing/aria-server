@@ -3,8 +3,8 @@ package com.aria.conversation.infrastructure.websocket;
 import com.aria.conversation.infrastructure.websocket.cluster.PodIdentity;
 import com.aria.conversation.infrastructure.websocket.cluster.WsPresenceRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -39,6 +39,7 @@ import java.util.concurrent.TimeUnit;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class AgentConnectionRegistry {
 
     private final ObjectMapper objectMapper;
@@ -72,18 +73,6 @@ public class AgentConnectionRegistry {
      * per-agentId 粗粒度锁，供 KICK 模式三步原子化使用
      */
     private final ConcurrentHashMap<String, Object> agentLocks = new ConcurrentHashMap<>();
-
-    /**
-     * Spring 主构造器：注入 presence 组件，由容器自动装配。
-     */
-    @Autowired
-    public AgentConnectionRegistry(ObjectMapper objectMapper,
-                                   WsPresenceRegistry presenceRegistry,
-                                   PodIdentity podIdentity) {
-        this.objectMapper = objectMapper;
-        this.presenceRegistry = presenceRegistry;
-        this.podIdentity = podIdentity;
-    }
 
     /**
      * 仅供单元测试使用（无 presence 注入）。
