@@ -1,7 +1,10 @@
 package com.aria.conversation.infrastructure.knowledge;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 import java.util.Collections;
 import java.util.List;
@@ -30,6 +33,9 @@ public class KnowledgeSearchResult {
 
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
+    @Builder
+    @AllArgsConstructor
+    @NoArgsConstructor
     public static class Hit {
         private String chunkId;
         private String docId;

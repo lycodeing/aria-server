@@ -48,6 +48,10 @@
             <artifactId>auth-client</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>com.aria</groupId>
+            <artifactId>aria-knowledge-client</artifactId>
+        </dependency>
         <!-- ===== 测试 ===== -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

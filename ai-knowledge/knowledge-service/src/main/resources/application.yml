@@ -79,6 +79,12 @@ aria:
     secret: ${ARIA_INTERNAL_SECRET:aria-internal-lycodeing-2024}
 
 knowledge:
+  search:
+    # PostgreSQL 全文检索分词配置：
+    #   simple — 内置，无需扩展，中文效果差（本地开发默认）
+    #   jieba  — 需安装 pg_jieba 扩展，中文分词效果好（生产推荐）
+    # 生产环境通过环境变量 PG_FTS_CONFIG=jieba 覆盖
+    fts-config: ${PG_FTS_CONFIG:simple}
   # 文档摄取 MQ 配置（RabbitMQ，替换原 Redis Streams 摄取队列）
   ingest:
     exchange: knowledge.doc.ingest

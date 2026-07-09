@@ -13,6 +13,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +32,13 @@ public class KnowledgeChunkRepositoryImpl implements KnowledgeChunkRepository {
 
     private final KnowledgeChunkMapper    chunkMapper;
     private final KnowledgeChunkAssembler assembler;
+
+    /**
+     * PostgreSQL 全文检索分词配置：jieba（需 pg_jieba 扩展）或 simple（内置回退）。
+     * 通过 knowledge.search.fts-config 配置项注入，生产环境设置 PG_FTS_CONFIG=jieba。
+     */
+    @Value("${knowledge.search.fts-config:simple}")
+    private String ftsConfig;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -72,7 +80,7 @@ public class KnowledgeChunkRepositoryImpl implements KnowledgeChunkRepository {
 
     @Override
     public List<ChunkHit> fullTextSearch(String query, int topK, String kbId) {
-        return chunkMapper.selectByFullText(query, kbId, topK)
+        return chunkMapper.selectByFullText(query, kbId, topK, ftsConfig)
             .stream().map(do_ -> assembler.toChunkHit(do_, ChunkHit.HitSource.FULL_TEXT)).toList();
     }
 

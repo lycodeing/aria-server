@@ -146,7 +146,7 @@ public abstract class BaseClient {
      */
     private <T> T execute(Request request, Class<T> responseType) {
         String body = executeRaw(request);
-        if (body == null || responseType == Void.class || responseType == void.class) {
+        if (responseType == Void.class || responseType == void.class) {
             return null;
         }
         return JsonUtils.parseObject(body, responseType);

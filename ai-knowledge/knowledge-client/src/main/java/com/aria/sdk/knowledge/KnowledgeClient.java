@@ -29,7 +29,7 @@ import java.time.Duration;
  */
 public class KnowledgeClient extends BaseClient {
 
-    private KnowledgeClient(ClientConfig config) {
+    public KnowledgeClient(ClientConfig config) {
         super(config);
     }
 

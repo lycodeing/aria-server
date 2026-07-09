@@ -10,7 +10,7 @@ import com.aria.conversation.domain.service.DomainRoutingService;
 import com.aria.conversation.domain.service.IntentService;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
-import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
+import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -40,7 +40,7 @@ class ChatAppServiceIntentTest {
 
     @Mock private DynamicModelFactory aiClient;
     @Mock private ConversationHistoryRepository historyRepository;
-    @Mock private KnowledgeClient knowledgeClient;
+    @Mock private KnowledgeServiceClient knowledgeServiceClient;
     @Mock private IntentService intentClassifier;
     @Mock private SessionQueueService sessionQueueService;
     @Mock private SessionDomainRepository sessionDomainRepo;
@@ -53,12 +53,12 @@ class ChatAppServiceIntentTest {
 
     @BeforeEach
     void setUp() {
-        service = new ChatAppService(aiClient, historyRepository, knowledgeClient,
+        service = new ChatAppService(aiClient, historyRepository, knowledgeServiceClient,
                 intentClassifier, sessionQueueService, objectMapper,
                 sessionDomainRepo, domainSwitchRepo, domainRoutingService,
                 domainAgentService);
         // 大多数路径不需要 RAG 命中，默认返回空列表
-        lenient().when(knowledgeClient.search(anyString())).thenReturn(List.of());
+        lenient().when(knowledgeServiceClient.search(anyString())).thenReturn(List.of());
         // 转人工/拒答路径不走 findAll，允许该 stub 未被使用
         lenient().when(historyRepository.findAll(anyString())).thenReturn(List.of());
     }
@@ -194,7 +194,7 @@ class ChatAppServiceIntentTest {
                 .thenReturn(Flux.just("你好！"));
         // 模拟 knowledgeClient 返回命中，但 CHITCHAT 路径应跳过 RAG
         KnowledgeSearchResult.Hit hit = mock(KnowledgeSearchResult.Hit.class);
-        when(knowledgeClient.search(anyString())).thenReturn(List.of(hit));
+        when(knowledgeServiceClient.search(anyString())).thenReturn(List.of(hit));
 
         Flux<ChatEvent> result = service.stream("s5", "你好", null);
 

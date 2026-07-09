@@ -6,7 +6,7 @@ import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.infrastructure.cache.ConversationCacheKeys;
-import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
+import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -74,7 +74,7 @@ public class ReplySuggestionService {
 
     private final StringRedisTemplate           redisTemplate;
     private final ConversationHistoryRepository historyRepository;
-    private final KnowledgeClient               knowledgeClient;
+    private final KnowledgeServiceClient knowledgeServiceClient;
     private final DynamicModelFactory           modelFactory;
 
     @PreDestroy
@@ -183,7 +183,7 @@ public class ReplySuggestionService {
      * confidence 取检索分数，超出 [0,1] 时截断。
      */
     private List<ReplySuggestionDTO> searchKb(String query) {
-        List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(query);
+        List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(query);
         return hits.stream()
                 .filter(h -> h.getContent() != null && !h.getContent().isBlank())
                 .map(h -> new ReplySuggestionDTO(

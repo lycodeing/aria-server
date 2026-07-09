@@ -2,6 +2,8 @@ package com.aria.auth.infrastructure.auth;
 
 import cn.dev33.satoken.stp.StpInterface;
 import cn.dev33.satoken.stp.StpUtil;
+import com.aria.common.core.util.JsonUtils;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -15,6 +17,7 @@ import java.util.List;
  * <p>extra 生命周期与 token 一致，角色/权限变更后需重新登录或刷新 token 才生效。
  */
 @Component
+@Slf4j
 public class StpInterfaceImpl implements StpInterface {
 
     private static final String PERMISSIONS_KEY = "permissions";
@@ -25,6 +28,7 @@ public class StpInterfaceImpl implements StpInterface {
     public List<String> getPermissionList(Object loginId, String loginType) {
         // Redis Session 模式：从 token session 读取，登录时已存入
         Object perms = StpUtil.getTokenSessionByToken(StpUtil.getTokenValue()).get(PERMISSIONS_KEY);
+        log.debug("getPermissionList: {}", JsonUtils.toJsonString(perms));
         if (perms instanceof List<?> list) {
             return (List<String>) list;
         }

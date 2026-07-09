@@ -111,7 +111,7 @@ aria:
 knowledge:
   service:
     # knowledge-service 地址，生产通过环境变量 KNOWLEDGE_SERVICE_BASE_URL 覆盖
-    base-url: ${KNOWLEDGE_SERVICE_BASE_URL:http://localhost:8084}
+    base-url: http://localhost:8084
   search:
     # 默认知识库 ID，生产通过 KNOWLEDGE_DEFAULT_KB_ID 覆盖
     default-kb-id: ${KNOWLEDGE_DEFAULT_KB_ID:default}

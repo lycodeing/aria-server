@@ -40,18 +40,20 @@ public interface KnowledgeChunkMapper extends BaseMapper<KnowledgeChunkEntity> {
                                     @Param("topK")  int    topK);
 
     /**
-     * 全文检索（PostgreSQL TF-IDF 近似，依赖 pg_jieba 扩展）。
-     * 未安装 pg_jieba 时降级为 simple 字典（按空格/标点切分）。
+     * 全文检索（PostgreSQL TF-IDF 近似）。
+     * tsConfig 决定分词器：jieba（需 pg_jieba 扩展，中文效果好）或 simple（内置，无需扩展）。
      * SQL 详见 KnowledgeChunkMapper.xml，@@ 运算符用 CDATA 包裹。
      *
-     * @param query 搜索关键词
-     * @param kbId  目标知识库 ID
-     * @param topK  返回条数上限
+     * @param query    搜索关键词
+     * @param kbId     目标知识库 ID
+     * @param topK     返回条数上限
+     * @param tsConfig PostgreSQL 全文检索分词配置名（jieba / simple）
      * @return 按 TF-IDF 分降序排列的命中列表
      */
-    List<ChunkHitDO> selectByFullText(@Param("query") String query,
-                                      @Param("kbId")  String kbId,
-                                      @Param("topK")  int    topK);
+    List<ChunkHitDO> selectByFullText(@Param("query")    String query,
+                                      @Param("kbId")     String kbId,
+                                      @Param("topK")     int    topK,
+                                      @Param("tsConfig") String tsConfig);
 
     /** 汇总指定知识库所有已发布 chunk 的 token 总量 */
     Long selectTokenSumByKbId(@Param("kbId") String kbId);

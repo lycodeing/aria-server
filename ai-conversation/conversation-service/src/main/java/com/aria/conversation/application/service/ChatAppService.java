@@ -15,7 +15,7 @@ import com.aria.conversation.infrastructure.dit.domain.DomainSwitchRecord;
 import com.aria.conversation.infrastructure.dit.domain.SwitchType;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
-import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
+import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -63,7 +63,7 @@ public class ChatAppService {
 
     private final DynamicModelFactory aiClient;
     private final ConversationHistoryRepository historyRepository;
-    private final KnowledgeClient knowledgeClient;
+    private final KnowledgeServiceClient knowledgeServiceClient;
     private final IntentService intentClassifier;
     private final SessionQueueService sessionQueueService;
     private final ObjectMapper objectMapper;
@@ -74,7 +74,7 @@ public class ChatAppService {
 
     public ChatAppService(DynamicModelFactory aiClient,
                           ConversationHistoryRepository historyRepository,
-                          KnowledgeClient knowledgeClient,
+                          KnowledgeServiceClient knowledgeServiceClient,
                           IntentService intentClassifier,
                           SessionQueueService sessionQueueService,
                           ObjectMapper objectMapper,
@@ -84,7 +84,7 @@ public class ChatAppService {
                           DomainAgentService domainAgentService) {
         this.aiClient            = aiClient;
         this.historyRepository   = historyRepository;
-        this.knowledgeClient     = knowledgeClient;
+        this.knowledgeServiceClient = knowledgeServiceClient;
         this.intentClassifier    = intentClassifier;
         this.sessionQueueService = sessionQueueService;
         this.objectMapper        = objectMapper;
@@ -196,11 +196,12 @@ public class ChatAppService {
      */
     private String routeDomainIfNeeded(String sessionId, String message, String activeDomain) {
         try {
+            long currentTimeMillis = System.currentTimeMillis();
             // 获取最近对话历史作为路由上下文（小模型需要多轮信息判断意图漂移）
             List<ConversationMessage> recentHistory = historyRepository.findAll(sessionId);
             DomainRoutingService.RouteResult routing =
                     domainRoutingService.route(message, activeDomain, recentHistory);
-
+            log.info("[DomainRoute] sessionId={} 路由决策={},耗时{}ms", sessionId, routing, System.currentTimeMillis() - currentTimeMillis);
             if (routing.shouldSwitch()) {
                 String newDomain = routing.suggestedDomain();
                 log.info("[DomainRoute] sessionId={} 域切换 {} -> {} (reason=小模型检测)",
@@ -272,7 +273,7 @@ public class ChatAppService {
      * 运行于 Spring MVC 阻塞线程，直接调用，不使用响应式包装。
      */
     public List<KnowledgeSearchResult.Hit> searchHits(String userMessage) {
-        return knowledgeClient.search(userMessage);
+        return knowledgeServiceClient.search(userMessage);
     }
 
     /**
@@ -402,7 +403,7 @@ public class ChatAppService {
      */
     public String chat(String sessionId, String userMessage) {
         historyRepository.append(sessionId, ROLE_USER, userMessage);
-        List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
+        List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(userMessage);
         String systemPrompt = SystemPromptBuilder.build(hits, null, BASE_SYSTEM_PROMPT);
         String reply = aiClient.chat(toAiPrompt(historyRepository.findAll(sessionId)), systemPrompt);
         historyRepository.append(sessionId, ROLE_ASSISTANT, reply);

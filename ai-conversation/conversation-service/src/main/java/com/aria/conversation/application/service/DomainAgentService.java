@@ -15,7 +15,7 @@ import com.aria.conversation.infrastructure.dit.pipeline.HttpToolRunner;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
 import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
-import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
+import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -70,7 +70,7 @@ public class DomainAgentService {
     private final DomainRepository domainRepo;
     private final HttpToolRunner httpToolRunner;
     private final SessionChatMemoryStore memoryStore;
-    private final KnowledgeClient knowledgeClient;
+    private final KnowledgeServiceClient knowledgeServiceClient;
     private final ObjectMapper objectMapper;
     private final SessionDomainRepository sessionDomainRepo;
     private final SessionDomainSwitchRepository domainSwitchRepo;
@@ -105,7 +105,7 @@ public class DomainAgentService {
         String domainAddon = buildDomainAddon(allDomains);
 
         // 2. RAG + system prompt（域列表通过 addon 写入，LLM 从 system prompt 获知可切换域）
-        List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
+        List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(userMessage);
         String systemPrompt = SystemPromptBuilder.build(hits, domainAddon, null);
 
         // 3. Sink：用于发射 tool_call / tool_done / domain_switch / transfer 事件

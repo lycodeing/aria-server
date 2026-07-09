@@ -75,6 +75,11 @@
                 <artifactId>auth-client</artifactId>
                 <version>${cs.common.version}</version>
             </dependency>
+            <dependency>
+                <groupId>com.aria</groupId>
+                <artifactId>aria-knowledge-client</artifactId>
+                <version>${cs.common.version}</version>
+            </dependency>
 
             <!-- ===== ORM ===== -->
             <dependency>
