@@ -15,9 +15,12 @@ import org.springframework.stereotype.Component;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * LangChain4j ChatMemoryStore ACL 适配器。
@@ -45,9 +48,57 @@ public class SessionChatMemoryStore implements ChatMemoryStore {
 
     @Override
     public List<ChatMessage> getMessages(Object memoryId) {
-        return historyRepo.findAll(memoryId.toString()).stream()
+        List<ChatMessage> messages = historyRepo.findAll(memoryId.toString()).stream()
                 .map(this::toLangChain4jMessage)
-                .toList();
+                .collect(Collectors.toCollection(ArrayList::new));
+        return sanitizeDanglingToolCalls(memoryId.toString(), messages);
+    }
+
+    /**
+     * 从消息列表末尾截断"悬空 tool call"——即 assistant 发出了 tool_calls 请求，
+     * 但对应的 {@link ToolExecutionResultMessage} 因异常中断而缺失的情况。
+     *
+     * <p>这类残缺历史在下一次请求时会被重新加载，LangChain4j 会尝试重新执行工具，
+     * 但此时 executor 查找表（per-request 构建）中并没有该工具，导致 NPE。
+     *
+     * <p>修复策略：从末尾向前扫描，找到最后一条带 tool_calls 的 {@link AiMessage}，
+     * 若其后续消息中没有完整覆盖所有 tool call id 的 {@link ToolExecutionResultMessage}，
+     * 则截掉从该 assistant 消息开始到末尾的所有消息。
+     */
+    private List<ChatMessage> sanitizeDanglingToolCalls(String sessionId, List<ChatMessage> messages) {
+        // 从后向前找最后一条带 tool_calls 的 AiMessage
+        int lastToolCallIdx = -1;
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            if (messages.get(i) instanceof AiMessage ai && ai.hasToolExecutionRequests()) {
+                lastToolCallIdx = i;
+                break;
+            }
+        }
+        if (lastToolCallIdx == -1) {
+            return messages; // 没有 tool call，直接返回
+        }
+
+        AiMessage aiMsg = (AiMessage) messages.get(lastToolCallIdx);
+        Set<String> expectedIds = aiMsg.toolExecutionRequests().stream()
+                .map(ToolExecutionRequest::id)
+                .collect(Collectors.toCollection(HashSet::new));
+
+        // 收集该 assistant 消息之后所有的 tool result id
+        Set<String> resultIds = new HashSet<>();
+        for (int i = lastToolCallIdx + 1; i < messages.size(); i++) {
+            if (messages.get(i) instanceof ToolExecutionResultMessage tr) {
+                resultIds.add(tr.id());
+            }
+        }
+
+        if (resultIds.containsAll(expectedIds)) {
+            return messages; // tool call 已完整配对
+        }
+
+        // 截掉悬空的 assistant tool_call 及其后续消息
+        log.warn("[Memory] 检测到悬空 tool_call，截断历史 sessionId={} idx={} toolIds={}",
+                sessionId, lastToolCallIdx, expectedIds);
+        return new ArrayList<>(messages.subList(0, lastToolCallIdx));
     }
 
     /**
