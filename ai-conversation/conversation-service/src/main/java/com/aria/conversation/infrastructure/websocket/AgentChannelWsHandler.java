@@ -54,6 +54,9 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
     @Value("${agent.ws.multi-login-mode:BROADCAST}")
     private MultiLoginMode multiLoginMode;
 
+    /**
+     * 连接建立后：按 multiLoginMode 执行注册逻辑，KICK 模式三步原子化，最后推送 CONNECTED 信令。
+     */
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
         String agentId = (String) session.getAttributes().get(ATTR_AGENT_ID);
@@ -123,6 +126,9 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
         log.debug("[AgentWS] agent→visitor sessionId={} seq={}", sessionId, seq);
     }
 
+    /**
+     * 连接正常/异常关闭后：从注册表注销连接，不触发会话关闭逻辑（座席断线 ≠ 会话结束）。
+     */
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         registry.unregister(session);
@@ -130,6 +136,9 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
                 session.getAttributes().get(ATTR_AGENT_ID), session.getId(), status);
     }
 
+    /**
+     * 传输层异常：记录警告并注销连接，由客户端负责重连。
+     */
     @Override
     public void handleTransportError(WebSocketSession session, Throwable ex) {
         log.warn("[AgentWS] 传输异常 agentId={} wsId={} msg={}",
