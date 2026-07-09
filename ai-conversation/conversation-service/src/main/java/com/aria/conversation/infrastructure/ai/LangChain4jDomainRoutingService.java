@@ -97,7 +97,7 @@ public class LangChain4jDomainRoutingService implements DomainRoutingService {
         }
 
         sb.append("\n用户最新消息：").append(userMessage).append("\n\n");
-        sb.append("请只输出一个域 code（如 ecommerce），不要输出任何其他内容。");
+        sb.append("请只输出一个域 code（如 ecommerce），不要输出任何其他内容。例如：ecommerce");
         return sb.toString();
     }
 }

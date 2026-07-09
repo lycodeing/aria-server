@@ -54,7 +54,9 @@ public final class JsonUtils {
         try {
             return MAPPER.readValue(json, typeRef);
         } catch (JsonProcessingException e) {
-            throw new RuntimeException("JSON 反序列化失败", e);
+
+            e.printStackTrace();
+            return null;
         }
     }
 

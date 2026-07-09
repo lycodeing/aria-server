@@ -64,7 +64,8 @@ public class AuthClient extends BaseClient {
         }
         ApiResponse<AiModelConfigDTO> resp = doGet(
                 scope.path(),
-                new TypeRef<ApiResponse<AiModelConfigDTO>>() {},
+                new TypeRef<>() {
+                },
                 "拉取激活模型配置失败, scope=" + scope);
         return unwrap(resp, "拉取激活模型配置失败, scope=" + scope);
     }
