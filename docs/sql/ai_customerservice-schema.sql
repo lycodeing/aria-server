@@ -1060,6 +1060,47 @@ ALTER SEQUENCE cs_conversation.cs_tool_id_seq OWNED BY cs_conversation.cs_tool.i
 
 
 --
+-- Name: cs_session_domain_switch; Type: TABLE; Schema: cs_conversation; Owner: -
+--
+
+CREATE SEQUENCE cs_conversation.cs_session_domain_switch_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+CREATE TABLE cs_conversation.cs_session_domain_switch (
+    id              bigint                      NOT NULL DEFAULT nextval('cs_conversation.cs_session_domain_switch_id_seq'::regclass),
+    session_id      character varying(100)      NOT NULL,
+    from_domain     character varying(64),
+    to_domain       character varying(64)       NOT NULL,
+    switch_type     character varying(32)       NOT NULL,
+    trigger_message text,
+    reason          text,
+    msg_seq         bigint,
+    created_at      timestamp with time zone    NOT NULL DEFAULT now()
+);
+
+ALTER SEQUENCE cs_conversation.cs_session_domain_switch_id_seq OWNED BY cs_conversation.cs_session_domain_switch.id;
+
+ALTER TABLE ONLY cs_conversation.cs_session_domain_switch
+    ADD CONSTRAINT cs_session_domain_switch_pkey PRIMARY KEY (id);
+
+CREATE INDEX idx_session_domain_switch_session ON cs_conversation.cs_session_domain_switch USING btree (session_id);
+CREATE INDEX idx_session_domain_switch_created ON cs_conversation.cs_session_domain_switch USING btree (created_at);
+
+COMMENT ON TABLE  cs_conversation.cs_session_domain_switch                  IS '会话域切换记录表，记录每次域切换的来源、目标、触发原因';
+COMMENT ON COLUMN cs_conversation.cs_session_domain_switch.session_id       IS '会话 ID，与 cs_conversation.session_id 对应';
+COMMENT ON COLUMN cs_conversation.cs_session_domain_switch.from_domain      IS '切换前的域 code，首次进入时为 NULL';
+COMMENT ON COLUMN cs_conversation.cs_session_domain_switch.to_domain        IS '切换后的域 code';
+COMMENT ON COLUMN cs_conversation.cs_session_domain_switch.switch_type      IS 'INITIAL=初始化, ROUTER_MODEL=小模型路由, LLM_TOOL=LLM工具触发, USER_SELECTED=用户手动选择';
+COMMENT ON COLUMN cs_conversation.cs_session_domain_switch.trigger_message  IS '触发切换的用户消息原文';
+COMMENT ON COLUMN cs_conversation.cs_session_domain_switch.reason           IS '切换原因描述';
+COMMENT ON COLUMN cs_conversation.cs_session_domain_switch.msg_seq          IS '关联 cs_conversation_message.seq';
+
+
+--
 -- Name: flyway_schema_history; Type: TABLE; Schema: cs_conversation; Owner: -
 --
 
