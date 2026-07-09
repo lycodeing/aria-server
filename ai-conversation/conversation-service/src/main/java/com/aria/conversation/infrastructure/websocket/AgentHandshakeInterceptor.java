@@ -56,7 +56,9 @@ public class AgentHandshakeInterceptor implements HandshakeInterceptor {
         return true;
     }
 
-    /** 握手完成后无需额外处理。 */
+    /**
+     * 握手完成后无需额外处理。
+     */
     @Override
     public void afterHandshake(ServerHttpRequest request,
                                ServerHttpResponse response,
@@ -101,8 +103,8 @@ public class AgentHandshakeInterceptor implements HandshakeInterceptor {
         for (String param : query.split("&")) {
             if (param.startsWith("token=")) {
                 String value = URLDecoder.decode(
-                    param.substring("token=".length()).trim(),
-                    StandardCharsets.UTF_8
+                        param.substring("token=".length()).trim(),
+                        StandardCharsets.UTF_8
                 );
                 return value.isEmpty() ? null : value;
             }

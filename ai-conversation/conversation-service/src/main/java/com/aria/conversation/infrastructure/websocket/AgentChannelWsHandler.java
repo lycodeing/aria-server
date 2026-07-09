@@ -3,7 +3,7 @@ package com.aria.conversation.infrastructure.websocket;
 import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.domain.MultiLoginMode;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.aria.conversation.infrastructure.websocket.message.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -16,7 +16,6 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.time.Instant;
-import java.util.Map;
 
 /**
  * 座席专用 WebSocket Handler。
@@ -26,7 +25,7 @@ import java.util.Map;
  *   <li>连接建立/关闭时维护 {@link AgentConnectionRegistry}</li>
  *   <li>按 {@code agent.ws.multi-login-mode} 执行 BROADCAST 或 KICK 逻辑</li>
  *   <li>处理座席发送的消息（MESSAGE 写历史转发访客，TYPING 直接转发）</li>
- *   <li>向新连接推送 CONNECTED 确认信令</li>
+ *   <li>向新连接推送 {@link WsConnectedMessage} 确认信令</li>
  * </ul>
  *
  * <p>握手鉴权由 {@link AgentHandshakeInterceptor} 完成，token 无效时返回 HTTP 401，
@@ -38,14 +37,8 @@ import java.util.Map;
 public class AgentChannelWsHandler extends TextWebSocketHandler {
 
     private static final String ATTR_AGENT_ID = "agentId";
-    private static final String MSG_TYPE_CONNECTED = "CONNECTED";
-    private static final String MSG_TYPE_KICKED_OUT = "KICKED_OUT";
-    private static final String MSG_TYPE_MESSAGE = "MESSAGE";
-    private static final String MSG_TYPE_TYPING = "TYPING";
 
-    /**
-     * 单条消息最大字节数（64KB），与 ChatWebSocketHandler 保持一致
-     */
+    /** 单条消息最大字节数（64KB），与 ChatWebSocketHandler 保持一致 */
     private static final int MAX_MESSAGE_BYTES = 65536;
 
     private final AgentConnectionRegistry registry;
@@ -72,7 +65,7 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
             // KICK 模式：per-agentId 锁原子化三步，防止并发双踢竞态
             synchronized (registry.getAgentLock(agentId)) {
                 registry.register(agentId, session);
-                registry.broadcastExcept(agentId, session, Map.of("type", MSG_TYPE_KICKED_OUT));
+                registry.broadcastExcept(agentId, session, WsKickedOutMessage.INSTANCE);
                 registry.closeAllExcept(agentId, session);
             }
         } else {
@@ -81,7 +74,7 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
         }
 
         // 通知新端连接成功，通过 Registry 锁发送，避免与并发广播产生帧竞态
-        registry.sendToSession(session, Map.of("type", MSG_TYPE_CONNECTED));
+        registry.sendToSession(session, WsConnectedMessage.forAgent());
         log.info("[AgentWS] 座席连接建立 agentId={} wsId={} mode={}", agentId, session.getId(), multiLoginMode);
     }
 
@@ -89,15 +82,13 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
     protected void handleTextMessage(@NonNull WebSocketSession session, TextMessage message) throws Exception {
         if (message.getPayloadLength() > MAX_MESSAGE_BYTES) {
             log.warn("[AgentWS] 消息超过最大长度 wsId={} size={}", session.getId(), message.getPayloadLength());
-            registry.sendToSession(session, Map.of("type", "ERROR", "message", "消息长度超过限制（最大 64KB）"));
+            registry.sendToSession(session, WsErrorMessage.of("消息长度超过限制（最大 64KB）"));
             session.close(CloseStatus.NOT_ACCEPTABLE);
             return;
         }
 
-        Map<String, Object> body = parseBody(message.getPayload(), session.getId());
-        String type = (String) body.getOrDefault("type", MSG_TYPE_MESSAGE);
-        String sessionId = (String) body.get("sessionId");
-        String content = (String) body.get("content");
+        WsInboundMessage body = parseBody(message.getPayload(), session.getId());
+        String sessionId = body.sessionId();
         long ts = Instant.now().getEpochSecond();
 
         if (sessionId == null || sessionId.isBlank()) {
@@ -105,26 +96,21 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
             return;
         }
 
-        if (MSG_TYPE_TYPING.equals(type)) {
+        if (body.isType(WsMessageType.TYPING)) {
             // TYPING 信号：ephemeral，不写历史，直接转发给访客
-            visitorNotifier.notifyVisitor(sessionId,
-                    Map.of("type", MSG_TYPE_TYPING, "sessionId", sessionId, "timestamp", ts));
+            visitorNotifier.notifyVisitor(sessionId, WsTypingMessage.of(sessionId, ts));
             return;
         }
 
         // MESSAGE：写历史，转发给访客
+        String content = body.content();
         if (content == null || content.isBlank()) {
             log.warn("[AgentWS] MESSAGE 内容为空 sessionId={} wsId={}", sessionId, session.getId());
             return;
         }
         long seq = historyRepository.appendAgentMessage(sessionId, content);
-        visitorNotifier.notifyVisitor(sessionId, Map.of(
-                "type", MSG_TYPE_MESSAGE,
-                "sessionId", sessionId,
-                "role", MessageRole.AGENT.getValue(),
-                "content", content,
-                "seq", seq,
-                "timestamp", ts));
+        visitorNotifier.notifyVisitor(sessionId,
+                WsChatMessage.fromAgent(sessionId, content, seq, ts));
         log.debug("[AgentWS] agent→visitor sessionId={} seq={}", sessionId, seq);
     }
 
@@ -148,15 +134,20 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
         registry.unregister(session);
     }
 
-    private Map<String, Object> parseBody(String payload, String wsId) {
+    /**
+     * 将 JSON 字符串反序列化为 {@link WsInboundMessage}。
+     * 非 JSON 时降级封装为 content=rawPayload 的 MESSAGE 类型。
+     *
+     * @param payload 原始消息文本
+     * @param wsId    WebSocket 连接 ID（仅用于日志）
+     * @return 解析结果
+     */
+    private WsInboundMessage parseBody(String payload, String wsId) {
         try {
-            return objectMapper.readValue(payload, new TypeReference<Map<String, Object>>() {
-            });
+            return objectMapper.readValue(payload, WsInboundMessage.class);
         } catch (Exception e) {
             log.debug("[AgentWS] payload 非 JSON wsId={}", wsId);
-            return Map.of("content", payload);
+            return WsInboundMessage.ofPlainText(payload);
         }
     }
-
-
 }

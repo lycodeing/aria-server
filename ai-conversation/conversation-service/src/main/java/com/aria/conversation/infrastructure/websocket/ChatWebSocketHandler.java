@@ -3,9 +3,16 @@ package com.aria.conversation.infrastructure.websocket;
 import com.aria.conversation.application.service.SessionQueueService;
 import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
+import com.aria.conversation.infrastructure.websocket.message.WsChatMessage;
+import com.aria.conversation.infrastructure.websocket.message.WsConnectedMessage;
+import com.aria.conversation.infrastructure.websocket.message.WsErrorMessage;
+import com.aria.conversation.infrastructure.websocket.message.WsInboundMessage;
+import com.aria.conversation.infrastructure.websocket.message.WsMessageType;
+import com.aria.conversation.infrastructure.websocket.message.WsTypingMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.jspecify.annotations.NonNull;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -14,35 +21,27 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
 import java.time.Instant;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Pattern;
 
 /**
- * 客服实时对话 WebSocket Handler。
- * <p>
- * 路径规则（由 WebSocketConfig 注册）：
- * /ws/chat/{sessionId}   → 访客端
- * /ws/agent/{sessionId}  → 座席端
- * <p>
- * 消息格式（JSON）：
- * { "type":"MESSAGE", "sessionId":"xxx", "role":"user|agent", "content":"...", "timestamp":1234 }
- * { "type":"CONNECTED", "sessionId":"xxx", "role":"user|agent" }
- * <p>
- * 历史存储统一委托给 ConversationHistoryRepository，不再直接操作 Redis。
+ * 客服实时对话 WebSocket Handler（访客端）。
+ *
+ * <p>路径规则（由 WebSocketConfig 注册）：
+ * {@code /ws/chat/{sessionId}} → 访客端
+ *
+ * <p>消息格式（JSON）：
+ * <pre>
+ * 入站：{ "type":"MESSAGE"|"TYPING", "content":"..." }
+ * 出站：{@link WsConnectedMessage}、{@link WsChatMessage}、{@link WsTypingMessage}、{@link WsErrorMessage}
+ * </pre>
+ *
+ * <p>历史存储统一委托给 ConversationHistoryRepository，不再直接操作 Redis。
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class ChatWebSocketHandler extends TextWebSocketHandler implements VisitorNotifier {
-
-    // ---- 消息类型常量 ----
-    private static final String MSG_TYPE_CONNECTED   = "CONNECTED";
-    private static final String MSG_TYPE_MESSAGE     = "MESSAGE";
-    private static final String MSG_TYPE_AGENT_JOINED = "AGENT_JOINED";
-    private static final String MSG_TYPE_ERROR       = "ERROR";
-    /** 访客输入中信号：仅转发给座席，不写入对话历史 */
-    private static final String MSG_TYPE_TYPING      = "TYPING";
 
     // ---- 路径常量 ----
     private static final String PATH_SEGMENT_CHAT = "chat";
@@ -63,22 +62,24 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
      * 超出时关闭连接并返回 NOT_ACCEPTABLE 状态。
      */
     private static final int MAX_MESSAGE_BYTES = 65536;
+
     /**
      * S-03 合法 role 白名单，仅允许 "chat"（访客）
      */
     private static final java.util.Set<String> VALID_ROLES = java.util.Set.of("chat");
-    /**
-     * 访客 WS 会话注册表: sessionId → WebSocketSession
-     */
+
+    /** 访客 WS 会话注册表: sessionId → WebSocketSession */
     private final ConcurrentHashMap<String, WebSocketSession> visitorSessions = new ConcurrentHashMap<>();
+
     /**
      * S-02 线程安全：每个 sessionId 对应一把发送锁，串行化 sendMessage 调用。
-     * {@link org.springframework.web.socket.WebSocketSession#sendMessage} 非线程安全；
+     * {@link WebSocketSession#sendMessage} 非线程安全；
      * RabbitMQ 监听线程（notifyVisitor/notifyAgent）与 WS IO 线程（handleTextMessage）
      * 可能并发写同一 session，若不加锁会导致帧损坏或 {@link IllegalStateException}。
      * 连接关闭时在 {@link #afterConnectionClosed} / {@link #handleTransportError} 中一并清理。
      */
     private final ConcurrentHashMap<String, Object> sendLocks = new ConcurrentHashMap<>();
+
     private final ObjectMapper objectMapper;
     private final ConversationHistoryRepository historyRepository;
     private final SessionQueueService sessionQueueService;
@@ -89,7 +90,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
     // ----------------------------------------------------------------
 
     @Override
-    public void afterConnectionEstablished(WebSocketSession session) throws Exception {
+    public void afterConnectionEstablished(@NonNull WebSocketSession session) throws Exception {
         // S2：parsePath 已完成格式校验，非法 sessionId 时返回 null 并关闭连接
         String[] parts = parsePath(session);
         if (parts == null) {
@@ -106,12 +107,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
             WebSocketSession oldVisitor = visitorSessions.put(sessionId, session);
             closeStaleSession(oldVisitor);
             log.info("[WS] visitor connected sessionId={}", sessionId);
-            sendJson(session, Map.of("type", MSG_TYPE_CONNECTED, "sessionId", sessionId, "role", MessageRole.USER.getValue()));
+            sendJson(session, WsConnectedMessage.forVisitor(sessionId));
         }
     }
 
     @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+    protected void handleTextMessage(@NonNull WebSocketSession session, @NonNull TextMessage message) throws Exception {
         // S3：消息长度检查，超过 64KB 时拒绝并关闭连接
         if (!checkMessageLength(session, message)) {
             return;
@@ -121,25 +122,18 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
         String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
         long ts = Instant.now().getEpochSecond();
 
-        // 尝试解析完整 JSON body，取 type + content
-        Map<String, Object> body = parseBody(message.getPayload(), sessionId);
-        String msgType = (String) body.getOrDefault("type", MSG_TYPE_MESSAGE);
-        String content = extractContent(body, message.getPayload());
+        WsInboundMessage body = parseBody(message.getPayload(), sessionId);
 
-        // TYPING 信号：任何角色发送都只转发/忽略，不写历史
-        if (MSG_TYPE_TYPING.equals(msgType)) {
-            // 仅访客的 typing 信号需要转发给座席；座席发来的直接丢弃
+        // TYPING 信号：仅访客的 typing 信号需要转发给座席，不写历史
+        if (body.isType(WsMessageType.TYPING)) {
             if (PATH_SEGMENT_CHAT.equals(role)) {
-                notifyAgent(sessionId, Map.of(
-                        "type", MSG_TYPE_TYPING,
-                        "sessionId", sessionId,
-                        "timestamp", ts));
+                notifyAgent(sessionId, WsTypingMessage.of(sessionId, ts));
             }
             return;
         }
 
         if (PATH_SEGMENT_CHAT.equals(role)) {
-            handleVisitorMessage(sessionId, content, ts);
+            handleVisitorMessage(sessionId, body.content() != null ? body.content() : message.getPayload(), ts);
         }
     }
 
@@ -156,31 +150,26 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
         }
         String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
         log.warn("[WS] 消息超过最大长度限制 sessionId={} size={}", sessionId, message.getPayloadLength());
-        sendJson(session, Map.of("type", MSG_TYPE_ERROR, "message", "消息长度超过限制（最大 64KB）"));
+        sendJson(session, WsErrorMessage.of("消息长度超过限制（最大 64KB）"));
         session.close(CloseStatus.NOT_ACCEPTABLE);
         return false;
     }
 
     /**
-     * 解析消息 JSON body，失败时返回含原始 payload 的 Map（调用方降级为纯文本）。
+     * 将 JSON 字符串反序列化为 {@link WsInboundMessage}。
+     * 非 JSON 时降级封装为 content=rawPayload 的 MESSAGE 类型。
+     *
+     * @param payload   原始消息文本
+     * @param sessionId 会话 ID（仅用于日志）
+     * @return 解析结果
      */
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> parseBody(String payload, String sessionId) {
+    private WsInboundMessage parseBody(String payload, String sessionId) {
         try {
-            return objectMapper.readValue(payload, Map.class);
+            return objectMapper.readValue(payload, WsInboundMessage.class);
         } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
             log.debug("[WS] message payload is not JSON, treat as plain text sessionId={}", sessionId);
-            return Map.of("content", payload);
+            return WsInboundMessage.ofPlainText(payload);
         }
-    }
-
-    /**
-     * 从 JSON body 中安全提取 content 字段。
-     * 若字段不存在或类型非 String，降级返回原始 payload。
-     */
-    private String extractContent(Map<String, Object> body, String fallback) {
-        Object val = body.get("content");
-        return val instanceof String s ? s : fallback;
     }
 
     /**
@@ -193,14 +182,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
     private void handleVisitorMessage(String sessionId, String content, long timestamp) {
         // 访客 → 存历史 → 转发给座席（payload 携带 seq 支持客户端断线重连后的 sinceSeq 增量同步）
         long seq = historyRepository.append(sessionId, MessageRole.USER.getValue(), content);
-        Map<String, Object> msg = Map.of(
-                "type", MSG_TYPE_MESSAGE, "sessionId", sessionId,
-                "role", MessageRole.USER.getValue(),
-                "content", content,
-                "seq", seq,
-                "timestamp", timestamp
-        );
-        notifyAgent(sessionId, msg);
+        notifyAgent(sessionId, WsChatMessage.fromVisitor(sessionId, content, seq, timestamp));
         log.debug("[WS] user→agent sessionId={} seq={}", sessionId, seq);
     }
 
@@ -282,14 +264,14 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
     /**
      * 通知座席。通过应用层查询 agentId，再由 {@link AgentConnectionRegistry} 广播。
      *
-     * <p>TYPING 信号为 ephemeral，允许丢失，在入口直接跳过，不走 Redis 查询。
+     * <p>{@link WsTypingMessage} 为 ephemeral 信号，允许丢失，在入口直接跳过，不走 Redis 查询。
      *
      * @param sessionId 会话 ID
      * @param payload   消息对象
      */
     public void notifyAgent(String sessionId, Object payload) {
         // TYPING 是 ephemeral 信号，允许丢失，跳过 Redis 路由
-        if (payload instanceof Map<?, ?> m && MSG_TYPE_TYPING.equals(m.get("type"))) {
+        if (payload instanceof WsTypingMessage) {
             log.debug("[WS] notifyAgent 跳过 TYPING sessionId={}", sessionId);
             return;
         }
@@ -363,25 +345,24 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
 
     /**
      * 从 URI 中解析 role 和 sessionId。
-     * /ws/chat/{sessionId}  → ["chat", sessionId]
-     * /ws/agent/{sessionId} → ["agent", sessionId]
-     * <p>
-     * S2：对解析出的 sessionId 做格式校验，不合法时向客户端发送错误消息并关闭连接。
-     * S3：对 role 做白名单校验，非 "chat"/"agent" 均拒绝，防止任意路径前缀绕过鉴权。
+     * {@code /ws/chat/{sessionId}} → ["chat", sessionId]
+     *
+     * <p>S2：对解析出的 sessionId 做格式校验，不合法时向客户端发送错误消息并关闭连接。
+     * <p>S3：对 role 做白名单校验，非 "chat" 均拒绝，防止任意路径前缀绕过鉴权。
      *
      * @return [role, sessionId] 数组；非法时关闭连接并返回 null
      */
     private String[] parsePath(WebSocketSession session) throws IOException {
         String path = session.getUri() != null ? session.getUri().getPath() : "/ws/chat/unknown";
         String[] segs = path.split("/");
-        // segs: ["", "ws", "chat"|"agent", sessionId]
+        // segs: ["", "ws", "chat", sessionId]
         String role = segs.length > 2 ? segs[2] : PATH_SEGMENT_CHAT;
         String sessionId = segs.length > 3 ? segs[3] : DEFAULT_SESSION_ID;
 
         // S3：role 白名单校验，非法 role 拒绝连接
         if (!VALID_ROLES.contains(role)) {
             log.warn("[WS] 非法 role 路径，拒绝连接 role={} path={}", role, path);
-            sendJson(session, Map.of("type", MSG_TYPE_ERROR, "message", "非法的连接路径"));
+            sendJson(session, WsErrorMessage.of("非法的连接路径"));
             session.close(CloseStatus.NOT_ACCEPTABLE);
             return null;
         }
@@ -389,7 +370,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
         // S2：sessionId 格式校验，只允许字母、数字、下划线、连字符，长度 1~64
         if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {
             log.warn("[WS] 非法 sessionId 格式，拒绝连接 sessionId={}", sessionId);
-            sendJson(session, Map.of("type", MSG_TYPE_ERROR, "message", "非法的 sessionId 格式"));
+            sendJson(session, WsErrorMessage.of("非法的 sessionId 格式"));
             session.close(CloseStatus.NOT_ACCEPTABLE);
             return null;
         }

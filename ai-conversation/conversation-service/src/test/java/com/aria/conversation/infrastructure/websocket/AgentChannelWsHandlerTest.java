@@ -2,6 +2,8 @@ package com.aria.conversation.infrastructure.websocket;
 
 import com.aria.conversation.domain.MultiLoginMode;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
+import com.aria.conversation.infrastructure.websocket.message.WsConnectedMessage;
+import com.aria.conversation.infrastructure.websocket.message.WsKickedOutMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -55,12 +57,8 @@ class AgentChannelWsHandlerTest {
         handler.afterConnectionEstablished(session);
 
         verify(registry).register("agent-1", session);
-        // CONNECTED 信令现在通过 registry.sendToSession 发送，确保复用 per-session 锁
-        verify(registry).sendToSession(eq(session), argThat(p -> {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> map = (Map<String, Object>) p;
-            return "CONNECTED".equals(map.get("type"));
-        }));
+        // CONNECTED 신令는 WsConnectedMessage 타입으로 sendToSession에 전달됨
+        verify(registry).sendToSession(eq(session), any(WsConnectedMessage.class));
         // BROADCAST 模式不调用 broadcastExcept 和 closeAllExcept
         verify(registry, never()).broadcastExcept(any(), any(), any());
         verify(registry, never()).closeAllExcept(any(), any());
@@ -79,11 +77,7 @@ class AgentChannelWsHandlerTest {
         handler.afterConnectionEstablished(session);
 
         verify(registry).register("agent-2", session);
-        verify(registry).broadcastExcept(eq("agent-2"), eq(session), argThat(p -> {
-            @SuppressWarnings("unchecked")
-            Map<String, Object> map = (Map<String, Object>) p;
-            return "KICKED_OUT".equals(map.get("type"));
-        }));
+        verify(registry).broadcastExcept(eq("agent-2"), eq(session), any(WsKickedOutMessage.class));
         verify(registry).closeAllExcept("agent-2", session);
     }
 
