@@ -4,6 +4,7 @@ import com.aria.conversation.infrastructure.websocket.AgentConnectionRegistry;
 import com.aria.conversation.infrastructure.websocket.VisitorNotifier;
 import com.aria.conversation.infrastructure.websocket.message.WsChatMessage;
 import com.aria.conversation.infrastructure.websocket.message.WsMessageType;
+import com.aria.conversation.infrastructure.websocket.cluster.WsClusterConstants;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -58,7 +59,7 @@ class WsMessageRouterTest {
         when(presenceRegistry.getAgentPods("agent-1")).thenReturn(Set.of("pod-B"));
         when(podIdentity.isLocal("pod-B")).thenReturn(false);
         router.sendToAgent("agent-1", chatMsg());
-        verify(rabbitTemplate).convertAndSend(eq("ws.delivery"), eq("pod-B"), any(WsDeliveryCommand.class));
+        verify(rabbitTemplate).convertAndSend(eq(WsClusterConstants.WS_DELIVERY_EXCHANGE), eq("pod-B"), any(WsDeliveryCommand.class));
         verifyNoInteractions(agentRegistry);
     }
 
@@ -78,7 +79,7 @@ class WsMessageRouterTest {
         when(presenceRegistry.getVisitorPod("sess-1")).thenReturn("pod-B");
         when(podIdentity.isLocal("pod-B")).thenReturn(false);
         router.sendToVisitor("sess-1", chatMsg());
-        verify(rabbitTemplate).convertAndSend(eq("ws.delivery"), eq("pod-B"), any(WsDeliveryCommand.class));
+        verify(rabbitTemplate).convertAndSend(eq(WsClusterConstants.WS_DELIVERY_EXCHANGE), eq("pod-B"), any(WsDeliveryCommand.class));
     }
 
     @Test
@@ -87,6 +88,14 @@ class WsMessageRouterTest {
         when(presenceRegistry.getAgentPods("agent-1")).thenReturn(Set.of());
         router.sendToAgent("agent-1", chatMsg());
         verifyNoInteractions(agentRegistry, rabbitTemplate);
+    }
+
+    @Test
+    @DisplayName("访客不在线：不调用任何推送")
+    void sendToVisitor_offline_skips() {
+        when(presenceRegistry.getVisitorPod("sess-1")).thenReturn(null);
+        router.sendToVisitor("sess-1", chatMsg());
+        verifyNoInteractions(visitorNotifier, rabbitTemplate);
     }
 
     @Test
