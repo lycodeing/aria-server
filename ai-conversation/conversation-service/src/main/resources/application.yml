@@ -160,3 +160,8 @@ sa-token:
   is-read-header: true
   is-read-cookie: false
   jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}
+
+# -------- 座席端 WebSocket 配置 --------
+agent:
+  ws:
+    multi-login-mode: BROADCAST   # BROADCAST（默认）| KICK

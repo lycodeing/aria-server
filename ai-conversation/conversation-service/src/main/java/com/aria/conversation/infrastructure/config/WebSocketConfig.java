@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.config;
 
+import com.aria.conversation.infrastructure.websocket.AgentChannelWsHandler;
 import com.aria.conversation.infrastructure.websocket.AgentHandshakeInterceptor;
 import com.aria.conversation.infrastructure.websocket.ChatWebSocketHandler;
 import lombok.RequiredArgsConstructor;
@@ -16,7 +17,7 @@ import org.springframework.web.socket.server.standard.ServletServerContainerFact
  * <p>
  * 路径：
  * /ws/chat/{sessionId}   → 访客端接入（保持开放策略）
- * /ws/agent/{sessionId}  → 座席端接入（需携带 ?token=xxx 通过握手认证）
+ * /ws/agent              → 座席端接入（需携带 ?token=xxx 通过握手认证）
  * <p>
  * 安全变更（S1/S3）：
  * <ul>
@@ -34,6 +35,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
     private static final int MAX_MESSAGE_SIZE = 65536;
 
     private final ChatWebSocketHandler chatWebSocketHandler;
+    private final AgentChannelWsHandler agentChannelWsHandler;
     private final AgentHandshakeInterceptor agentHandshakeInterceptor;
 
     /**
@@ -62,7 +64,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
                 .setAllowedOrigins(allowedOrigins);
 
         // 座席端：独立来源白名单 + 握手拦截器，token 缺失时握手阶段返回 HTTP 401
-        registry.addHandler(chatWebSocketHandler, "/ws/agent/*")
+        registry.addHandler(agentChannelWsHandler, "/ws/agent")
                 .addInterceptors(agentHandshakeInterceptor)
                 .setAllowedOrigins(agentOrigins);
     }
