@@ -1,6 +1,7 @@
 package com.aria.conversation.application.service;
 
 import com.aria.conversation.application.dto.VisitorHistoryDTO;
+import com.aria.conversation.infrastructure.cache.ConversationCacheKeys;
 import com.aria.conversation.infrastructure.persistence.ConversationPersistRepository;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
 import lombok.RequiredArgsConstructor;
@@ -31,7 +32,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class VisitorHistoryService {
 
-    private static final String AI_SUMMARY_KEY_PREFIX = "ai_summary:";
+    private static final String AI_SUMMARY_KEY_PREFIX = ConversationCacheKeys.AI_SUMMARY_PREFIX;
     private static final int    VISITOR_HISTORY_LIMIT = 20;
 
     private final ConversationPersistRepository persistRepository;
@@ -64,13 +65,17 @@ public class VisitorHistoryService {
                 .toList();
         List<String> summaries = redisTemplate.opsForValue().multiGet(redisKeys);
 
-        // 组装 DTO
+        // 组装 DTO：用 Map 建立 sessionId → 摘要的 O(1) 查找，替代流内 indexOf O(n²)
+        Map<String, String> summaryBySessionId = new java.util.HashMap<>(sessionIds.size() * 2);
+        for (int i = 0; i < sessionIds.size(); i++) {
+            String sid = sessionIds.get(i);
+            String summary = (summaries != null && i < summaries.size()) ? summaries.get(i) : null;
+            summaryBySessionId.put(sid, summary);
+        }
+
         return entities.stream().map(e -> {
-            int idx       = sessionIds.indexOf(e.getSessionId());
             long msgCount = msgCounts.getOrDefault(e.getSessionId(), 0L);
-            String summary = (summaries != null && idx >= 0 && idx < summaries.size())
-                    ? summaries.get(idx)
-                    : null;
+            String summary = summaryBySessionId.get(e.getSessionId());
             return new VisitorHistoryDTO(
                     e.getSessionId(),
                     e.getTag(),

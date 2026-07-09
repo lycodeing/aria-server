@@ -5,6 +5,7 @@ import com.aria.conversation.application.dto.ReplySuggestionDTO;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
+import com.aria.conversation.infrastructure.cache.ConversationCacheKeys;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
@@ -42,7 +43,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ReplySuggestionService {
 
-    private static final String KEY_PREFIX          = "reply_suggestions:";
+    private static final String KEY_PREFIX = ConversationCacheKeys.REPLY_SUGGESTIONS_PREFIX;
     private static final long   CACHE_TTL_SECONDS   = 2L;
     /** 用于上下文推理的最近消息轮数上限 */
     private static final int    MAX_HISTORY_TURNS   = 5;
@@ -80,6 +81,15 @@ public class ReplySuggestionService {
     public void shutdownExecutor() {
         log.info("[Suggestion] 关闭建议生成线程池");
         suggestionExecutor.shutdown();
+        try {
+            if (!suggestionExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                log.warn("[Suggestion] 线程池未在 5s 内终止，强制关闭");
+                suggestionExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            suggestionExecutor.shutdownNow();
+        }
     }
 
     /**

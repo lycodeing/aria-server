@@ -48,10 +48,18 @@ public class InternalSecretVerifier {
     /**
      * 校验请求头中的密钥是否匹配。
      *
+     * <p>使用 {@link java.security.MessageDigest#isEqual} 恒定时间比较，
+     * 防止通过响应时间差推断密钥内容的时序攻击（timing attack）。
+     *
      * @param providedSecret 请求头 {@code X-Internal-Secret} 携带的值
      * @return true 表示校验通过；false 表示密钥不匹配（含 null）
      */
     public boolean matches(String providedSecret) {
-        return internalSecret.equals(providedSecret);
+        if (providedSecret == null) {
+            return false;
+        }
+        return java.security.MessageDigest.isEqual(
+                internalSecret.getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                providedSecret.getBytes(java.nio.charset.StandardCharsets.UTF_8));
     }
 }

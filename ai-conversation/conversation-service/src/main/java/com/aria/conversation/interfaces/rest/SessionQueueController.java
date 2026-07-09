@@ -331,8 +331,11 @@ public class SessionQueueController {
         try {
             Object loginId = StpUtil.getLoginIdByToken(token);
             return loginId != null ? loginId.toString() : null;
+        } catch (cn.dev33.satoken.exception.NotLoginException e) {
+            log.debug("[SSE] token 无效或已过期，作为匿名连接处理: {}", e.getMessage());
+            return null;
         } catch (Exception e) {
-            log.debug("[SSE] token 解析失败，作为匿名连接处理: {}", e.getMessage());
+            log.warn("[SSE] token 解析时发生未知异常，作为匿名连接处理: {}", e.getMessage(), e);
             return null;
         }
     }

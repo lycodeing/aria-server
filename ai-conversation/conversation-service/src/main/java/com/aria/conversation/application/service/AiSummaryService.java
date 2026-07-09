@@ -3,6 +3,7 @@ package com.aria.conversation.application.service;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
+import com.aria.conversation.infrastructure.cache.ConversationCacheKeys;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,7 +33,7 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class AiSummaryService {
 
-    private static final String KEY_PREFIX          = "ai_summary:";
+    private static final String KEY_PREFIX = ConversationCacheKeys.AI_SUMMARY_PREFIX;
     private static final long   SUMMARY_TTL_DAYS    = 7L;
     private static final long   SSE_TIMEOUT_MS      = 3 * 60 * 1000L;
     /**
