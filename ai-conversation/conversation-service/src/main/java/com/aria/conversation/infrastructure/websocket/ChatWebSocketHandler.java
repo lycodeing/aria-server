@@ -264,18 +264,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
     /**
      * 通知座席。通过应用层查询 agentId，再由 {@link AgentConnectionRegistry} 广播。
      *
-     * <p>{@link WsTypingMessage} 为 ephemeral 信号，允许丢失，在入口直接跳过，不走 Redis 查询。
+     * <p>包括 {@link WsTypingMessage} 在内的所有消息均转发至座席，TYPING 为 ephemeral 信号允许丢失。
      *
      * @param sessionId 会话 ID
      * @param payload   消息对象
      */
     public void notifyAgent(String sessionId, Object payload) {
-        // TYPING 是 ephemeral 信号，允许丢失，跳过 Redis 路由
-        if (payload instanceof WsTypingMessage) {
-            log.debug("[WS] notifyAgent 跳过 TYPING sessionId={}", sessionId);
-            return;
-        }
-
         String agentId = sessionQueueService.getAgentId(sessionId);
         if (agentId == null) {
             log.warn("[WS] notifyAgent 跳过：sessionId={} 尚未分配座席或会话已关闭", sessionId);

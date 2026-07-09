@@ -43,15 +43,6 @@ spring:
           multiplier: 2.0
           max-interval: 10000
 
-# -------- 天翼云 AI 配置（DeepSeek-V4-Flash） --------
-ai:
-  ctyun:
-    base-url: https://wishub-x6.ctyun.cn/v1
-    # 【安全】API Key 必须通过环境变量 AI_CTYUN_API_KEY 注入，未设置时应用拒绝启动
-    api-key: ${AI_CTYUN_API_KEY}
-    model: DeepSeek-V4-Flash
-    timeout-seconds: 60
-
 # -------- 对话 MQ 配置 --------
 conversation:
   # 持久化队列（消息/会话生命周期写 DB）

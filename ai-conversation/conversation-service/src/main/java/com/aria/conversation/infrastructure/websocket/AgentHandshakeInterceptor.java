@@ -3,6 +3,7 @@ package com.aria.conversation.infrastructure.websocket;
 import cn.dev33.satoken.exception.NotLoginException;
 import cn.dev33.satoken.stp.StpUtil;
 import lombok.extern.slf4j.Slf4j;
+import org.jspecify.annotations.NonNull;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
@@ -36,9 +37,9 @@ public class AgentHandshakeInterceptor implements HandshakeInterceptor {
      */
     @Override
     public boolean beforeHandshake(ServerHttpRequest request,
-                                   ServerHttpResponse response,
-                                   WebSocketHandler wsHandler,
-                                   Map<String, Object> attributes) {
+                                   @NonNull ServerHttpResponse response,
+                                   @NonNull WebSocketHandler wsHandler,
+                                   @NonNull Map<String, Object> attributes) {
         String query = request.getURI().getQuery();
         String token = extractToken(query);
 

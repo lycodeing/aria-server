@@ -28,7 +28,7 @@ export AI_CTYUN_API_KEY=${AI_CTYUN_API_KEY:-}
 export ARIA_AUTH_URL=http://localhost:8083
 export ARIA_AUTH_INTERNAL_URL=http://localhost:8083
 export KNOWLEDGE_SERVICE_BASE_URL=http://localhost:8081
-export APP_CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5666,http://localhost:5667,http://localhost:5668
+export APP_CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:5666,http://localhost:5667,http://localhost:5668,http://localhost:5669,http://localhost:5670,http://localhost:5671
 
 start_auth() {
   echo "▶ 启动 auth-service (port 8083)..."
