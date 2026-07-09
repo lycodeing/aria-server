@@ -80,10 +80,14 @@ public class AgentConnectionRegistry {
         if (agentId == null) {
             return;
         }
-        // 原子删除：空 Set 时同步移除 key，避免 TOCTOU 竞态
+        // 原子删除：空 Set 时同步移除 key，避免 TOCTOU 竞态；同步清理 agentLocks 防内存泄漏
         agentToSessions.computeIfPresent(agentId, (k, set) -> {
             set.remove(session);
-            return set.isEmpty() ? null : set;
+            if (set.isEmpty()) {
+                agentLocks.remove(k);  // 无在线连接时释放 per-agentId 锁对象，防止长期泄漏
+                return null;
+            }
+            return set;
         });
         log.debug("[AgentRegistry] 注销连接 agentId={} wsId={}", agentId, session.getId());
     }

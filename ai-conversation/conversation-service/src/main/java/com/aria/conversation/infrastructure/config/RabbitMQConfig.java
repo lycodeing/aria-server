@@ -2,7 +2,6 @@ package com.aria.conversation.infrastructure.config;
 
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.core.*;
-import org.springframework.amqp.core.FanoutExchange;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
@@ -10,6 +9,7 @@ import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 /**
  * RabbitMQ 拓扑声明。
@@ -32,11 +32,16 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class RabbitMQConfig {
 
-    @Value("${conversation.persist.exchange}")    private String exchange;
-    @Value("${conversation.persist.queue}")       private String queue;
-    @Value("${conversation.persist.dlq}")         private String dlq;
-    @Value("${conversation.persist.routing-key}") private String routingKey;
-    @Value("${conversation.events.exchange}")     private String eventsExchange;
+    @Value("${conversation.persist.exchange}")
+    private String exchange;
+    @Value("${conversation.persist.queue}")
+    private String queue;
+    @Value("${conversation.persist.dlq}")
+    private String dlq;
+    @Value("${conversation.persist.routing-key}")
+    private String routingKey;
+    @Value("${conversation.events.exchange}")
+    private String eventsExchange;
 
     // ----------------------------------------------------------------
     // 消息转换器
@@ -65,9 +70,9 @@ public class RabbitMQConfig {
      * 否则 ConfirmCallback 不会被触发。
      */
     @Bean
-    @org.springframework.context.annotation.Primary
+    @Primary
     public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory,
-                                          MessageConverter jsonMessageConverter) {
+                                         MessageConverter jsonMessageConverter) {
         RabbitTemplate template = new RabbitTemplate(connectionFactory);
         template.setMessageConverter(jsonMessageConverter);
         // Publisher Confirms 回调：Broker 持久化确认 / 拒绝时触发
@@ -79,9 +84,9 @@ public class RabbitMQConfig {
         });
         // Publisher Returns 回调：消息路由到 Exchange 但找不到队列时触发
         template.setReturnsCallback(returned ->
-            log.error("[MQ] Message returned，无法路由到队列: exchange={} routingKey={} replyCode={} replyText={}",
-                    returned.getExchange(), returned.getRoutingKey(),
-                    returned.getReplyCode(), returned.getReplyText())
+                log.error("[MQ] Message returned，无法路由到队列: exchange={} routingKey={} replyCode={} replyText={}",
+                        returned.getExchange(), returned.getRoutingKey(),
+                        returned.getReplyCode(), returned.getReplyText())
         );
         template.setMandatory(true);
         return template;
@@ -91,10 +96,22 @@ public class RabbitMQConfig {
     // 拓扑声明
     // ----------------------------------------------------------------
 
-    /** 主 Exchange（direct 类型，路由精确匹配 routing key） */
+    /**
+     * 主 Exchange（direct 类型，路由精确匹配 routing key）
+     */
     @Bean
     public DirectExchange conversationExchange() {
         return ExchangeBuilder.directExchange(exchange).durable(true).build();
+    }
+
+    /**
+     * 绑定主队列到 Exchange（routing key = persist）
+     */
+    @Bean
+    public Binding conversationBinding() {
+        return BindingBuilder.bind(conversationPersistQueue())
+                .to(conversationExchange())
+                .with(routingKey);
     }
 
     /**
@@ -115,18 +132,13 @@ public class RabbitMQConfig {
     @Bean
     public Queue conversationPersistQueue() {
         return QueueBuilder.durable(queue)
-                .withArgument("x-dead-letter-exchange", "")   // 使用默认 Exchange
+                // 使用默认 Exchange
+                .withArgument("x-dead-letter-exchange", "")
                 .withArgument("x-dead-letter-routing-key", dlq)
                 .build();
     }
 
-    /** 绑定主队列到 Exchange（routing key = persist） */
-    @Bean
-    public Binding conversationBinding() {
-        return BindingBuilder.bind(conversationPersistQueue())
-                .to(conversationExchange())
-                .with(routingKey);
-    }
+
 
     /**
      * 事件广播专用 RabbitTemplate（fire-and-forget 语义）。
@@ -141,7 +153,7 @@ public class RabbitMQConfig {
      */
     @Bean("eventsRabbitTemplate")
     public RabbitTemplate eventsRabbitTemplate(ConnectionFactory connectionFactory,
-                                                MessageConverter jsonMessageConverter) {
+                                               MessageConverter jsonMessageConverter) {
         RabbitTemplate template = new RabbitTemplate(connectionFactory);
         template.setMessageConverter(jsonMessageConverter);
         // mandatory = false（默认）— 无消费者时静默丢弃，不回调 ReturnsCallback

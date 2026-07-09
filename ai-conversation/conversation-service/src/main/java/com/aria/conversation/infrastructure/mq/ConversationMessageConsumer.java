@@ -45,7 +45,7 @@ public class ConversationMessageConsumer {
      */
     @RabbitListener(queues = "${conversation.persist.queue}", concurrency = "2")
     public void consume(Map<String, Object> payload) {
-        String type      = str(payload, ConversationStreamEvent.FIELD_TYPE);
+        String type = str(payload, ConversationStreamEvent.FIELD_TYPE);
         String sessionId = str(payload, ConversationStreamEvent.FIELD_SESSION_ID);
         log.debug("[MQ Consumer] 处理消息 type={} sessionId={}", type, sessionId);
 
@@ -65,11 +65,11 @@ public class ConversationMessageConsumer {
 
         // 【强制】用枚举比较，消除字符串魔法值
         switch (eventType) {
-            case SESSION_START    -> handleSessionStart(payload, sessionId);
-            case SESSION_ACCEPT   -> handleSessionAccept(payload, sessionId);
+            case SESSION_START -> handleSessionStart(payload, sessionId);
+            case SESSION_ACCEPT -> handleSessionAccept(payload, sessionId);
             case SESSION_TRANSFER -> handleSessionTransfer(payload, sessionId);
-            case SESSION_END      -> handleSessionEnd(payload, sessionId);
-            case MESSAGE          -> handleMessage(payload, sessionId);
+            case SESSION_END -> handleSessionEnd(payload, sessionId);
+            case MESSAGE -> handleMessage(payload, sessionId);
         }
     }
 
@@ -83,11 +83,11 @@ public class ConversationMessageConsumer {
      */
     private void handleSessionStart(Map<String, Object> payload, String sessionId) {
         persistRepository.startConversation(
-            sessionId,
-            str(payload, ConversationStreamEvent.FIELD_VISITOR_NAME),
-            str(payload, ConversationStreamEvent.FIELD_TRANSFER_REASON),
-            str(payload, ConversationStreamEvent.FIELD_TAG),
-            toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)));
+                sessionId,
+                str(payload, ConversationStreamEvent.FIELD_VISITOR_NAME),
+                str(payload, ConversationStreamEvent.FIELD_TRANSFER_REASON),
+                str(payload, ConversationStreamEvent.FIELD_TAG),
+                toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)));
     }
 
     /**
@@ -97,9 +97,9 @@ public class ConversationMessageConsumer {
      */
     private void handleSessionAccept(Map<String, Object> payload, String sessionId) {
         persistRepository.activateConversation(
-            sessionId,
-            str(payload, ConversationStreamEvent.FIELD_AGENT_ID),
-            toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)));
+                sessionId,
+                str(payload, ConversationStreamEvent.FIELD_AGENT_ID),
+                toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)));
     }
 
     /**
@@ -108,8 +108,8 @@ public class ConversationMessageConsumer {
      */
     private void handleSessionTransfer(Map<String, Object> payload, String sessionId) {
         persistRepository.transferConversation(
-            sessionId,
-            str(payload, ConversationStreamEvent.FIELD_TO_AGENT_ID));
+                sessionId,
+                str(payload, ConversationStreamEvent.FIELD_TO_AGENT_ID));
     }
 
     /**
@@ -117,8 +117,8 @@ public class ConversationMessageConsumer {
      */
     private void handleSessionEnd(Map<String, Object> payload, String sessionId) {
         persistRepository.closeConversation(
-            sessionId,
-            toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)));
+                sessionId,
+                toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)));
     }
 
     /**
@@ -160,13 +160,17 @@ public class ConversationMessageConsumer {
     // 工具方法
     // -------------------------------------------------------
 
-    /** 安全获取 Map 中的字符串值，键不存在时返回 null */
+    /**
+     * 安全获取 Map 中的字符串值，键不存在时返回 null
+     */
     private String str(Map<String, Object> map, String key) {
         Object v = map.get(key);
         return v != null ? v.toString() : null;
     }
 
-    /** 安全获取 Map 中的 long 值，键不存在或格式非法时返回当前时间戳 */
+    /**
+     * 安全获取 Map 中的 long 值，键不存在或格式非法时返回当前时间戳
+     */
     private long longVal(Map<String, Object> map, String key) {
         Object v = map.get(key);
         if (v == null) {
@@ -179,7 +183,9 @@ public class ConversationMessageConsumer {
         }
     }
 
-    /** epoch seconds → OffsetDateTime（UTC） */
+    /**
+     * epoch seconds → OffsetDateTime（UTC）
+     */
     private OffsetDateTime toOffsetDateTime(long epochSeconds) {
         return OffsetDateTime.ofInstant(Instant.ofEpochSecond(epochSeconds), ZoneOffset.UTC);
     }

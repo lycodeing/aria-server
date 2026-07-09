@@ -57,7 +57,7 @@ class AgentChannelWsHandlerTest {
         handler.afterConnectionEstablished(session);
 
         verify(registry).register("agent-1", session);
-        // CONNECTED 신令는 WsConnectedMessage 타입으로 sendToSession에 전달됨
+        // CONNECTED 信令以 WsConnectedMessage 类型传入 sendToSession
         verify(registry).sendToSession(eq(session), any(WsConnectedMessage.class));
         // BROADCAST 模式不调用 broadcastExcept 和 closeAllExcept
         verify(registry, never()).broadcastExcept(any(), any(), any());

@@ -36,16 +36,16 @@ public class ConversationMessagePublisher {
     // m2 修复：字段名常量统一使用 ConversationStreamEvent 中的 public 常量，消除重复定义
 
     private final RabbitTemplate rabbitTemplate;
-    private final String         exchange;
-    private final String         routingKey;
+    private final String exchange;
+    private final String routingKey;
 
     public ConversationMessagePublisher(
             RabbitTemplate rabbitTemplate,
-            @Value("${conversation.persist.exchange}")    String exchange,
+            @Value("${conversation.persist.exchange}") String exchange,
             @Value("${conversation.persist.routing-key}") String routingKey) {
         this.rabbitTemplate = rabbitTemplate;
-        this.exchange       = exchange;
-        this.routingKey     = routingKey;
+        this.exchange = exchange;
+        this.routingKey = routingKey;
     }
 
     /**
@@ -81,13 +81,13 @@ public class ConversationMessagePublisher {
     @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 1000, multiplier = 2))
     public void publishMessage(String sessionId, String dbRole, ConversationMessage msg) {
         Map<String, Object> payload = new LinkedHashMap<>(10);
-        payload.put(ConversationStreamEvent.FIELD_TYPE,       ConversationStreamEvent.Type.MESSAGE.name());
+        payload.put(ConversationStreamEvent.FIELD_TYPE, ConversationStreamEvent.Type.MESSAGE.name());
         payload.put(ConversationStreamEvent.FIELD_SESSION_ID, sessionId);
-        payload.put(ConversationStreamEvent.FIELD_ROLE,       dbRole);
+        payload.put(ConversationStreamEvent.FIELD_ROLE, dbRole);
         // content 可能为 null（tool_call-only assistant 消息），Consumer 端负责空串兜底
-        payload.put(ConversationStreamEvent.FIELD_CONTENT,    msg.content() != null ? msg.content() : "");
-        payload.put(ConversationStreamEvent.FIELD_SEQ,        msg.seq());
-        payload.put(ConversationStreamEvent.FIELD_TIMESTAMP,  Instant.now().getEpochSecond());
+        payload.put(ConversationStreamEvent.FIELD_CONTENT, msg.content() != null ? msg.content() : "");
+        payload.put(ConversationStreamEvent.FIELD_SEQ, msg.seq());
+        payload.put(ConversationStreamEvent.FIELD_TIMESTAMP, Instant.now().getEpochSecond());
 
         if (msg.toolRequestId() != null) {
             payload.put(ConversationStreamEvent.FIELD_TOOL_REQUEST_ID, msg.toolRequestId());
@@ -111,14 +111,14 @@ public class ConversationMessagePublisher {
      */
     @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 1000, multiplier = 2))
     public void publishSessionStart(String sessionId, String visitorName,
-                                     String transferReason, String tag, long timestamp) {
+                                    String transferReason, String tag, long timestamp) {
         Map<String, Object> payload = Map.of(
-            ConversationStreamEvent.FIELD_TYPE,            ConversationStreamEvent.Type.SESSION_START.name(),
-            ConversationStreamEvent.FIELD_SESSION_ID,      sessionId,
-            ConversationStreamEvent.FIELD_VISITOR_NAME,    visitorName    != null          ? visitorName    : "访客",
-            ConversationStreamEvent.FIELD_TRANSFER_REASON, transferReason != null          ? transferReason : "",
-            ConversationStreamEvent.FIELD_TAG,             tag != null && !tag.isBlank()   ? tag            : "咨询",
-            ConversationStreamEvent.FIELD_TIMESTAMP,       timestamp
+                ConversationStreamEvent.FIELD_TYPE, ConversationStreamEvent.Type.SESSION_START.name(),
+                ConversationStreamEvent.FIELD_SESSION_ID, sessionId,
+                ConversationStreamEvent.FIELD_VISITOR_NAME, visitorName != null ? visitorName : "访客",
+                ConversationStreamEvent.FIELD_TRANSFER_REASON, transferReason != null ? transferReason : "",
+                ConversationStreamEvent.FIELD_TAG, tag != null && !tag.isBlank() ? tag : "咨询",
+                ConversationStreamEvent.FIELD_TIMESTAMP, timestamp
         );
         rabbitTemplate.convertAndSend(exchange, routingKey, payload);
         log.info("[MQ] SESSION_START published sessionId={}", sessionId);
@@ -134,10 +134,10 @@ public class ConversationMessagePublisher {
     @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 1000, multiplier = 2))
     public void publishSessionAccept(String sessionId, String agentId, long timestamp) {
         Map<String, Object> payload = Map.of(
-            ConversationStreamEvent.FIELD_TYPE,       ConversationStreamEvent.Type.SESSION_ACCEPT.name(),
-            ConversationStreamEvent.FIELD_SESSION_ID, sessionId,
-            ConversationStreamEvent.FIELD_AGENT_ID,   agentId,
-            ConversationStreamEvent.FIELD_TIMESTAMP,  timestamp
+                ConversationStreamEvent.FIELD_TYPE, ConversationStreamEvent.Type.SESSION_ACCEPT.name(),
+                ConversationStreamEvent.FIELD_SESSION_ID, sessionId,
+                ConversationStreamEvent.FIELD_AGENT_ID, agentId,
+                ConversationStreamEvent.FIELD_TIMESTAMP, timestamp
         );
         rabbitTemplate.convertAndSend(exchange, routingKey, payload);
         log.info("[MQ] SESSION_ACCEPT published sessionId={} agentId={}", sessionId, agentId);
@@ -151,11 +151,11 @@ public class ConversationMessagePublisher {
     public void publishSessionTransfer(String sessionId, String fromAgentId,
                                        String toAgentId, long timestamp) {
         Map<String, Object> payload = Map.of(
-            ConversationStreamEvent.FIELD_TYPE,          ConversationStreamEvent.Type.SESSION_TRANSFER.name(),
-            ConversationStreamEvent.FIELD_SESSION_ID,    sessionId,
-            ConversationStreamEvent.FIELD_FROM_AGENT_ID, fromAgentId,
-            ConversationStreamEvent.FIELD_TO_AGENT_ID,   toAgentId,
-            ConversationStreamEvent.FIELD_TIMESTAMP,     timestamp
+                ConversationStreamEvent.FIELD_TYPE, ConversationStreamEvent.Type.SESSION_TRANSFER.name(),
+                ConversationStreamEvent.FIELD_SESSION_ID, sessionId,
+                ConversationStreamEvent.FIELD_FROM_AGENT_ID, fromAgentId,
+                ConversationStreamEvent.FIELD_TO_AGENT_ID, toAgentId,
+                ConversationStreamEvent.FIELD_TIMESTAMP, timestamp
         );
         rabbitTemplate.convertAndSend(exchange, routingKey, payload);
         log.info("[MQ] SESSION_TRANSFER published sessionId={} {} → {}",
@@ -168,9 +168,9 @@ public class ConversationMessagePublisher {
     @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 1000, multiplier = 2))
     public void publishSessionEnd(String sessionId) {
         Map<String, Object> payload = Map.of(
-            ConversationStreamEvent.FIELD_TYPE,       ConversationStreamEvent.Type.SESSION_END.name(),
-            ConversationStreamEvent.FIELD_SESSION_ID, sessionId,
-            ConversationStreamEvent.FIELD_TIMESTAMP,  Instant.now().getEpochSecond()
+                ConversationStreamEvent.FIELD_TYPE, ConversationStreamEvent.Type.SESSION_END.name(),
+                ConversationStreamEvent.FIELD_SESSION_ID, sessionId,
+                ConversationStreamEvent.FIELD_TIMESTAMP, Instant.now().getEpochSecond()
         );
         rabbitTemplate.convertAndSend(exchange, routingKey, payload);
         log.info("[MQ] SESSION_END published sessionId={}", sessionId);

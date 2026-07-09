@@ -48,7 +48,9 @@ import java.util.concurrent.CopyOnWriteArrayList;
 @RequiredArgsConstructor
 public class SessionEventSubscriber {
 
-    /** 当前活跃的 SSE 连接列表，线程安全 */
+    /**
+     * 当前活跃的 SSE 连接列表，线程安全
+     */
     private final List<SseEmitter> emitters = new CopyOnWriteArrayList<>();
 
     /**
@@ -84,10 +86,16 @@ public class SessionEventSubscriber {
                 emitter.send(SseEmitter.event().comment("heartbeat"));
             } catch (IOException | IllegalStateException e) {
                 dead.add(emitter);
-                try { emitter.completeWithError(e); } catch (Exception ignore) {}
+                try {
+                    emitter.completeWithError(e);
+                } catch (Exception ignore) {
+                }
             } catch (RuntimeException e) {
                 dead.add(emitter);
-                try { emitter.completeWithError(e); } catch (Exception ignore) {}
+                try {
+                    emitter.completeWithError(e);
+                } catch (Exception ignore) {
+                }
             }
         }
         if (!dead.isEmpty()) {
@@ -111,9 +119,9 @@ public class SessionEventSubscriber {
      * @param message AMQP 原始消息
      */
     @RabbitListener(bindings = @QueueBinding(
-            value    = @Queue(exclusive = "true", autoDelete = "true"),   // server-named，每 Pod 独占一个副本
+            value = @Queue(exclusive = "true", autoDelete = "true"),   // server-named，每 Pod 独占一个副本
             exchange = @Exchange(value = "${conversation.events.exchange}",
-                                 type  = "fanout", durable = "true")
+                    type = "fanout", durable = "true")
     ))
     public void onSessionEvent(Message message) {
         if (emitters.isEmpty()) {
@@ -130,12 +138,16 @@ public class SessionEventSubscriber {
             } catch (IOException | IllegalStateException e) {
                 // IOException：底层 socket 已关闭；IllegalStateException：emitter 已 complete/error
                 dead.add(emitter);
-                try { emitter.completeWithError(e); } catch (Exception ignore) { /* 已 complete */ }
+                try {
+                    emitter.completeWithError(e);
+                } catch (Exception ignore) { /* 已 complete */ }
             } catch (RuntimeException e) {
                 // Spring 6 在 servlet 输出失败时会抛 AsyncRequestNotUsableException（RuntimeException），
                 // 该异常非业务错误，仅表示客户端断开，必须吞掉避免冒泡到 GlobalExceptionHandler 污染日志
                 dead.add(emitter);
-                try { emitter.completeWithError(e); } catch (Exception ignore) { /* 已 complete */ }
+                try {
+                    emitter.completeWithError(e);
+                } catch (Exception ignore) { /* 已 complete */ }
             }
         }
         if (!dead.isEmpty()) {
