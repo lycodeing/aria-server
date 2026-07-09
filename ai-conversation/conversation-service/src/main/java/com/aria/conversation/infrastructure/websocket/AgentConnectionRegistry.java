@@ -1,0 +1,181 @@
+package com.aria.conversation.infrastructure.websocket;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.TextMessage;
+import org.springframework.web.socket.WebSocketSession;
+
+import java.io.IOException;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArraySet;
+
+/**
+ * 座席 WebSocket 连接注册表。
+ *
+ * <p>职责：管理座席多端连接的注册/注销/推送，不感知业务逻辑（KICK/BROADCAST 由调用方决策）。
+ *
+ * <p>数据结构：
+ * <ul>
+ *   <li>{@code agentToSessions}：正向索引，agentId → 所有在线 WS 连接集合</li>
+ *   <li>{@code sessionIdToAgentId}：反向索引，wsSession.getId() → agentId，供 unregister O(1) 清理</li>
+ *   <li>{@code sendLocks}：per-session 发送锁，串行化 sendMessage 调用，防止并发帧损坏</li>
+ *   <li>{@code agentLocks}：per-agentId 粗粒度锁，供 KICK 模式原子化 register+kick+close</li>
+ * </ul>
+ *
+ * <p>⚠️ {@code agentToSessions} value 类型必须保持 {@link CopyOnWriteArraySet}（有序插入），
+ * {@code broadcast} 遍历时按插入顺序加锁，替换为无序集合会引入死锁风险。
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class AgentConnectionRegistry {
+
+    private final ObjectMapper objectMapper;
+
+    /** 正向索引：agentId → 该座席所有在线 WS 连接 */
+    private final ConcurrentHashMap<String, CopyOnWriteArraySet<WebSocketSession>> agentToSessions
+            = new ConcurrentHashMap<>();
+
+    /** 反向索引：wsSession.getId() → agentId */
+    private final ConcurrentHashMap<String, String> sessionIdToAgentId
+            = new ConcurrentHashMap<>();
+
+    /** per-session 发送锁：wsSession.getId() → lock */
+    private final ConcurrentHashMap<String, Object> sendLocks
+            = new ConcurrentHashMap<>();
+
+    /** per-agentId 粗粒度锁，供 KICK 模式三步原子化使用 */
+    private final ConcurrentHashMap<String, Object> agentLocks
+            = new ConcurrentHashMap<>();
+
+    /**
+     * 注册新连接。
+     *
+     * @param agentId 座席 ID（由 AgentHandshakeInterceptor 写入 session attributes）
+     * @param session WS 连接
+     */
+    public void register(String agentId, WebSocketSession session) {
+        agentToSessions.computeIfAbsent(agentId, k -> new CopyOnWriteArraySet<>()).add(session);
+        sessionIdToAgentId.put(session.getId(), agentId);
+        log.debug("[AgentRegistry] 注册连接 agentId={} wsId={}", agentId, session.getId());
+    }
+
+    /**
+     * 注销连接。通过反向索引查找 agentId，调用方无需传入。
+     * 连接关闭（afterConnectionClosed）和 transport error 时均调用此方法。
+     *
+     * @param session 待注销的 WS 连接
+     */
+    public void unregister(WebSocketSession session) {
+        String agentId = sessionIdToAgentId.remove(session.getId());
+        sendLocks.remove(session.getId());
+        if (agentId == null) {
+            return;
+        }
+        // 原子删除：空 Set 时同步移除 key，避免 TOCTOU 竞态
+        agentToSessions.computeIfPresent(agentId, (k, set) -> {
+            set.remove(session);
+            return set.isEmpty() ? null : set;
+        });
+        log.debug("[AgentRegistry] 注销连接 agentId={} wsId={}", agentId, session.getId());
+    }
+
+    /**
+     * 向该座席所有在线连接广播消息。
+     *
+     * @param agentId 座席 ID
+     * @param payload 消息对象（序列化为 JSON）
+     */
+    public void broadcast(String agentId, Object payload) {
+        Set<WebSocketSession> sessions = agentToSessions.get(agentId);
+        if (sessions == null || sessions.isEmpty()) {
+            log.debug("[AgentRegistry] broadcast 跳过：agentId={} 无在线连接", agentId);
+            return;
+        }
+        for (WebSocketSession session : sessions) {
+            sendJson(session, payload);
+        }
+    }
+
+    /**
+     * 向该座席除 exclude 之外的所有连接广播消息。
+     * 用于 KICK 模式向旧端推送 KICKED_OUT 信令。
+     *
+     * @param agentId 座席 ID
+     * @param exclude 排除的连接（通常为新登录的连接）
+     * @param payload 消息对象
+     */
+    public void broadcastExcept(String agentId, WebSocketSession exclude, Object payload) {
+        Set<WebSocketSession> sessions = agentToSessions.get(agentId);
+        if (sessions == null) {
+            return;
+        }
+        for (WebSocketSession session : sessions) {
+            if (!session.getId().equals(exclude.getId())) {
+                sendJson(session, payload);
+            }
+        }
+    }
+
+    /**
+     * 关闭该座席除 keep 之外的所有连接。
+     * 用于 KICK 模式踢出旧连接，调用前应先 broadcastExcept 推送 KICKED_OUT。
+     *
+     * @param agentId 座席 ID
+     * @param keep    保留的连接（新登录连接）
+     */
+    public void closeAllExcept(String agentId, WebSocketSession keep) {
+        Set<WebSocketSession> sessions = agentToSessions.get(agentId);
+        if (sessions == null) {
+            return;
+        }
+        for (WebSocketSession session : sessions) {
+            if (!session.getId().equals(keep.getId()) && session.isOpen()) {
+                try {
+                    session.close(CloseStatus.GOING_AWAY);
+                } catch (IOException e) {
+                    log.warn("[AgentRegistry] 关闭旧连接失败 wsId={} msg={}", session.getId(), e.getMessage());
+                }
+            }
+        }
+    }
+
+    /**
+     * 获取指定座席的 per-agentId 粗粒度锁。
+     * KICK 模式下用于将 register+broadcastExcept+closeAllExcept 三步原子化。
+     *
+     * @param agentId 座席 ID
+     * @return 锁对象（同一 agentId 始终返回同一实例）
+     */
+    public Object getAgentLock(String agentId) {
+        return agentLocks.computeIfAbsent(agentId, k -> new Object());
+    }
+
+    /**
+     * 向指定 WS 连接发送 JSON 消息。
+     * 通过 per-session 锁串行化写帧，防止并发帧损坏。
+     * 发送失败时主动关闭连接，触发 afterConnectionClosed 自动清理。
+     */
+    private void sendJson(WebSocketSession session, Object payload) {
+        Object lock = sendLocks.computeIfAbsent(session.getId(), k -> new Object());
+        synchronized (lock) {
+            if (!session.isOpen()) {
+                return;
+            }
+            try {
+                String json = objectMapper.writeValueAsString(payload);
+                session.sendMessage(new TextMessage(json));
+            } catch (IOException e) {
+                log.warn("[AgentRegistry] 发送失败 wsId={} msg={}", session.getId(), e.getMessage());
+                try {
+                    session.close(CloseStatus.SERVER_ERROR);
+                } catch (IOException ignored) {
+                }
+            }
+        }
+    }
+}
