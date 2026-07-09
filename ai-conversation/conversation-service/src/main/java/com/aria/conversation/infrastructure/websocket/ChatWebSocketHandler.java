@@ -223,38 +223,14 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
         sendLocks.remove(session.getId());
 
         if (PATH_SEGMENT_CHAT.equals(role)) {
-            visitorSessions.remove(sessionId);
-            presenceRegistry.unregisterVisitor(sessionId);
-            ScheduledFuture<?> hb = visitorHeartbeats.remove(session.getId());
-            if (hb != null) hb.cancel(false);
-            log.info("[WS] visitor disconnected sessionId={}", sessionId);
-        }
-    }
-
-    @Override
-    public void handleTransportError(WebSocketSession session, Throwable ex) {
-        String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
-        String role = (String) session.getAttributes().get(ATTR_ROLE);
-
-        // 非法 sessionId 或握手阶段就被拒绝的连接，attributes 未写入，直接忽略
-        if (role == null || sessionId == null) {
-            return;
-        }
-
-        log.warn("[WS] transport error sessionId={} role={}", sessionId, ex.getMessage());
-        // S-02：transport error 后同步释放 sendLock
-        sendLocks.remove(session.getId());
-        // I4 修复：transport error 后 Spring 不保证一定触发 afterConnectionClosed，
-        // 这里主动清理 map，防止僵尸 session 积累
-        if (PATH_SEGMENT_CHAT.equals(role)) {
             // C2 修复：原子条件删除，防止重连时旧连接关闭事件删除新连接的 presence
             boolean removed = visitorSessions.remove(sessionId, session);
             if (removed) {
                 presenceRegistry.unregisterVisitor(sessionId);
+                log.info("[WS] visitor disconnected sessionId={}", sessionId);
             }
             ScheduledFuture<?> hb = visitorHeartbeats.remove(session.getId());
             if (hb != null) hb.cancel(false);
-            log.info("[WS] visitor disconnected sessionId={}", sessionId);
         }
     }
 

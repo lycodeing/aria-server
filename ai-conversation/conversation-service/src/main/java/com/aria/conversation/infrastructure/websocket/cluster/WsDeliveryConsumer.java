@@ -2,7 +2,6 @@ package com.aria.conversation.infrastructure.websocket.cluster;
 
 import com.aria.conversation.infrastructure.websocket.AgentConnectionRegistry;
 import com.aria.conversation.infrastructure.websocket.VisitorNotifier;
-import com.aria.conversation.infrastructure.websocket.cluster.WsClusterConstants;
 import com.aria.conversation.infrastructure.websocket.message.WsChatMessage;
 import com.aria.conversation.infrastructure.websocket.message.WsConnectedMessage;
 import com.aria.conversation.infrastructure.websocket.message.WsErrorMessage;
