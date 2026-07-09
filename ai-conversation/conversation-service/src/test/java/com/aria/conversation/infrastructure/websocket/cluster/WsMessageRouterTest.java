@@ -103,7 +103,7 @@ class WsMessageRouterTest {
     void sendKick_sends_kick_command() {
         router.sendKick("pod-B", "agent-1", "ws-new-123");
         ArgumentCaptor<WsDeliveryCommand> captor = ArgumentCaptor.forClass(WsDeliveryCommand.class);
-        verify(rabbitTemplate).convertAndSend(eq("ws.delivery"), eq("pod-B"), captor.capture());
+        verify(rabbitTemplate).convertAndSend(eq(WsClusterConstants.WS_DELIVERY_EXCHANGE), eq("pod-B"), captor.capture());
         WsDeliveryCommand cmd = captor.getValue();
         assertThat(cmd.targetType()).isEqualTo(WsDeliveryCommand.TargetType.KICK_AGENT);
         assertThat(cmd.targetId()).isEqualTo("agent-1");
