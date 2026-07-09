@@ -94,10 +94,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
     private final PodIdentity podIdentity;
 
     /** 访客心跳调度器：每 30s 刷新 presence TTL，防止 90s 超时导致跨 Pod 路由失效。不声明 final 以免 Lombok 纳入构造器。 */
-    private final ScheduledExecutorService visitorHeartbeatScheduler = Executors.newScheduledThreadPool(2);
+    private ScheduledExecutorService visitorHeartbeatScheduler = Executors.newScheduledThreadPool(2);
 
     /** 访客心跳 Future 注册表：wsSessionId → ScheduledFuture。不声明 final 以免 Lombok 纳入构造器。 */
-    private final ConcurrentHashMap<String, ScheduledFuture<?>> visitorHeartbeats = new ConcurrentHashMap<>();
+    private ConcurrentHashMap<String, ScheduledFuture<?>> visitorHeartbeats = new ConcurrentHashMap<>();
 
     // ----------------------------------------------------------------
     // 连接生命周期
@@ -290,7 +290,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
     /**
      * 通知座席。通过应用层查询 agentId，再由 {@link AgentConnectionRegistry} 广播。
      *
-     * <p>包括 {@link WsTypingMessage} 在内的所有消息均转发至座席，TYPING 为 ephemeral 信号允许丢失。
+     * <p>TYPING 信号在入口处直接跳过（ephemeral 信号允许丢失，跳过 Redis 查询），
+     * 业务消息才走 SessionQueueService 查 agentId + registry.broadcast。
      *
      * @param sessionId 会话 ID
      * @param payload   消息对象
