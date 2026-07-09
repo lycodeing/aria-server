@@ -3,6 +3,7 @@ package com.aria.sdk.auth;
 import com.aria.common.sdk.BaseClient;
 import com.aria.common.sdk.ClientConfig;
 import com.aria.common.sdk.TypeRef;
+import com.aria.common.sdk.auth.AuthMode;
 import com.aria.common.sdk.exception.SdkException;
 import com.aria.sdk.auth.exception.AuthClientException;
 import com.aria.sdk.auth.internal.ApiResponse;
@@ -171,7 +172,7 @@ public class AuthClient extends BaseClient {
         }
 
         public AuthClient build() {
-            return new AuthClient(configBuilder.build());
+            return new AuthClient(configBuilder.authMode(AuthMode.SHARED_SECRET).build());
         }
     }
 }

@@ -40,6 +40,6 @@ public class AiModelRequest {
     private Integer maxTokens;
     private Integer timeoutSec;
 
-    @NotNull(message = "是否启用不能为空")
+//    @NotNull(message = "是否启用不能为空")
     private Boolean isEnabled;
 }
