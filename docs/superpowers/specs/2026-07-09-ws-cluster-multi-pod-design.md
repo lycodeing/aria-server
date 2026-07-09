@@ -450,7 +450,16 @@ public class WsMessageRouter {
     private final PodIdentity podIdentity;
     private final WsPresenceRegistry presenceRegistry;
     private final AgentConnectionRegistry agentRegistry;
-    private final ChatWebSocketHandler chatHandler;   // 仅用于本地访客推送，不经过路由层
+    /**
+     * 注入 VisitorNotifier 接口（实现类为 ChatWebSocketHandler），不直接注入实现类。
+     * 原因：ChatWebSocketHandler 同时注入 WsMessageRouter（用于 notifyAgent 路由），
+     * 若此处注入实现类会造成 Spring 构造器循环依赖（BeanCurrentlyInCreationException）。
+     * 通过接口注入可让 Spring 用代理打破循环。
+     *
+     * 本地路径调用 visitorNotifier.notifyVisitor()（即 ChatWebSocketHandler 的本地 socket 写入），
+     * 不会再次走路由层，不存在递归。
+     */
+    private final VisitorNotifier visitorNotifier;
     private final RabbitTemplate rabbitTemplate;
     private final ObjectMapper objectMapper;
 
@@ -475,8 +484,13 @@ public class WsMessageRouter {
                 // 本 Pod：直接 broadcast，推给本地所有连接（可能多个标签）
                 agentRegistry.broadcast(agentId, payload);
             } else {
-                // 跨 Pod：发 MQ，目标 Pod 收到后再做本地 broadcast
-                deliver(pod, WsDeliveryCommand.toAgent(agentId, payload, objectMapper));
+                // 跨 Pod：序列化 payload，发 MQ，目标 Pod 收到后再做本地 broadcast
+                // JsonProcessingException 在此处捕获，单次跨 Pod 投递失败不影响其他 Pod
+                try {
+                    deliver(pod, WsDeliveryCommand.toAgent(agentId, payload, objectMapper));
+                } catch (JsonProcessingException e) {
+                    log.error("[WsRouter] payload 序列化失败 agentId={} pod={}", agentId, pod, e);
+                }
             }
         }
     }
@@ -489,8 +503,8 @@ public class WsMessageRouter {
      * 访客重连时 visitorSessions.put 会覆盖旧连接并执行 closeStaleSession，
      * 始终只有一个活跃连接，因此 presence 只需记录单个 podId。
      *
-     * ⚠️ 本地路径调用 chatHandler.pushLocalVisitor()（直接写 socket），
-     * 而非 chatHandler.notifyVisitor()（会再次走路由），防止无限递归。
+     * 本地路径调用 visitorNotifier.notifyVisitor()（ChatWebSocketHandler 的本地 socket 写入），
+     * 不经过路由层，不存在递归问题。
      */
     public void sendToVisitor(String sessionId, Object payload) {
         String pod = presenceRegistry.getVisitorPod(sessionId);
@@ -499,11 +513,14 @@ public class WsMessageRouter {
             return;
         }
         if (podIdentity.isLocal(pod)) {
-            // 直接调用本地推送（visitorNotifier.notifyVisitor = 本地 socket 写入，不经过路由）
-            // ⚠️ 不能在此调用 router.sendToVisitor()，否则产生无限递归
+            // 直接调用本地推送（visitorNotifier.notifyVisitor = ChatWebSocketHandler 的本地 socket 写入）
             visitorNotifier.notifyVisitor(sessionId, payload);
         } else {
-            deliver(pod, WsDeliveryCommand.toVisitor(sessionId, payload, objectMapper));
+            try {
+                deliver(pod, WsDeliveryCommand.toVisitor(sessionId, payload, objectMapper));
+            } catch (JsonProcessingException e) {
+                log.error("[WsRouter] payload 序列化失败 sessionId={} pod={}", sessionId, pod, e);
+            }
         }
     }
 
@@ -552,7 +569,8 @@ public class WsMessageRouter {
  *
  * <p>队列声明规则（与 SessionEventSubscriber.onSessionEvent 同款模式）：
  * <ul>
- *   <li>Exchange（ws.delivery Direct）静态，在 {@link RabbitMQConfig} 中声明为 @Bean</li>
+ *   <li>Exchange（ws.delivery Direct）由 @RabbitListener 注解自动声明（durable=true），
+ *       无需在 RabbitMQConfig 中额外新增 @Bean</li>
  *   <li>队列动态（匿名），每 Pod 启动时由 Spring AMQP 自动创建，exclusive + autoDelete，
  *       Pod 停止时队列自动删除，不积压离线消息</li>
  *   <li>routing key 通过 SpEL #{@podIdentity.get()} 运行时求值，绑定到本 Pod 的 UUID</li>
@@ -999,7 +1017,16 @@ public void cleanup() {
 + try {
 +     registry.register(agentId, session);
 +     presenceRegistry.registerAgent(agentId, podIdentity.get());
-+     kickAllExcept(agentId, session);   // 本 Pod + 跨 Pod
++     // 本 Pod：向旧连接推 KICKED_OUT，关闭旧连接
++     registry.broadcastExcept(agentId, session, WsKickedOutMessage.INSTANCE);
++     registry.closeAllExcept(agentId, session);
++     // 跨 Pod：向其他 Pod 发 KICK 命令（详见 §6.2）
++     Set<String> allPods = presenceRegistry.getAgentPods(agentId);
++     for (String pod : allPods) {
++         if (!podIdentity.isLocal(pod)) {
++             router.sendKick(pod, agentId, session.getId());
++         }
++     }
 + } finally { lock.unlock(); }
 
   // 移除 agentLocks map（不再需要）
