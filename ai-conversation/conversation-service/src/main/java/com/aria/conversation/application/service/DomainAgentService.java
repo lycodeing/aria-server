@@ -114,7 +114,7 @@ public class DomainAgentService {
         // 4. 域范围内的工具列表
         List<ToolConfig> domainTools = getToolsForDomain(domainCode);
 
-        // 5. per-request 内置工具实例（@Tool 静态注册，上下文通过构造器注入）
+        // 5. per-request 内置工具实例（通过 ToolProvider 统一注册，上下文通过构造器注入）
         InvocationParameters params = new InvocationParameters(
                 sessionId, domainCode, userMessage, allDomains, eventSink);
         BuiltinTools builtinTools = new BuiltinTools(params, sessionDomainRepo, domainSwitchRepo, objectMapper, sessionQueueService);
@@ -124,6 +124,10 @@ public class DomainAgentService {
         //    - systemMessageProvider 依赖 RAG 闭包（每次请求独立检索结果）
         //    - builtinTools 依赖 per-request 上下文（sessionId / eventSink 等）
         //    - toolProvider 依赖 domainCode 和 domainTools（不同域工具集不同）
+        //
+        //    ⚠️ 内置工具通过 ToolProvider 统一注册（而非 .tools() 静态注册），
+        //    避免 LangChain4j 1.1.0 中 .tools() + .toolProvider() 混合使用时的
+        //    executor 合并不一致导致 NPE（toolExecutor is null）。
         DomainAssistant assistant = AiServices.builder(DomainAssistant.class)
                 .streamingChatModel(modelFactory.getStreamingChatModel())
                 .systemMessageProvider(id -> systemPrompt)
@@ -132,8 +136,7 @@ public class DomainAgentService {
                         .maxMessages(CHAT_MEMORY_MAX_MESSAGES)
                         .chatMemoryStore(memoryStore)
                         .build())
-                .tools(builtinTools)                                          // @Tool 静态内置工具
-                .toolProvider(buildDynamicToolProvider(domainTools, eventSink)) // 动态工具：MCP + 域 HTTP
+                .toolProvider(buildDynamicToolProvider(domainTools, eventSink, builtinTools))
                 .build();
 
         // 7. 合并 AI 令牌流与工具事件流
@@ -165,16 +168,18 @@ public class DomainAgentService {
     // -------------------------------------------------------
 
     /**
-     * 构建动态 {@link ToolProvider}，每次请求调用前执行，返回两层工具：
+     * 构建动态 {@link ToolProvider}，每次请求调用前执行，返回三层工具：
      * <ol>
      *   <li>MCP 工具（最低优先级，由 {@link McpClientRegistry} 聚合）</li>
      *   <li>域 HTTP 工具（覆盖同名 MCP 工具）</li>
+     *   <li>内置工具 {@code switch_domain} / {@code transfer_to_agent}（最高优先级，不可被覆盖）</li>
      * </ol>
-     * 内置工具（{@code switch_domain} / {@code transfer_to_agent}）通过 {@code @Tool} 静态注册，
-     * 由 LangChain4j 框架与此 provider 结果自动合并，优先级最高。
+     * <p>所有工具统一通过 {@link ToolProvider} 注册，避免 {@code .tools()} +
+     * {@code .toolProvider()} 混合使用时 LangChain4j 内部 executor 合并缺失导致 NPE。
      */
     private ToolProvider buildDynamicToolProvider(List<ToolConfig> tools,
-                                                   Sinks.Many<ChatEvent> eventSink) {
+                                                   Sinks.Many<ChatEvent> eventSink,
+                                                   BuiltinTools builtinTools) {
         return request -> {
             Map<ToolSpecification, ToolExecutor> toolMap = new LinkedHashMap<>();
 
@@ -195,6 +200,10 @@ public class DomainAgentService {
                 toolMap.put(buildToolSpec(tc), buildHttpToolExecutor(tc, eventSink));
             }
 
+            // 第三层：内置工具（最高优先级，覆盖任何同名工具）
+            toolMap.putAll(buildBuiltinToolSpecs(builtinTools));
+
+            log.debug("[DomainAgent] 最终工具数={} MCP+域HTTP+内置", toolMap.size());
             return new ToolProviderResult(toolMap);
         };
     }
@@ -370,8 +379,71 @@ public class DomainAgentService {
     }
 
     // -------------------------------------------------------
-    // 工具方法
+    // 内置工具规格（ToolSpecification + ToolExecutor）
+    // 手动构建以避免 .tools() + .toolProvider() 合并 Bug
     // -------------------------------------------------------
+
+    /**
+     * 为 {@link BuiltinTools} 的两个方法手动构建 {@link ToolSpecification} + {@link ToolExecutor}，
+     * 加入 ToolProvider 统一注册，避免 LangChain4j {@code .tools()} / {@code .toolProvider()} 混合使用
+     * 时 executor 合并缺失导致 NPE。
+     */
+    private Map<ToolSpecification, ToolExecutor> buildBuiltinToolSpecs(BuiltinTools builtinTools) {
+        Map<ToolSpecification, ToolExecutor> builtinMap = new LinkedHashMap<>();
+
+        // ---- switch_domain ----
+        ToolSpecification switchDomainSpec = ToolSpecification.builder()
+                .name("switch_domain")
+                .description("当用户问题与当前服务域无关时调用，切换到正确的服务域。可用域列表见系统提示。")
+                .parameters(JsonObjectSchema.builder()
+                        .addProperty("targetDomainCode", JsonStringSchema.builder()
+                                .description("目标域 code").build())
+                        .addProperty("reason", JsonStringSchema.builder()
+                                .description("切换原因（可选）").build())
+                        .required(List.of("targetDomainCode"))
+                        .build())
+                .build();
+        builtinMap.put(switchDomainSpec, (ToolExecutionRequest req, Object memId) -> {
+            Map<String, Object> args = parseToolArgs(req.arguments());
+            String target = stringArg(args, "targetDomainCode");
+            String reason = stringArg(args, "reason");
+            return builtinTools.switchDomain(target, reason);
+        });
+
+        // ---- transfer_to_agent ----
+        ToolSpecification transferSpec = ToolSpecification.builder()
+                .name("transfer_to_agent")
+                .description("当用户明确要求转接人工客服时调用")
+                .parameters(JsonObjectSchema.builder().build())
+                .build();
+        builtinMap.put(transferSpec, (ToolExecutionRequest req, Object memId) ->
+                builtinTools.transferToAgent());
+
+        return builtinMap;
+    }
+
+    /**
+     * 安全地将 ToolExecutionRequest 的 arguments JSON 解析为 Map。
+     */
+    private Map<String, Object> parseToolArgs(String arguments) {
+        if (arguments == null || arguments.isBlank()) {
+            return Map.of();
+        }
+        try {
+            return objectMapper.readValue(arguments, new TypeReference<>() {});
+        } catch (Exception e) {
+            log.warn("[DomainAgent] 无法解析工具参数: {}", arguments, e);
+            return Map.of();
+        }
+    }
+
+    /**
+     * 从参数 Map 中安全提取字符串值。
+     */
+    private String stringArg(Map<String, Object> args, String key) {
+        Object val = args.get(key);
+        return val instanceof String s ? s : null;
+    }
 
     private Map<String, Object> parseArguments(String arguments) throws Exception {
         if (arguments == null || arguments.isBlank()) {
