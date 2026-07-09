@@ -96,7 +96,8 @@ public class DomainAgentService {
      * @return AI 令牌事件与工具事件的合并流
      */
     public Flux<ChatEvent> streamChat(String sessionId, String domainCode, String userMessage) {
-        log.debug("[DomainAgent] start sessionId={} domain={}", sessionId, domainCode);
+        log.info("[DomainAgent] start sessionId={} domain={} msg={}",
+                sessionId, domainCode, userMessage.length() > 30 ? userMessage.substring(0, 30) + "…" : userMessage);
 
         // 1. 预查询所有域，在 application 层转为 DomainSummary（隔离持久化实体流转）
         List<DomainSummary> allDomains = domainRepo.findAllEnabledSummary().stream()
@@ -142,7 +143,10 @@ public class DomainAgentService {
         // 7. 合并 AI 令牌流与工具事件流
         Flux<ChatEvent> tokenFlux = assistant.chat(sessionId, userMessage)
                 .map(content -> ChatEvent.token(content, objectMapper))
-                .doFinally(signal -> eventSink.tryEmitComplete());
+                .doFinally(signal -> {
+                    log.info("[DomainAgent] done sessionId={} signal={}", sessionId, signal);
+                    eventSink.tryEmitComplete();
+                });
 
         return Flux.merge(tokenFlux, eventSink.asFlux())
                 .doOnError(e -> log.error("[DomainAgent] error sessionId={}", sessionId, e))
@@ -261,6 +265,7 @@ public class DomainAgentService {
                                         Sinks.Many<ChatEvent> eventSink) {
         return (req, memId) -> {
             long start = System.currentTimeMillis();
+            log.info("[DomainAgent] MCP tool start tool={} args={}", toolName, req.arguments());
             try {
                 eventSink.tryEmitNext(ChatEvent.toolCall(
                         objectMapper.writeValueAsString(ToolCallPayload.running(toolName))));
@@ -279,6 +284,7 @@ public class DomainAgentService {
             }
 
             long durationMs = System.currentTimeMillis() - start;
+            log.info("[DomainAgent] MCP tool done tool={} success={} durationMs={}", toolName, success, durationMs);
             try {
                 String doneJson = objectMapper.writeValueAsString(
                         success
