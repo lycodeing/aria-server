@@ -33,7 +33,7 @@ import java.util.regex.Pattern;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class ChatWebSocketHandler extends TextWebSocketHandler {
+public class ChatWebSocketHandler extends TextWebSocketHandler implements VisitorNotifier {
 
     // ---- 消息类型常量 ----
     private static final String MSG_TYPE_CONNECTED   = "CONNECTED";
@@ -292,6 +292,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     /**
      * 通知访客
      */
+    @Override
     public void notifyVisitor(String sessionId, Object payload) {
         WebSocketSession vs = visitorSessions.get(sessionId);
         if (vs == null || !vs.isOpen()) {
@@ -306,6 +307,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      * <p>用途：座席端点击「结束会话」时由 SessionQueueService.close 调用，
      * 前端 chat-widget 监听到 code=1000 会显示"会话已结束"提示并清理 transferred 状态。
      */
+    @Override
     public void closeVisitorSessionNormal(String sessionId) {
         WebSocketSession vs = visitorSessions.get(sessionId);
         if (vs != null && vs.isOpen()) {
