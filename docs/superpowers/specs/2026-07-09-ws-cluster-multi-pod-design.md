@@ -181,6 +181,8 @@ public class PodIdentity implements InitializingBean {
 
 `PodIdentity` 初始化完成后，`WsDeliveryConsumer` 使用这个 podId 绑定到 `ws.delivery` Direct Exchange，用于接收发给本 Pod 的跨 Pod WS 投递消息：
 
+**初始化顺序保证**：`WsDeliveryConsumer` 的 `@RabbitListener` 注解中 `key = "#{@podIdentity.get()}"` 是 SpEL 表达式，由 Spring AMQP 的 `RabbitListenerAnnotationBeanPostProcessor` 在 `SmartInitializingSingleton.afterSingletonsInstantiated()` 阶段求值，该阶段在所有 `@Component` 的 `afterPropertiesSet()` 执行完成之后才触发。因此 `PodIdentity.afterPropertiesSet()` 必然先于 SpEL 求值完成，`podIdentity.get()` 返回正确的队列名，不会出现 null。
+
 ```
 Exchange：ws.delivery（Direct，durable=true）
 Queue：   {podId}（exclusive=true，autoDelete=true）
@@ -312,15 +314,52 @@ public class WsPresenceRegistry {
 
 ### 4.3 TTL 心跳刷新
 
-WS 连接建立后启动心跳任务，每 30s 刷新一次 TTL，确保 presence 不过期：
+WS 连接建立后启动心跳任务，每 30s 刷新一次 TTL，确保 presence 不过期。
+
+**座席心跳（在 `AgentConnectionRegistry` 中管理）：**
 
 ```java
-// AgentConnectionRegistry.register() 中启动心跳
-ScheduledFuture<?> heartbeat = scheduler.scheduleAtFixedRate(
-    () -> presenceRegistry.refreshAgent(agentId),
+// 新增字段
+private final ScheduledExecutorService heartbeatScheduler =
+        Executors.newScheduledThreadPool(2);  // 内部初始化，不作为 @Bean 注入
+private final ConcurrentHashMap<String, ScheduledFuture<?>> heartbeats = new ConcurrentHashMap<>();
+
+// register() 中调用
+private void scheduleHeartbeat(String agentId, String wsSessionId) {
+    ScheduledFuture<?> future = heartbeatScheduler.scheduleAtFixedRate(
+        () -> presenceRegistry.refreshAgent(agentId),
+        30, 30, TimeUnit.SECONDS);
+    heartbeats.put(wsSessionId, future);
+}
+
+// unregister() 中调用
+private void cancelHeartbeat(String wsSessionId) {
+    ScheduledFuture<?> future = heartbeats.remove(wsSessionId);
+    if (future != null) {
+        future.cancel(false);
+    }
+}
+```
+
+**访客心跳（在 `ChatWebSocketHandler` 中管理）：**
+
+访客 presence 也需要心跳刷新，否则超过 90s 的跨 Pod 会话中断后将无法路由：
+
+```java
+// ChatWebSocketHandler 新增字段
+private final ScheduledExecutorService visitorHeartbeatScheduler =
+        Executors.newScheduledThreadPool(2);
+private final ConcurrentHashMap<String, ScheduledFuture<?>> visitorHeartbeats = new ConcurrentHashMap<>();
+
+// afterConnectionEstablished 访客路径中
+ScheduledFuture<?> hb = visitorHeartbeatScheduler.scheduleAtFixedRate(
+    () -> presenceRegistry.refreshVisitor(sessionId),
     30, 30, TimeUnit.SECONDS);
-// 存入 heartbeatMap<wsSessionId, ScheduledFuture>
-// unregister() 时 cancel
+visitorHeartbeats.put(session.getId(), hb);
+
+// afterConnectionClosed / handleTransportError 访客路径中
+ScheduledFuture<?> hb = visitorHeartbeats.remove(session.getId());
+if (hb != null) hb.cancel(false);
 ```
 
 ### 4.4 崩溃恢复流程
@@ -1083,8 +1122,8 @@ public void cleanup() {
 + boolean acquired = lock.tryLock(3, 10, TimeUnit.SECONDS);
 + if (!acquired) { session.close(CloseStatus.SERVICE_OVERLOAD); return; }
 + try {
++     // registry.register() 内部已调用 presenceRegistry.registerAgent()，无需再次显式调用
 +     registry.register(agentId, session);
-+     presenceRegistry.registerAgent(agentId, podIdentity.get());
 +     // 本 Pod：向旧连接推 KICKED_OUT，关闭旧连接
 +     registry.broadcastExcept(agentId, session, WsKickedOutMessage.INSTANCE);
 +     registry.closeAllExcept(agentId, session);
@@ -1108,18 +1147,29 @@ public void cleanup() {
 + private final WsPresenceRegistry presenceRegistry;
 + private final PodIdentity podIdentity;
 + private final WsMessageRouter router;
++ // 访客 presence 心跳调度器（内部初始化，不作为 @Bean 注入）
++ private final ScheduledExecutorService visitorHeartbeatScheduler =
++         Executors.newScheduledThreadPool(2);
++ private final ConcurrentHashMap<String, ScheduledFuture<?>> visitorHeartbeats =
++         new ConcurrentHashMap<>();
 
-  // 访客连接建立：新增 presence 注册
+  // 访客连接建立：新增 presence 注册 + 启动心跳
   if (PATH_SEGMENT_CHAT.equals(role)) {
       visitorSessions.put(sessionId, session);
 +     presenceRegistry.registerVisitor(sessionId, podIdentity.get());
++     // 每 30s 刷新 presence TTL，防止超过 90s 的跨 Pod 会话路由失效
++     ScheduledFuture<?> hb = visitorHeartbeatScheduler.scheduleAtFixedRate(
++         () -> presenceRegistry.refreshVisitor(sessionId), 30, 30, TimeUnit.SECONDS);
++     visitorHeartbeats.put(session.getId(), hb);
       sendJson(session, WsConnectedMessage.forVisitor(sessionId));
   }
 
-  // 访客断开：清理 presence
+  // 访客断开：清理 presence + 取消心跳
   if (PATH_SEGMENT_CHAT.equals(role)) {
       visitorSessions.remove(sessionId);
 +     presenceRegistry.unregisterVisitor(sessionId);
++     ScheduledFuture<?> hb = visitorHeartbeats.remove(session.getId());
++     if (hb != null) hb.cancel(false);
   }
 
   // notifyAgent：走 WsMessageRouter
@@ -1159,12 +1209,7 @@ public void cleanup() {
 
 **RabbitMQConfig.java**
 
-```diff
-+ @Bean
-+ public DirectExchange wsDeliveryExchange() {
-+     return new DirectExchange("ws.delivery", true, false);
-+ }
-```
+无需改动——`WsDeliveryConsumer` 的 `@RabbitListener` 注解中 `@Exchange(durable="true")` 会自动声明 `ws.delivery` Exchange，与 `SessionEventSubscriber` 的 Fanout Exchange 处理方式完全一致，详见 §5.4。
 
 **PersistHandler.java**（knowledge-service）
 
