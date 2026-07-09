@@ -287,7 +287,15 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
             } catch (IOException e) {
                 log.warn("[WS] closeVisitorSessionNormal IO 异常 sessionId={} msg={}", sessionId, e.getMessage());
             } finally {
-                visitorSessions.remove(sessionId);
+                // 原子条件删除：防止与并发重连竞态
+                boolean removed = visitorSessions.remove(sessionId, vs);
+                if (removed) {
+                    // presence 清理（不等待 afterConnectionClosed 触发，因为 finally 已先于 Spring 回调执行）
+                    presenceRegistry.unregisterVisitor(sessionId);
+                    // 取消心跳
+                    ScheduledFuture<?> hb = visitorHeartbeats.remove(vs.getId());
+                    if (hb != null) hb.cancel(false);
+                }
             }
         }
     }
