@@ -1,13 +1,19 @@
 package com.aria.sdk.knowledge.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * Chunk 命中结果 DTO（knowledge-sdk 对外暴露）。
  */
 @Data
 @Builder
+@NoArgsConstructor
+@AllArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class ChunkHitDTO {
     private String chunkId;
     private String docId;

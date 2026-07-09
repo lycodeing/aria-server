@@ -1,29 +1,23 @@
 package com.aria.conversation.infrastructure.knowledge;
 
 import com.aria.common.core.util.JsonUtils;
-import com.aria.common.sdk.ClientConfig;
-import com.aria.common.sdk.auth.AuthMode;
 import com.aria.sdk.knowledge.KnowledgeClient;
 import com.aria.sdk.knowledge.dto.SearchRequest;
 import com.aria.sdk.knowledge.dto.SearchResponse;
 import jakarta.annotation.PostConstruct;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Component;
-import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.Duration;
 import java.util.List;
-import java.util.Map;
 
 /**
  * knowledge-service 内部检索客户端。
  * 调用 POST /internal/knowledge/search 执行混合检索（BM25 + 向量 + RRF 融合）。
  * 超时或服务不可用时返回空列表，不阻断对话主流程（降级策略）。
  *
- * <p>注意：{@link #search} 使用 {@code .block()} 阻塞调用，
+ * <p>注意：{@link #search} 使用 {@code .block()} 风格阻塞调用，
  * 仅适用于 Spring MVC 阻塞线程上下文，禁止在响应式管道（Flux/Mono 算子）内调用。
  */
 @Slf4j
@@ -39,20 +33,18 @@ public class KnowledgeServiceClient {
     private int topK;
 
     /**
-     * 注入 Spring Boot 自动配置的 WebClient.Builder，
-     * 确保 Micrometer 指标、分布式追踪等能力自动集成。
+     * 通过 Builder 构建 KnowledgeClient，底层的 OkHttpClient 及鉴权拦截器
+     * 由 KnowledgeClient 内部管理，无需额外注入 WebClient。
      */
     public KnowledgeServiceClient(
             @Value("${knowledge.service.base-url:http://localhost:8084}") String baseUrl,
             @Value("${aria.internal.secret:change-this-in-production}") String internalSecret,
             @Value("${knowledge.search.timeout-seconds:5}") int timeoutSeconds) {
-        ClientConfig config = ClientConfig.builder()
+        this.knowledgeClient = KnowledgeClient.builder()
                 .baseUrl(baseUrl)
                 .sharedSecret(internalSecret)
-                .authMode(AuthMode.SHARED_SECRET)
                 .readTimeout(Duration.ofSeconds(timeoutSeconds))
                 .build();
-        this.knowledgeClient = new KnowledgeClient(config);
     }
 
     /**
@@ -97,7 +89,7 @@ public class KnowledgeServiceClient {
                             .source(hit.getSource())
                             .build())
                     .toList();
-        }catch (Exception e){
+        } catch (Exception e) {
             log.warn("[RAG] knowledge search error: {}", e.getMessage());
             return List.of();
         }
