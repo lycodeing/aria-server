@@ -2,11 +2,17 @@ package com.aria.conversation.infrastructure.websocket;
 
 import com.aria.conversation.domain.MultiLoginMode;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
+import com.aria.conversation.infrastructure.websocket.cluster.PodIdentity;
+import com.aria.conversation.infrastructure.websocket.cluster.WsClusterConstants;
+import com.aria.conversation.infrastructure.websocket.cluster.WsMessageRouter;
+import com.aria.conversation.infrastructure.websocket.cluster.WsPresenceRegistry;
 import com.aria.conversation.infrastructure.websocket.message.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.NonNull;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
@@ -15,6 +21,8 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.time.Instant;
+import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 座席专用 WebSocket Handler。
@@ -41,15 +49,20 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
     private static final int MAX_MESSAGE_BYTES = 65536;
 
     private final AgentConnectionRegistry registry;
-    private final VisitorNotifier visitorNotifier;
+    private final VisitorNotifier          visitorNotifier;
     private final ConversationHistoryRepository historyRepository;
-    private final ObjectMapper objectMapper;
+    private final ObjectMapper             objectMapper;
+    private final WsPresenceRegistry       presenceRegistry;
+    private final PodIdentity              podIdentity;
+    private final WsMessageRouter          router;
+    private final RedissonClient           redissonClient;
 
     @Value("${agent.ws.multi-login-mode:BROADCAST}")
     private MultiLoginMode multiLoginMode;
 
     /**
-     * 连接建立后：按 multiLoginMode 执行注册逻辑，KICK 模式三步原子化，最后推送 CONNECTED 信令。
+     * 连接建立后：按 multiLoginMode 执行注册逻辑，KICK 模式使用 Redisson 分布式锁原子化，
+     * 并向其他 Pod 发送 KICK 命令，最后推送 CONNECTED 信令。
      */
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
@@ -61,11 +74,36 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
         }
 
         if (MultiLoginMode.KICK == multiLoginMode) {
-            // KICK 模式：per-agentId 锁原子化三步，防止并发双踢竞态
-            synchronized (registry.getAgentLock(agentId)) {
+            RLock lock = redissonClient.getLock(WsClusterConstants.KICK_LOCK_KEY_PREFIX + agentId);
+            boolean acquired;
+            try {
+                acquired = lock.tryLock(3, 10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("[AgentWS] KICK 锁等待被中断 agentId={}", agentId);
+                session.close(CloseStatus.SERVICE_OVERLOAD);
+                return;
+            }
+            if (!acquired) {
+                log.warn("[AgentWS] KICK 锁获取超时，拒绝连接 agentId={}", agentId);
+                session.close(CloseStatus.SERVICE_OVERLOAD);
+                return;
+            }
+            try {
+                // registry.register() 内部已调用 presenceRegistry.registerAgent()，无需再次显式调用
                 registry.register(agentId, session);
+                // 本 Pod：向旧连接推 KICKED_OUT，关闭旧连接
                 registry.broadcastExcept(agentId, session, WsKickedOutMessage.INSTANCE);
                 registry.closeAllExcept(agentId, session);
+                // 跨 Pod：向其他 Pod 发 KICK 命令
+                Set<String> allPods = presenceRegistry.getAgentPods(agentId);
+                for (String pod : allPods) {
+                    if (!podIdentity.isLocal(pod)) {
+                        router.sendKick(pod, agentId, session.getId());
+                    }
+                }
+            } finally {
+                if (lock.isHeldByCurrentThread()) lock.unlock();
             }
         } else {
             // BROADCAST 模式：直接注册，无锁
@@ -96,20 +134,19 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
         }
 
         if (body.isType(WsMessageType.TYPING)) {
-            // TYPING 信号：ephemeral，不写历史，直接转发给访客
-            visitorNotifier.notifyVisitor(sessionId, WsTypingMessage.of(sessionId, ts));
+            // TYPING 信号：ephemeral，不写历史，走路由层转发给访客
+            router.sendToVisitor(sessionId, WsTypingMessage.of(sessionId, ts));
             return;
         }
 
-        // MESSAGE：写历史，转发给访客
+        // MESSAGE：写历史，走路由层转发给访客
         String content = body.content();
         if (content == null || content.isBlank()) {
             log.warn("[AgentWS] MESSAGE 内容为空 sessionId={} wsId={}", sessionId, session.getId());
             return;
         }
         long seq = historyRepository.appendAgentMessage(sessionId, content);
-        visitorNotifier.notifyVisitor(sessionId,
-                WsChatMessage.fromAgent(sessionId, content, seq, ts));
+        router.sendToVisitor(sessionId, WsChatMessage.fromAgent(sessionId, content, seq, ts));
         log.debug("[AgentWS] agent→visitor sessionId={} seq={}", sessionId, seq);
     }
 
