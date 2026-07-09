@@ -1,8 +1,9 @@
 # 后端 WebSocket 多会话统一连接架构改造设计文档
 
 **日期**：2026-07-09  
-**状态**：待实现  
-**关联前端设计**：`docs/superpowers/specs/2026-07-09-agent-ws-single-channel-design.md`
+**状态**：待实现（评审已通过，修复后版本）  
+**关联前端设计**：`docs/superpowers/specs/2026-07-09-agent-ws-single-channel-design.md`  
+**评审修复**：C-1 KICK 并发竞态、C-2 死代码清除范围、I-1 VisitorNotifier 拆分、I-2 MultiLoginMode 枚举、I-3 TYPING 跳过 Redis、I-4 分层修正
 
 ---
 
@@ -85,10 +86,13 @@ notifyAgent(sessionId, payload)
 
 | 操作 | 文件 | 说明 |
 |------|------|------|
+| 新增 | `domain/MultiLoginMode.java` | 多登录模式枚举（领域层） |
+| 新增 | `infrastructure/websocket/VisitorNotifier.java` | 访客推送接口（解耦 Handler 间依赖） |
 | 新增 | `infrastructure/websocket/AgentConnectionRegistry.java` | 连接存储 + 推送组件 |
 | 新增 | `infrastructure/websocket/AgentChannelWsHandler.java` | 座席专用 WS Handler |
 | 修改 | `infrastructure/config/WebSocketConfig.java` | 注册新端点，移除旧座席端点 |
-| 修改 | `infrastructure/websocket/ChatWebSocketHandler.java` | 移除 agentSessions，改造 notifyAgent |
+| 修改 | `infrastructure/websocket/ChatWebSocketHandler.java` | 移除 agentSessions 及全部 agent 分支死代码，改造 notifyAgent，实现 VisitorNotifier |
+| 修改 | `application/service/SessionQueueService.java` | 新增 `getAgentId(sessionId)` 方法 |
 | 修改 | `resources/application.yml` | 新增 `agent.ws.multi-login-mode` 配置项 |
 | 不动 | `infrastructure/websocket/AgentHandshakeInterceptor.java` | 已从 token 解析 agentId，兼容新端点 |
 
@@ -106,6 +110,27 @@ agent:
 |------|------|
 | `BROADCAST`（默认） | 多端并发在线，同一座席的所有连接均收到消息 |
 | `KICK` | 新端连入时向旧端推 `KICKED_OUT` 信令，随后关闭旧连接 |
+
+`MultiLoginMode` 定义为 `domain` 层枚举（业务策略，非基础设施配置）：
+
+```java
+// domain/MultiLoginMode.java
+public enum MultiLoginMode {
+    /** 多端并发，消息广播所有在线连接 */
+    BROADCAST,
+    /** 新端登录时踢出旧端 */
+    KICK
+}
+```
+
+`AgentChannelWsHandler` 注入方式：
+
+```java
+@Value("${agent.ws.multi-login-mode:BROADCAST}")
+private MultiLoginMode multiLoginMode;
+```
+
+配置值拼写错误时 Spring 启动即失败，快速暴露配置问题。
 
 ## 3. AgentConnectionRegistry 设计
 
@@ -150,6 +175,7 @@ public void broadcast(String agentId, Object payload);
 
 /**
  * 向该座席除 exclude 之外的所有连接广播消息（KICK 模式推 KICKED_OUT 信令用）。
+ * 命名说明：broadcastToAllExcept 语义更清晰，简写为 broadcastExcept 与 closeAllExcept 保持对称。
  */
 public void broadcastExcept(String agentId, WebSocketSession exclude, Object payload);
 
@@ -178,6 +204,37 @@ public void unregister(WebSocketSession session) {
 }
 ```
 
+#### KICK 模式并发安全（per-agentId 锁）
+
+KICK 模式下 register→broadcastExcept→closeAllExcept 三步必须对同一 agentId 保持原子性。
+若两个新连接同时接入同一座席，不加锁会导致互相踢对方，最终所有连接均被关闭。
+
+解决方案：维护 per-agentId 粗粒度锁，仅在 KICK 分支加锁，BROADCAST 路径无锁：
+
+```java
+// AgentConnectionRegistry 内部
+private final ConcurrentHashMap<String, Object> agentLocks = new ConcurrentHashMap<>();
+
+private Object getAgentLock(String agentId) {
+    return agentLocks.computeIfAbsent(agentId, k -> new Object());
+}
+```
+
+调用方（`AgentChannelWsHandler`）在 KICK 模式下：
+
+```java
+// KICK 模式：register + broadcastExcept + closeAllExcept 三步原子执行
+synchronized (registry.getAgentLock(agentId)) {
+    registry.register(agentId, newSession);
+    registry.broadcastExcept(agentId, newSession, Map.of("type", "KICKED_OUT"));
+    registry.closeAllExcept(agentId, newSession);
+}
+// 锁外推送 CONNECTED（新连接已注册，此时无并发风险）
+sendJson(newSession, Map.of("type", "CONNECTED"));
+```
+
+BROADCAST 模式只需 `register`，不涉及此锁。
+
 #### sendJson 内部串行化
 
 与现有 `ChatWebSocketHandler.sendJson` 保持同一模式：
@@ -196,6 +253,10 @@ private void sendJson(WebSocketSession session, Object payload) {
     }
 }
 ```
+
+> ⚠️ **实现约束**：`broadcast` 遍历 `CopyOnWriteArraySet` 时按插入顺序加锁，多线程遍历锁序一致，
+> 不存在死锁。禁止将 `agentToSessions` 的 value 类型替换为无序集合（如 `HashSet`），
+> 否则会引入锁序不确定导致的死锁风险。
 
 发送失败时主动 `close(SERVER_ERROR)`，触发 `afterConnectionClosed` → 自动 `unregister`，不产生僵尸连接。
 
@@ -225,16 +286,21 @@ private void sendJson(WebSocketSession session, Object payload) {
 ```
 afterConnectionEstablished(newSession)
   ├─ 读取 agentId = attributes["agentId"]（由 AgentHandshakeInterceptor 写入）
-  ├─ registry.register(agentId, newSession)           // ① 先注册新连接
   ├─ if (mode == KICK)
-  │    ├─ registry.broadcastExcept(agentId, newSession,   // ② 推 KICKED_OUT 给旧端
-  │    │       Map.of("type", "KICKED_OUT"))
-  │    └─ registry.closeAllExcept(agentId, newSession)    // ③ 关闭旧连接
-  └─ sendJson(newSession, Map.of("type", "CONNECTED"))    // ④ 通知新端连接成功
+  │    └─ synchronized(registry.getAgentLock(agentId))    // ① KICK 模式加 per-agentId 锁
+  │         ├─ registry.register(agentId, newSession)      // ② 先注册新连接
+  │         ├─ registry.broadcastExcept(agentId, newSession,// ③ 推 KICKED_OUT 给旧端
+  │         │       Map.of("type", "KICKED_OUT"))
+  │         └─ registry.closeAllExcept(agentId, newSession) // ④ 关闭旧连接
+  ├─ else (BROADCAST)
+  │    └─ registry.register(agentId, newSession)           // 无锁，直接注册
+  └─ sendJson(newSession, Map.of("type", "CONNECTED"))     // ⑤ 通知新端连接成功（锁外）
 ```
 
-**步骤顺序不能颠倒**：① 必须先于 ②③，目的是保证从旧连接关闭到新连接建立的窗口期内，
-访客发来的消息通过 `AgentConnectionRegistry.broadcast` 能推到新连接，不丢失。
+**KICK 模式三步为何必须加锁**：两个新连接同时接入同一座席时，三步非原子会导致双方互相踢对方，
+最终所有连接均被关闭。per-agentId 锁将三步原子化，BROADCAST 路径完全不涉及此锁。
+
+**步骤 ② 必须先于 ③④**：注册新连接后，窗口期内访客消息通过 `broadcast` 能推到新连接，不丢失。
 
 ### 4.3 handleTextMessage 流程
 
@@ -286,34 +352,51 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
     private static final int MAX_MESSAGE_BYTES = 65536;
 
     private final AgentConnectionRegistry registry;
-    private final ChatWebSocketHandler chatHandler;        // 复用 notifyVisitor
+    private final VisitorNotifier visitorNotifier;          // 接口，不依赖 ChatWebSocketHandler
     private final ConversationHistoryRepository historyRepository;
     private final ObjectMapper objectMapper;
 
     @Value("${agent.ws.multi-login-mode:BROADCAST}")
-    private String multiLoginMode;
+    private MultiLoginMode multiLoginMode;
 
     // afterConnectionEstablished / handleTextMessage /
     // afterConnectionClosed / handleTransportError
 }
 ```
 
-`ChatWebSocketHandler` 注入是为了复用 `notifyVisitor`，避免重复实现访客推送逻辑。
-后续若拆分重构，可将 `notifyVisitor` 提取到独立 `VisitorNotifier` 组件。
+**VisitorNotifier 接口**（新增，infrastructure/websocket 层）：
+
+```java
+public interface VisitorNotifier {
+    void notifyVisitor(String sessionId, Object payload);
+    void closeVisitorSessionNormal(String sessionId);
+}
+```
+
+`ChatWebSocketHandler` 实现此接口，`AgentChannelWsHandler` 只依赖接口，两个 Handler 不再直接相互引用。
+这是本次实现的**前置条件**，非可选优化。
 
 ## 5. ChatWebSocketHandler 改造
 
-### 5.1 移除 agentSessions
+### 5.1 移除 agentSessions 及全部 agent 分支死代码
 
-旧的 `agentSessions: ConcurrentHashMap<String, WebSocketSession>` 及其所有引用全部删除：
+旧的 `agentSessions: ConcurrentHashMap<String, WebSocketSession>` 及其所有引用全部删除。
+改造后 `ChatWebSocketHandler` 只处理访客端 `/ws/chat/{sessionId}`，以下代码均成为死代码，
+**必须一并删除**（保留死代码存在安全风险：若路由配置错误导致 `/ws/agent` 意外命中此 Handler，
+`handleAgentMessage` 会静默处理座席消息而不被发现）：
 
-- `afterConnectionEstablished` 中的 `agentSessions.put(...)` → 删除
-- `afterConnectionClosed` 中的 `agentSessions.remove(...)` → 删除
-- `handleTransportError` 中的 `agentSessions.remove(...)` → 删除
-- `sendLocks` 中针对 agent session 的清理 → 删除（由 `AgentConnectionRegistry` 接管）
+| 待删除位置 | 内容 |
+|-----------|------|
+| 字段声明 | `agentSessions: ConcurrentHashMap<String, WebSocketSession>` |
+| `afterConnectionEstablished` else 分支 | `agentSessions.put(...)` + `notifyVisitor(AGENT_JOINED)` |
+| `afterConnectionClosed` else 分支 | `agentSessions.remove(...)` |
+| `handleTransportError` else 分支 | `agentSessions.remove(...)` |
+| `sendLocks` agent 清理逻辑 | 由 `AgentConnectionRegistry` 接管 |
+| `handleAgentMessage` 整个方法 | 座席消息改由 `AgentChannelWsHandler` 处理 |
+| `VALID_ROLES` 集合 | 简化为 `Set.of("chat")`，移除 `"agent"` |
+| `handleTextMessage` 中 role 判断 else 分支 | 调用 `handleAgentMessage` 的路径 |
 
-`ChatWebSocketHandler` 改造后只处理访客端（`/ws/chat/{sessionId}`），
-`agentSessions` 相关字段和分支代码全部清除，类职责更单一。
+`ChatWebSocketHandler` 改造后类职责单一，仅负责访客连接管理与消息转发。
 
 ### 5.2 改造 notifyAgent
 
@@ -332,19 +415,17 @@ public void notifyAgent(String sessionId, Object payload) {
 
 ```java
 public void notifyAgent(String sessionId, Object payload) {
-    // 通过 Redis 查询 sessionId 对应的 agentId（SessionQueueItem 已有该字段）
-    String agentId = sessionQueueRepository.findById(sessionId)
-            .map(SessionQueueItem::agentId)
-            .orElse(null);
+    // TYPING 信号允许丢失，无需走 Redis 路由，直接跳过（避免高频击键产生大量 Redis 查询）
+    if (payload instanceof Map<?,?> m && MSG_TYPE_TYPING.equals(m.get("type"))) {
+        log.debug("[WS] notifyAgent 跳过 TYPING：sessionId={} 无需路由", sessionId);
+        return;
+    }
 
+    // 通过应用层 Service 查询 sessionId 对应的 agentId（不直接依赖存储层）
+    String agentId = sessionQueueService.getAgentId(sessionId);
     if (agentId == null) {
         // 会话仍处于 WAITING 状态（未分配座席）或已关闭，跳过推送
-        // TYPING 信号用 debug 级别，业务消息用 warn
-        if (payload instanceof Map<?,?> m && "TYPING".equals(m.get("type"))) {
-            log.debug("[WS] notifyAgent 跳过 TYPING：sessionId={} 尚未分配座席", sessionId);
-        } else {
-            log.warn("[WS] notifyAgent 跳过：sessionId={} 尚未分配座席或会话已关闭", sessionId);
-        }
+        log.warn("[WS] notifyAgent 跳过：sessionId={} 尚未分配座席或会话已关闭", sessionId);
         return;
     }
 
@@ -352,44 +433,70 @@ public void notifyAgent(String sessionId, Object payload) {
 }
 ```
 
+**关于 TYPING 处理的说明**：TYPING 信号是 ephemeral 状态，本身允许丢失，旧架构中
+`agentSessions.get(sessionId) == null` 时也是静默丢弃。新架构直接在入口 return，
+既保持相同语义，又完全消除了 TYPING 路径的 Redis 访问。
+
 ### 5.3 新增依赖注入
 
 在 `ChatWebSocketHandler` 中新增两个字段：
 
 ```java
-private final SessionQueueRepository sessionQueueRepository;
+private final SessionQueueService sessionQueueService;       // 应用层，不直接注入 Repository
 private final AgentConnectionRegistry agentConnectionRegistry;
+```
+
+同时在 `SessionQueueService` 新增查询方法（应用层封装路由查询，Handler 不感知存储层）：
+
+```java
+/**
+ * 查询会话当前负责的座席 ID。
+ * 会话处于 WAITING 状态或不存在时返回 null。
+ *
+ * @param sessionId 会话 ID
+ * @return agentId，无分配时返回 null
+ */
+public String getAgentId(String sessionId) {
+    return queueRepository.findById(sessionId)
+            .map(SessionQueueItem::agentId)
+            .orElse(null);
+}
 ```
 
 通过 `@RequiredArgsConstructor` 自动注入，无需手动修改构造函数。
 
 ### 5.4 TYPING 转发路径变化
 
-旧实现（`handleTextMessage` 第 138-148 行）中，访客发来 TYPING 信号时：
+旧实现中访客发来 TYPING 时，`handleTextMessage` 调用 `notifyAgent`，内部尝试查 agentSessions 推送。
 
-```java
-notifyAgent(sessionId, Map.of("type", MSG_TYPE_TYPING, "sessionId", sessionId, "timestamp", ts));
-```
-
-改造后调用链不变，只是 `notifyAgent` 内部从查内存改为查 Redis + 广播。调用方代码无需修改。
+新架构调整：
+- `handleTextMessage` 中访客 TYPING 信号依然调用 `notifyAgent(sessionId, typingMsg)`
+- `notifyAgent` 内部**在入口处直接 return**（新增的 TYPING 提前判断），不走 Redis 查询
+- 效果等同旧架构的静默丢弃，无行为变化，但消除了所有 TYPING 路径的 Redis 访问
 
 ### 5.5 消息推送路径全景（改造后）
 
 ```
-访客发消息
+访客发消息（MESSAGE）
   → ChatWebSocketHandler.handleTextMessage
       → handleVisitorMessage
           → historyRepository.append          // 写历史（不丢消息）
           → notifyAgent(sessionId, msg)
-              → Redis findById(sessionId).agentId
+              → payload 不是 TYPING，继续
+              → sessionQueueService.getAgentId(sessionId)  // 应用层查 Redis
               → AgentConnectionRegistry.broadcast(agentId, msg)
-                  → 遍历 agentToSessions[agentId]
+                  → 遍历 agentToSessions[agentId]（CopyOnWriteArraySet）
                   → synchronized sendJson(each session)
+
+访客发 TYPING 信号
+  → ChatWebSocketHandler.handleTextMessage
+      → notifyAgent(sessionId, typingMsg)
+          → payload 是 TYPING → log.debug → return（直接跳过，无 Redis 查询）
 
 座席发消息（新架构）
   → AgentChannelWsHandler.handleTextMessage
       → historyRepository.appendAgentMessage  // 写历史
-      → chatHandler.notifyVisitor(sessionId, msg)
+      → visitorNotifier.notifyVisitor(sessionId, msg)  // 通过接口调用
           → visitorSessions.get(sessionId)
           → sendJson(visitor session)
 ```
@@ -404,8 +511,8 @@ agent:
     multi-login-mode: BROADCAST   # BROADCAST（默认）| KICK
 ```
 
-`AgentChannelWsHandler` 通过 `@Value("${agent.ws.multi-login-mode:BROADCAST}")` 读取，
-默认值为 `BROADCAST`，不配置时行为与多数现有系统一致（多端并发在线）。
+`AgentChannelWsHandler` 通过 `@Value("${agent.ws.multi-login-mode:BROADCAST}")` 注入 `MultiLoginMode` 枚举，
+配置值拼写错误时 Spring 启动即失败，不会静默 fallback。
 
 ### 6.2 WebSocketConfig 改造
 
@@ -445,9 +552,11 @@ registry.addHandler(agentChannelWsHandler, "/ws/agent")
 2. 前端立即跟进部署（切换到新端点 `/ws/agent`）
 3. 部署期间存在短暂的座席 WS 连接中断，座席刷新页面后自动重连新端点
 
-建议：
+**回滚预案**：若后端部署后发现问题，在前端尚未部署时可直接回滚后端。
+若前后端均已部署，需前后端同步回滚。建议：
 - 选择低峰期部署
 - 部署前通知在线座席保存当前工作状态
+- 准备好回滚脚本，确保能在 5 分钟内完成前后端双端回滚
 
 ### 6.5 测试要点
 
@@ -456,15 +565,19 @@ registry.addHandler(agentChannelWsHandler, "/ws/agent")
 | 单端登录 BROADCAST | 访客消息正常推送给座席 |
 | 多端登录 BROADCAST | 两个浏览器标签页均收到消息 |
 | 多端登录 KICK | 新端连入后旧端收到 KICKED_OUT，旧连接被关闭 |
+| KICK 并发双登录 | 两个连接同时接入同一 agentId，结果只有最后一个存活，无双踢 |
 | 座席发消息 | 访客正常收到 |
-| TYPING 转发 | 访客输入中信号推到座席 |
+| TYPING 转发 | 访客输入中信号推到座席；WAITING 状态下 debug 日志不报 warn |
 | 座席断线重连 | 重连后消息正常，历史可加载，会话不中断 |
 | WAITING 会话 notifyAgent | warn 日志输出，不抛异常 |
 | 鉴权失败 | 握手返回 401，Handler 不触发 |
 | token 过期 | 握手返回 401，前端走 token 刷新流程 |
+| 座席消息超过 64KB | close NOT_ACCEPTABLE，不影响其他连接 |
+| Redis 中 agentId 为 null（WAITING）| notifyAgent warn 日志，不抛 NPE |
+| multi-login-mode 配置拼写错误 | Spring 启动失败，不静默 fallback |
 
 ### 6.6 后续可选优化（非本次范围）
 
-- 将 `notifyVisitor` 提取为独立 `VisitorNotifier` 组件，解除 `AgentChannelWsHandler` 对 `ChatWebSocketHandler` 的直接依赖
 - `AgentConnectionRegistry` 加入连接数监控指标（Micrometer Gauge），便于观测多端登录分布
 - 为 `agent.ws.multi-login-mode` 支持热更新（`@RefreshScope`），无需重启即可切换模式
+- `SessionQueueService.getAgentId` 加本地 Caffeine 缓存，进一步降低 Redis 访问频率
