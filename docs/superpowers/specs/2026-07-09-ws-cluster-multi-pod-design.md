@@ -390,40 +390,44 @@ public void removeStalePod(String deadPodId) {
  * 跨 Pod WS 投递命令，序列化为 JSON 后通过 RabbitMQ 传递。
  *
  * <p>payload 序列化说明：{@code Object payload} 经 Jackson 反序列化后类型擦除为 {@link java.util.LinkedHashMap}，
- * 无法还原为原始 record 类型。因此使用 {@code payloadClass + payloadJson} 两字段替代，
- * 在发送端序列化，在消费端按类型还原，彻底消除类型擦除问题。
+ * 无法还原为原始 record 类型。因此使用 {@code wsMessageType + payloadJson} 两字段替代：
+ * 发送端预序列化，消费端按 {@link WsMessageType} 枚举 switch 还原，彻底消除类型擦除问题。
+ *
+ * <p>使用枚举而非完整类名的原因：
+ * <ul>
+ *   <li>重构安全：包名变更不影响已在途的 MQ 消息</li>
+ *   <li>类型安全：消费端 switch 为编译期穷举，新增消息类型时有编译提示</li>
+ *   <li>安全防护：枚举白名单，不存在 Class.forName 加载任意类的风险</li>
+ * </ul>
  *
  * @param targetType          投递目标类型：AGENT / VISITOR / KICK_AGENT
  * @param targetId            投递目标 ID（agentId 或 sessionId）
- * @param payloadClass        payload 的完整类名（用于消费端反序列化，KICK_AGENT 时为 null）
- * @param payloadJson         payload 的 JSON 字符串（消费端按 payloadClass 还原，KICK_AGENT 时为 null）
+ * @param wsMessageType       消息类型枚举（用于消费端 switch 还原，KICK_AGENT 时为 null）
+ * @param payloadJson         payload 的 JSON 字符串（消费端按 wsMessageType 还原，KICK_AGENT 时为 null）
  * @param excludeWsSessionId  KICK_AGENT 时记录新连接的 wsSessionId（仅供日志，可为 null）
  */
 public record WsDeliveryCommand(
         TargetType targetType,
         String targetId,
-        String payloadClass,
+        WsMessageType wsMessageType,
         String payloadJson,
         String excludeWsSessionId
 ) {
     public enum TargetType { AGENT, VISITOR, KICK_AGENT }
 
     /**
-     * 向座席投递消息。payload 在此处预先序列化，消费端按类名还原。
+     * 向座席投递消息。
+     * 序列化失败时抛 {@link IllegalStateException}（编程错误，不应让调用方处理受检异常）。
      */
-    public static WsDeliveryCommand toAgent(String agentId, Object payload, ObjectMapper objectMapper)
-            throws JsonProcessingException {
-        return new WsDeliveryCommand(TargetType.AGENT, agentId,
-                payload.getClass().getName(), objectMapper.writeValueAsString(payload), null);
+    public static WsDeliveryCommand toAgent(String agentId, Object payload, ObjectMapper objectMapper) {
+        return build(TargetType.AGENT, agentId, payload, objectMapper);
     }
 
     /**
      * 向访客投递消息。
      */
-    public static WsDeliveryCommand toVisitor(String sessionId, Object payload, ObjectMapper objectMapper)
-            throws JsonProcessingException {
-        return new WsDeliveryCommand(TargetType.VISITOR, sessionId,
-                payload.getClass().getName(), objectMapper.writeValueAsString(payload), null);
+    public static WsDeliveryCommand toVisitor(String sessionId, Object payload, ObjectMapper objectMapper) {
+        return build(TargetType.VISITOR, sessionId, payload, objectMapper);
     }
 
     /**
@@ -432,6 +436,31 @@ public record WsDeliveryCommand(
      */
     public static WsDeliveryCommand kickAgent(String agentId, String excludeWsSessionId) {
         return new WsDeliveryCommand(TargetType.KICK_AGENT, agentId, null, null, excludeWsSessionId);
+    }
+
+    private static WsDeliveryCommand build(TargetType type, String targetId,
+                                           Object payload, ObjectMapper objectMapper) {
+        WsMessageType msgType = extractMessageType(payload);
+        try {
+            return new WsDeliveryCommand(type, targetId, msgType,
+                    objectMapper.writeValueAsString(payload), null);
+        } catch (JsonProcessingException e) {
+            // 自定义 record 序列化失败属于编程错误，包装为非受检异常
+            throw new IllegalStateException("WS payload 序列化失败: "
+                    + payload.getClass().getSimpleName(), e);
+        }
+    }
+
+    /** 从 payload 对象提取对应的 WsMessageType 枚举 */
+    private static WsMessageType extractMessageType(Object payload) {
+        return switch (payload) {
+            case WsChatMessage    ignored -> WsMessageType.MESSAGE;
+            case WsTypingMessage  ignored -> WsMessageType.TYPING;
+            case WsConnectedMessage ignored -> WsMessageType.CONNECTED;
+            case WsErrorMessage   ignored -> WsMessageType.ERROR;
+            default -> throw new IllegalArgumentException(
+                    "不支持跨 Pod 投递的消息类型: " + payload.getClass().getSimpleName());
+        };
     }
 }
 ```
@@ -484,13 +513,9 @@ public class WsMessageRouter {
                 // 本 Pod：直接 broadcast，推给本地所有连接（可能多个标签）
                 agentRegistry.broadcast(agentId, payload);
             } else {
-                // 跨 Pod：序列化 payload，发 MQ，目标 Pod 收到后再做本地 broadcast
-                // JsonProcessingException 在此处捕获，单次跨 Pod 投递失败不影响其他 Pod
-                try {
-                    deliver(pod, WsDeliveryCommand.toAgent(agentId, payload, objectMapper));
-                } catch (JsonProcessingException e) {
-                    log.error("[WsRouter] payload 序列化失败 agentId={} pod={}", agentId, pod, e);
-                }
+                // 跨 Pod：序列化 payload 发 MQ，目标 Pod 收到后再做本地 broadcast
+                // toAgent() 内部序列化失败时抛 IllegalStateException（编程错误），不需要 try-catch
+                deliver(pod, WsDeliveryCommand.toAgent(agentId, payload, objectMapper));
             }
         }
     }
@@ -516,11 +541,8 @@ public class WsMessageRouter {
             // 直接调用本地推送（visitorNotifier.notifyVisitor = ChatWebSocketHandler 的本地 socket 写入）
             visitorNotifier.notifyVisitor(sessionId, payload);
         } else {
-            try {
-                deliver(pod, WsDeliveryCommand.toVisitor(sessionId, payload, objectMapper));
-            } catch (JsonProcessingException e) {
-                log.error("[WsRouter] payload 序列化失败 sessionId={} pod={}", sessionId, pod, e);
-            }
+            // toVisitor() 内部序列化失败时抛 IllegalStateException（编程错误），不需要 try-catch
+            deliver(pod, WsDeliveryCommand.toVisitor(sessionId, payload, objectMapper));
         }
     }
 
@@ -596,7 +618,8 @@ public class WsDeliveryConsumer {
      * <p>routing key = #{@podIdentity.get()}（SpEL，运行时求值为本 Pod UUID），
      * 确保只有发给本 Pod 的消息才路由到此队列。
      *
-     * <p>payload 还原：{@link WsDeliveryCommand} 以 {@code payloadClass + payloadJson} 形式传递，
+     * <p>payload 还原：{@link WsDeliveryCommand} 以 {@code wsMessageType + payloadJson} 形式传递，
+     * 消费端按 {@link WsMessageType} 枚举 switch 还原为具体 record 类型，
      * 避免 Jackson 反序列化时 {@code Object} 类型擦除为 {@link java.util.LinkedHashMap}。
      */
     @RabbitListener(bindings = @QueueBinding(
@@ -631,11 +654,19 @@ public class WsDeliveryConsumer {
         log.debug("[WsDelivery] 本地推送完成 type={} id={}", cmd.targetType(), cmd.targetId());
     }
 
-    /** 按 payloadClass 将 payloadJson 还原为原始消息对象 */
-    @SuppressWarnings("unchecked")
-    private Object restorePayload(WsDeliveryCommand cmd) throws Exception {
-        Class<?> clazz = Class.forName(cmd.payloadClass());
-        return objectMapper.readValue(cmd.payloadJson(), clazz);
+    /**
+     * 按 {@link WsMessageType} 枚举将 payloadJson 还原为原始消息对象。
+     * 使用枚举 switch 替代 Class.forName()，重构安全且消除任意类加载安全风险。
+     */
+    private Object restorePayload(WsDeliveryCommand cmd) throws JsonProcessingException {
+        return switch (cmd.wsMessageType()) {
+            case MESSAGE   -> objectMapper.readValue(cmd.payloadJson(), WsChatMessage.class);
+            case TYPING    -> objectMapper.readValue(cmd.payloadJson(), WsTypingMessage.class);
+            case CONNECTED -> objectMapper.readValue(cmd.payloadJson(), WsConnectedMessage.class);
+            case ERROR     -> objectMapper.readValue(cmd.payloadJson(), WsErrorMessage.class);
+            default -> throw new IllegalArgumentException(
+                    "不支持跨 Pod 投递的消息类型: " + cmd.wsMessageType());
+        };
     }
 }
 ```
