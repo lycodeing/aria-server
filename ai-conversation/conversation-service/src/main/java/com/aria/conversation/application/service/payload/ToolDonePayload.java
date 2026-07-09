@@ -26,4 +26,14 @@ public record ToolDonePayload(String tool, String status, long durationMs, Strin
                 result.getErrorMsg()
         );
     }
+
+    /** MCP 工具执行成功时构造 payload。 */
+    public static ToolDonePayload success(String toolName, long durationMs) {
+        return new ToolDonePayload(toolName, "SUCCESS", durationMs, null);
+    }
+
+    /** MCP 工具执行失败时构造 payload。 */
+    public static ToolDonePayload error(String toolName, long durationMs, String errorMsg) {
+        return new ToolDonePayload(toolName, "ERROR", durationMs, errorMsg);
+    }
 }

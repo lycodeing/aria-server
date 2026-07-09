@@ -184,11 +184,13 @@ public class DomainAgentService {
             Map<ToolSpecification, ToolExecutor> toolMap = new LinkedHashMap<>();
 
             // 第一层：MCP 工具（先写，优先级最低）
+            // 每个 MCP executor 用事件包装器包裹，向前端发射 tool_call / tool_done SSE 事件
             try {
                 ToolProviderResult mcpResult =
                         mcpClientRegistry.getToolProvider().provideTools(request);
                 if (mcpResult != null && mcpResult.tools() != null) {
-                    toolMap.putAll(mcpResult.tools());
+                    mcpResult.tools().forEach((spec, executor) ->
+                            toolMap.put(spec, wrapWithEvents(spec.name(), executor, eventSink)));
                     log.debug("[DomainAgent] 已加载 MCP 工具数={}", mcpResult.tools().size());
                 }
             } catch (Exception e) {
@@ -250,7 +252,44 @@ public class DomainAgentService {
             }
         };
     }
+    /**
+     * 用 SSE 事件包装器包裹 MCP {@link ToolExecutor}，执行前发射 {@code tool_call}，
+     * 执行后发射 {@code tool_done}，与域 HTTP 工具保持一致的前端体验。
+     */
+    private ToolExecutor wrapWithEvents(String toolName,
+                                        ToolExecutor delegate,
+                                        Sinks.Many<ChatEvent> eventSink) {
+        return (req, memId) -> {
+            long start = System.currentTimeMillis();
+            try {
+                eventSink.tryEmitNext(ChatEvent.toolCall(
+                        objectMapper.writeValueAsString(ToolCallPayload.running(toolName))));
+            } catch (Exception ignored) { /* 序列化失败不阻断工具执行 */ }
 
+            String result;
+            boolean success = true;
+            String errorMsg = null;
+            try {
+                result = delegate.execute(req, memId);
+            } catch (Exception e) {
+                success = false;
+                errorMsg = e.getMessage();
+                result = "工具执行失败: " + errorMsg;
+                log.error("[DomainAgent] MCP tool error tool={}", toolName, e);
+            }
+
+            long durationMs = System.currentTimeMillis() - start;
+            try {
+                String doneJson = objectMapper.writeValueAsString(
+                        success
+                        ? ToolDonePayload.success(toolName, durationMs)
+                        : ToolDonePayload.error(toolName, durationMs, errorMsg));
+                eventSink.tryEmitNext(ChatEvent.toolDone(doneJson));
+            } catch (Exception ignored) { /* 序列化失败不阻断结果返回 */ }
+
+            return result;
+        };
+    }
 
     // -------------------------------------------------------
     // 工具规格（ToolSpecification）构造
