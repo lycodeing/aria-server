@@ -1,6 +1,5 @@
 package com.aria.conversation.infrastructure.websocket;
 
-import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.domain.MultiLoginMode;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.aria.conversation.infrastructure.websocket.message.*;
@@ -118,7 +117,7 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
      * 连接正常/异常关闭后：从注册表注销连接，不触发会话关闭逻辑（座席断线 ≠ 会话结束）。
      */
     @Override
-    public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+    public void afterConnectionClosed(@NonNull WebSocketSession session, @NonNull CloseStatus status) {
         registry.unregister(session);
         log.info("[AgentWS] 座席连接关闭 agentId={} wsId={} status={}",
                 session.getAttributes().get(ATTR_AGENT_ID), session.getId(), status);
