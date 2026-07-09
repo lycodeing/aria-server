@@ -97,6 +97,13 @@
             <artifactId>spring-retry</artifactId>
         </dependency>
 
+        <!-- Redisson 分布式锁（替换 SETNX 手动锁） -->
+        <dependency>
+            <groupId>org.redisson</groupId>
+            <artifactId>redisson-spring-boot-starter</artifactId>
+            <version>3.27.2</version>
+        </dependency>
+
         <!-- 文档存储（MinIO S3 兼容对象存储） -->
         <dependency>
             <groupId>io.minio</groupId>
