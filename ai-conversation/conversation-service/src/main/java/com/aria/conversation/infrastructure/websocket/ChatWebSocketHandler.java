@@ -3,6 +3,8 @@ package com.aria.conversation.infrastructure.websocket;
 import com.aria.conversation.application.service.SessionQueueService;
 import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
+import com.aria.conversation.infrastructure.websocket.cluster.PodIdentity;
+import com.aria.conversation.infrastructure.websocket.cluster.WsPresenceRegistry;
 import com.aria.conversation.infrastructure.websocket.message.WsChatMessage;
 import com.aria.conversation.infrastructure.websocket.message.WsConnectedMessage;
 import com.aria.conversation.infrastructure.websocket.message.WsErrorMessage;
@@ -22,6 +24,10 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 import java.io.IOException;
 import java.time.Instant;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 /**
@@ -84,6 +90,14 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
     private final ConversationHistoryRepository historyRepository;
     private final SessionQueueService sessionQueueService;
     private final AgentConnectionRegistry agentConnectionRegistry;
+    private final WsPresenceRegistry presenceRegistry;
+    private final PodIdentity podIdentity;
+
+    /** 访客心跳调度器：每 30s 刷新 presence TTL，防止 90s 超时导致跨 Pod 路由失效。不声明 final 以免 Lombok 纳入构造器。 */
+    private final ScheduledExecutorService visitorHeartbeatScheduler = Executors.newScheduledThreadPool(2);
+
+    /** 访客心跳 Future 注册表：wsSessionId → ScheduledFuture。不声明 final 以免 Lombok 纳入构造器。 */
+    private final ConcurrentHashMap<String, ScheduledFuture<?>> visitorHeartbeats = new ConcurrentHashMap<>();
 
     // ----------------------------------------------------------------
     // 连接生命周期
@@ -106,6 +120,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
             // 重连时关闭旧连接并清理其 sendLock，防止旧 TCP 半开和锁 map 无限增长
             WebSocketSession oldVisitor = visitorSessions.put(sessionId, session);
             closeStaleSession(oldVisitor);
+            // presence 注册
+            presenceRegistry.registerVisitor(sessionId, podIdentity.get());
+            // 启动心跳（30s 刷新 presence TTL，防止 90s 超时导致跨 Pod 路由失效）
+            ScheduledFuture<?> hb = visitorHeartbeatScheduler.scheduleAtFixedRate(
+                    () -> presenceRegistry.refreshVisitor(sessionId), 30, 30, TimeUnit.SECONDS);
+            visitorHeartbeats.put(session.getId(), hb);
             log.info("[WS] visitor connected sessionId={}", sessionId);
             sendJson(session, WsConnectedMessage.forVisitor(sessionId));
         }
@@ -201,6 +221,9 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
 
         if (PATH_SEGMENT_CHAT.equals(role)) {
             visitorSessions.remove(sessionId);
+            presenceRegistry.unregisterVisitor(sessionId);
+            ScheduledFuture<?> hb = visitorHeartbeats.remove(session.getId());
+            if (hb != null) hb.cancel(false);
             log.info("[WS] visitor disconnected sessionId={}", sessionId);
         }
     }
@@ -222,6 +245,9 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
         // 这里主动清理 map，防止僵尸 session 积累
         if (PATH_SEGMENT_CHAT.equals(role)) {
             visitorSessions.remove(sessionId);
+            presenceRegistry.unregisterVisitor(sessionId);
+            ScheduledFuture<?> hb = visitorHeartbeats.remove(session.getId());
+            if (hb != null) hb.cancel(false);
         }
     }
 
@@ -270,6 +296,10 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
      * @param payload   消息对象
      */
     public void notifyAgent(String sessionId, Object payload) {
+        // TYPING 信号为 ephemeral，直接跳过 Redis 查询和广播（避免不必要的 Redis I/O）
+        if (payload instanceof WsTypingMessage) {
+            return;
+        }
         String agentId = sessionQueueService.getAgentId(sessionId);
         if (agentId == null) {
             log.warn("[WS] notifyAgent 跳过：sessionId={} 尚未分配座席或会话已关闭", sessionId);
