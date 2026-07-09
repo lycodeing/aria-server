@@ -7,6 +7,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
@@ -37,13 +38,15 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AgentChannelWsHandler extends TextWebSocketHandler {
 
-    private static final String ATTR_AGENT_ID       = "agentId";
-    private static final String MSG_TYPE_CONNECTED  = "CONNECTED";
+    private static final String ATTR_AGENT_ID = "agentId";
+    private static final String MSG_TYPE_CONNECTED = "CONNECTED";
     private static final String MSG_TYPE_KICKED_OUT = "KICKED_OUT";
-    private static final String MSG_TYPE_MESSAGE    = "MESSAGE";
-    private static final String MSG_TYPE_TYPING     = "TYPING";
+    private static final String MSG_TYPE_MESSAGE = "MESSAGE";
+    private static final String MSG_TYPE_TYPING = "TYPING";
 
-    /** 单条消息最大字节数（64KB），与 ChatWebSocketHandler 保持一致 */
+    /**
+     * 单条消息最大字节数（64KB），与 ChatWebSocketHandler 保持一致
+     */
     private static final int MAX_MESSAGE_BYTES = 65536;
 
     private final AgentConnectionRegistry registry;
@@ -84,7 +87,7 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
     }
 
     @Override
-    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+    protected void handleTextMessage(@NonNull WebSocketSession session, TextMessage message) throws Exception {
         if (message.getPayloadLength() > MAX_MESSAGE_BYTES) {
             log.warn("[AgentWS] 消息超过最大长度 wsId={} size={}", session.getId(), message.getPayloadLength());
             sendJson(session, Map.of("type", "ERROR", "message", "消息长度超过限制（最大 64KB）"));
@@ -93,10 +96,10 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
         }
 
         Map<String, Object> body = parseBody(message.getPayload(), session.getId());
-        String type      = (String) body.getOrDefault("type", MSG_TYPE_MESSAGE);
+        String type = (String) body.getOrDefault("type", MSG_TYPE_MESSAGE);
         String sessionId = (String) body.get("sessionId");
-        String content   = (String) body.get("content");
-        long   ts        = Instant.now().getEpochSecond();
+        String content = (String) body.get("content");
+        long ts = Instant.now().getEpochSecond();
 
         if (sessionId == null || sessionId.isBlank()) {
             log.warn("[AgentWS] 消息缺少 sessionId wsId={}", session.getId());
@@ -149,7 +152,8 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
     @SuppressWarnings("unchecked")
     private Map<String, Object> parseBody(String payload, String wsId) {
         try {
-            return objectMapper.readValue(payload, new TypeReference<Map<String, Object>>() {});
+            return objectMapper.readValue(payload, new TypeReference<Map<String, Object>>() {
+            });
         } catch (Exception e) {
             log.debug("[AgentWS] payload 非 JSON wsId={}", wsId);
             return Map.of("content", payload);
