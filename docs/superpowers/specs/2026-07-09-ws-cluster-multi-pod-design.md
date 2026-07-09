@@ -465,6 +465,9 @@ public record WsDeliveryCommand(
             case WsChatMessage      ignored -> WsMessageType.MESSAGE;
             case WsTypingMessage    ignored -> WsMessageType.TYPING;
             case WsConnectedMessage ignored -> WsMessageType.CONNECTED;
+            // 注：WsConnectedMessage 在当前实现中仅在本地 registry.sendToSession() 发出，
+            // 不会走 sendToVisitor/sendToAgent 路由，因此此分支在正常运行时不会触发。
+            // 保留是为了完整性：若未来出现 CONNECTED 需要跨 Pod 投递的场景，此处已覆盖。
             case WsErrorMessage     ignored -> WsMessageType.ERROR;
             // WsKickedOutMessage 不走此路径，由 KICK_AGENT targetType 直接处理
             default -> throw new IllegalArgumentException(
@@ -701,8 +704,9 @@ Pod A.ChatWebSocketHandler.handleVisitorMessage
   → historyRepository.append(sessionId, content)  // 写历史，不丢消息
   → notifyAgent(sessionId, WsChatMessage.fromVisitor(...))
       → WsMessageRouter.sendToAgent("agent-001", msg)
-          → presenceRegistry.getAgentPods("agent-001") → {"amq.gen-BBB"}
-          → amq.gen-BBB ≠ 本机 → rabbitTemplate.send("ws.delivery", "amq.gen-BBB", cmd)
+          → presenceRegistry.getAgentPods("agent-001") → {"spring.gen-b3f2c1"}
+          → spring.gen-b3f2c1 ≠ 本机 → rabbitTemplate.send("ws.delivery", "spring.gen-b3f2c1", cmd)
+          // podId 为 Spring AMQP AnonymousQueue 生成的队列名（格式：spring.gen-{base64}）
                                           │
                     RabbitMQ Direct ──────┘
                                           │
@@ -1025,6 +1029,11 @@ public void cleanup() {
 +  * 关闭该座席在本 Pod 上的所有连接。
 +  * 用于 KICK 命令的远端 Pod 处理：收到 KICK_AGENT 时，本 Pod 上该 agentId 的
 +  * 所有连接均为旧连接，向所有旧连接推 KICKED_OUT 后全部关闭。
++  *
++  * <p>此方法只调用 session.close()，不主动调用 unregister()。
++  * Spring WebSocket 在 session 关闭后会自动触发 afterConnectionClosed
++  * → AgentChannelWsHandler.afterConnectionClosed → registry.unregister()，
++  * 由此完成 agentToSessions map 和 Redis presence 的清理，无需手动处理。
 +  */
 + public void closeAll(String agentId) {
 +     Set<WebSocketSession> sessions = agentToSessions.get(agentId);
@@ -1169,9 +1178,39 @@ public void cleanup() {
 |---------|------|-----|------|
 | `ws:visitor:pod:{sessionId}` | String | 90s | 访客所在 podId |
 | `ws:agent:pods:{agentId}` | Set | 90s | 座席所在 podId 集合 |
-| `ws:kick:agent:{agentId}` | Redisson RLock | 10s（watchdog续期） | KICK 模式分布式锁 |
+| `ws:kick:agent:{agentId}` | Redisson RLock | 10s（固定 leaseTime，非 watchdog） | KICK 模式分布式锁 |
 | `lock:ingest:persist:{docId}` | Redisson RLock | watchdog | PersistHandler 幂等锁 |
 | `lock:scheduler:doc-expiry` | Redisson RLock | 10min | 定时任务排它锁 |
+
+### 8.5 魔法字符串常量化（实现时要求）
+
+以下字符串在多个文件中重复使用，实现时必须提取为常量，避免拼写错误和散落维护：
+
+**建议新增 `infrastructure/ws/cluster/WsClusterConstants.java`**：
+
+```java
+// infrastructure/ws/cluster/WsClusterConstants.java
+public final class WsClusterConstants {
+
+    private WsClusterConstants() {}
+
+    // ---- RabbitMQ Exchange ----
+    /** WS 跨 Pod 投递 Direct Exchange 名称 */
+    public static final String WS_DELIVERY_EXCHANGE = "ws.delivery";
+
+    // ---- Redis Key 前缀 ----
+    /** 访客 presence key 前缀，完整格式：ws:visitor:pod:{sessionId} */
+    public static final String VISITOR_POD_KEY_PREFIX = "ws:visitor:pod:";
+
+    /** 座席 presence key 前缀，完整格式：ws:agent:pods:{agentId} */
+    public static final String AGENT_PODS_KEY_PREFIX = "ws:agent:pods:";
+
+    /** KICK 分布式锁 key 前缀，完整格式：ws:kick:agent:{agentId} */
+    public static final String KICK_LOCK_KEY_PREFIX = "ws:kick:agent:";
+}
+```
+
+`WsPresenceRegistry`、`WsMessageRouter`、`AgentChannelWsHandler` 均引用此常量类，禁止在各类中重复定义字符串字面量。
 
 ## 9. 部署配置
 
