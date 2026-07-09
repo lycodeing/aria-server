@@ -381,6 +381,12 @@ public class WsMessageRouter {
     /**
      * 向座席推送消息。
      * 若座席 WS 在本 Pod，直接推送；否则发 MQ 到目标 Pod 队列。
+     *
+     * 说明：pods 是 Pod 集合（不是连接集合）。
+     * 同一座席多个浏览器标签可能分布在不同 Pod：
+     *   - 同一 Pod 上的多个标签：agentRegistry.broadcast 一次性推给所有本地连接
+     *   - 不同 Pod 上的连接：各发一条 MQ 消息，目标 Pod 收到后再做本地 broadcast
+     * KICK 模式下 pods 集合始终只有 1 个元素（Redisson 分布式锁保证）
      */
     public void sendToAgent(String agentId, Object payload) {
         Set<String> pods = presenceRegistry.getAgentPods(agentId);
@@ -390,8 +396,10 @@ public class WsMessageRouter {
         }
         for (String pod : pods) {
             if (podIdentity.isLocal(pod)) {
+                // 本 Pod：直接 broadcast，推给本地所有连接（可能多个标签）
                 agentRegistry.broadcast(agentId, payload);
             } else {
+                // 跨 Pod：发 MQ，目标 Pod 收到后再做本地 broadcast
                 deliver(pod, WsDeliveryCommand.toAgent(agentId, payload));
             }
         }
@@ -400,6 +408,10 @@ public class WsMessageRouter {
     /**
      * 向访客推送消息。
      * 若访客 WS 在本 Pod，直接推送；否则发 MQ 到目标 Pod 队列。
+     *
+     * 说明：访客 presence 是 String（单 Pod），不是 Set。
+     * 访客重连时 visitorSessions.put 会覆盖旧连接并执行 closeStaleSession，
+     * 始终只有一个活跃连接，因此 presence 只需记录单个 podId。
      */
     public void sendToVisitor(String sessionId, Object payload) {
         String pod = presenceRegistry.getVisitorPod(sessionId);
@@ -794,9 +806,23 @@ public void cleanup() {
 
   public void unregister(WebSocketSession session) {
       String agentId = sessionIdToAgentId.remove(session.getId());
-      ...
-+     // 若本 Pod 上该 agentId 无其他连接，从 presence 移除本 Pod
-+     if (noMoreLocalSessions(agentId)) {
+      sendLocks.remove(session.getId());
+      if (agentId == null) return;
+
++     // computeIfPresent 内部原子判断：移除 session 后 Set 是否为空
++     // 避免 noMoreLocalSessions() 两步检查的 TOCTOU 竞态
++     boolean[] isEmpty = {false};
++     agentToSessions.computeIfPresent(agentId, (k, set) -> {
++         set.remove(session);
++         if (set.isEmpty()) {
++             isEmpty[0] = true;
++             return null;   // 返回 null = 从 map 中删除该 key
++         }
++         return set;
++     });
++
++     // 本 Pod 上该 agentId 已无连接，从 presence Set 移除本 Pod
++     if (isEmpty[0]) {
 +         presenceRegistry.unregisterAgent(agentId, podIdentity.get());
 +     }
 +     cancelHeartbeat(session.getId());
