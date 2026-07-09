@@ -328,8 +328,57 @@ Pod B 崩溃：
 ```
 
 **TTL 窗口期（90s）内的消息处理**：
-- 访客消息先写入 `ConversationHistoryRepository`（Redis List + DB），不丢失
-- WS 实时推送失败（队列不存在）是可接受的降级：座席重连后通过 `sinceSeq` 拉取增量补齐
+
+- 访客消息先写入 `ConversationHistoryRepository`（Redis List + DB），**消息数据不丢失**
+- WS 实时推送失败（队列不存在被 broker 静默丢弃）是一种降级：座席重连后通过 `sinceSeq` 拉取增量补齐
+- 座席浏览器感知到 WS 断线后（约 30-60s）会自动重连，重连后拉取历史补全消息
+
+**影响时间线**：
+```
+Pod B 崩溃
+  │
+  ├── 0s：崩溃，RabbitMQ 队列自动删除
+  ├── 0-60s：浏览器 TCP 超时 / WS ping-pong 失败，座席感知断线
+  │          期间其他 Pod 往 amq.gen-BBB 发消息 → 静默丢弃（实时推送中断）
+  │          但所有访客消息已写入历史存储，数据完整
+  ├── 60s：座席浏览器自动重连到存活 Pod
+  └── 重连后：携带 sinceSeq，拉取窗口期内所有未推送消息 → 补全 ✓
+```
+
+### 4.5 推荐优化：mandatory flag 即时清理死 Pod（暂不实现）
+
+上述方案最长有 90s 的实时推送中断窗口。可通过 RabbitMQ `mandatory` 标志将窗口压缩到接近 0：
+
+```java
+// WsMessageRouter.deliver() 的进阶版本（供参考，暂不实现）
+rabbitTemplate.setMandatory(true);
+rabbitTemplate.setReturnsCallback(returned -> {
+    // 消息无法路由 = 目标队列（Pod）已不存在
+    String deadPodId = returned.getRoutingKey();
+    log.warn("[WsRouter] 投递失败，Pod 已下线，立即清理 presence podId={}", deadPodId);
+
+    // 立即从所有 presence key 中清除死 Pod
+    presenceRegistry.removeStalePod(deadPodId);
+    // 之后的消息不再路由到该 Pod，推送中断窗口压缩到第一条失败时触发
+});
+```
+
+`WsPresenceRegistry.removeStalePod(deadPodId)` 实现：
+```java
+public void removeStalePod(String deadPodId) {
+    // 1. 扫描所有座席 presence，移除死 Pod
+    //    SCAN ws:agent:pods:* → SREM deadPodId
+    // 2. 扫描所有访客 presence，删除值为死 Pod 的 key
+    //    SCAN ws:visitor:pod:* → GET value == deadPodId → DEL
+}
+```
+
+**为何暂不实现**：
+- `SCAN` 操作在连接数大时有性能代价，需要评估实际规模
+- mandatory 模式下需要保证 `ConfirmCallback` 和 `ReturnsCallback` 的消息顺序处理
+- 当前单机部署无此需求，在多机上线压测后再决定是否引入
+
+**当前代码中已在 `deliver()` 方法注释中标注此 TODO**（见 §5.2）。
 
 ## 5. 跨 Pod 路由与消费
 
@@ -432,6 +481,15 @@ public class WsMessageRouter {
             rabbitTemplate.convertAndSend(WS_DELIVERY_EXCHANGE, targetPod, cmd);
             log.debug("[WsRouter] 跨 Pod 投递 targetPod={} type={} id={}",
                     targetPod, cmd.targetType(), cmd.targetId());
+            // TODO: 可通过 rabbitTemplate.setMandatory(true) + ReturnsCallback 即时感知
+            //       目标队列不存在（Pod 已崩溃），在回调中调用 presenceRegistry.removeStalePod(targetPod)
+            //       可将推送中断窗口从 TTL 90s 压缩到接近 0（第一条失败时立即清理）。
+            //       当前暂不实现：SCAN 有性能代价，单机部署无需此优化，多机压测后评估。
+            //       详见设计文档 §4.5。
+        } catch (Exception e) {
+            log.warn("[WsRouter] MQ 投递失败 targetPod={} msg={}", targetPod, e.getMessage());
+        }
+    }
         } catch (Exception e) {
             log.warn("[WsRouter] MQ 投递失败 targetPod={} msg={}", targetPod, e.getMessage());
         }
