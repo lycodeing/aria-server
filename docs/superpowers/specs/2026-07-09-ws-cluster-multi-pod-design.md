@@ -554,42 +554,17 @@ public class WsDeliveryConsumer {
 }
 ```
 
-### 5.4 RabbitMQConfig 补充（静态 Exchange 声明）
+### 5.4 RabbitMQ 配置说明
 
-`ws.delivery` Exchange 是静态拓扑资源，与 `conversationExchange`、`conversationEventsExchange` 同等地位，统一在 `RabbitMQConfig` 中声明：
+`@RabbitListener` 里的 `@Exchange(value = "ws.delivery", type = "direct", durable = "true")` 启动时会自动声明 Exchange，**`RabbitMQConfig` 无需改动**，与 `SessionEventSubscriber` 处理 Fanout Exchange 的方式完全一致。
 
-```java
-// infrastructure/config/RabbitMQConfig.java 新增
+所有资源均由 `@RabbitListener` 注解一次完成：
 
-/**
- * WS 跨 Pod 投递 Exchange（Direct 类型）。
- *
- * <p>每个 Pod 启动时，{@link WsDeliveryConsumer} 通过 @RabbitListener 注解
- * 自动绑定一个 exclusive + autoDelete 的匿名队列，routing key = podId（UUID）。
- * {@link WsMessageRouter} 根据 Redis presence 查到目标 podId 后，
- * 以该 podId 为 routing key 精确投递到目标 Pod 的队列。
- *
- * <p>与 cs.conversation.events（Fanout）的区别：
- * Fanout 向所有绑定队列广播，此 Exchange 按 routing key 精确路由，
- * 保证消息只到达目标 Pod。
- */
-@Bean
-public DirectExchange wsDeliveryExchange() {
-    // durable=true：broker 重启后 exchange 仍存在
-    // 队列是 autoDelete，pod 重启时由 @RabbitListener 重新声明绑定
-    return ExchangeBuilder.directExchange("ws.delivery").durable(true).build();
-}
-```
-
-**分层原则说明**：
-
-| 资源 | 特点 | 声明位置 |
-|------|------|---------|
-| `ws.delivery` Exchange | 静态，全局唯一 | `RabbitMQConfig @Bean` |
-| 匿名队列 | 动态，每 Pod 不同，exclusive + autoDelete | `@RabbitListener` 注解 |
-| 绑定（routing key = podId） | 动态，运行时才知道 podId | `@RabbitListener` SpEL |
-
-`@RabbitListener` 里声明的 `@Exchange` 与 Config Bean 声明的是同一个 Exchange（幂等声明，属性一致时不重复创建），两者不冲突。
+| 资源 | 声明方式 |
+|------|---------|
+| `ws.delivery` Exchange | `@Exchange(durable = "true")` 自动声明，无需 `@Bean` |
+| 匿名队列 | `@Queue(exclusive = "true", autoDelete = "true")` 自动创建 |
+| 绑定（routing key = podId） | `key = "#{@podIdentity.get()}"` SpEL 运行时求值 |
 
 ### 5.5 调用链路全景（改造后）
 
