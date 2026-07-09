@@ -4,6 +4,7 @@ import com.aria.conversation.application.service.SessionQueueService;
 import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.aria.conversation.infrastructure.websocket.cluster.PodIdentity;
+import com.aria.conversation.infrastructure.websocket.cluster.WsMessageRouter;
 import com.aria.conversation.infrastructure.websocket.cluster.WsPresenceRegistry;
 import com.aria.conversation.infrastructure.websocket.message.WsChatMessage;
 import com.aria.conversation.infrastructure.websocket.message.WsConnectedMessage;
@@ -92,6 +93,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
     private final AgentConnectionRegistry agentConnectionRegistry;
     private final WsPresenceRegistry presenceRegistry;
     private final PodIdentity podIdentity;
+    private final WsMessageRouter router;
 
     /** 访客心跳调度器：每 30s 刷新 presence TTL，防止 90s 超时导致跨 Pod 路由失效。不声明 final 以免 Lombok 纳入构造器。 */
     private ScheduledExecutorService visitorHeartbeatScheduler = Executors.newScheduledThreadPool(2);
@@ -306,7 +308,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
             log.warn("[WS] notifyAgent 跳过：sessionId={} 尚未分配座席或会话已关闭", sessionId);
             return;
         }
-        agentConnectionRegistry.broadcast(agentId, payload);
+        router.sendToAgent(agentId, payload);
     }
 
     // ----------------------------------------------------------------

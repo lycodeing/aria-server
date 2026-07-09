@@ -3,6 +3,7 @@ package com.aria.conversation.infrastructure.websocket;
 import com.aria.conversation.application.service.SessionQueueService;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.aria.conversation.infrastructure.websocket.cluster.PodIdentity;
+import com.aria.conversation.infrastructure.websocket.cluster.WsMessageRouter;
 import com.aria.conversation.infrastructure.websocket.cluster.WsPresenceRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
@@ -26,12 +27,13 @@ class ChatWebSocketHandlerPresenceTest {
     @Mock ConversationHistoryRepository historyRepository;
     @Mock WsPresenceRegistry presenceRegistry;
     @Mock PodIdentity podIdentity;
+    @Mock WsMessageRouter router;
 
     private ChatWebSocketHandler buildHandler() {
         when(podIdentity.get()).thenReturn("pod-A");
         return new ChatWebSocketHandler(
                 new ObjectMapper(), historyRepository, sessionQueueService,
-                agentConnectionRegistry, presenceRegistry, podIdentity);
+                agentConnectionRegistry, presenceRegistry, podIdentity, router);
     }
 
     private WebSocketSession visitorSession(String sessionId) throws Exception {
