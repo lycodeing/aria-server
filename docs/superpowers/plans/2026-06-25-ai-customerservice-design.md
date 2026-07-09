@@ -2280,7 +2280,7 @@ public class KnowledgeClientAutoConfig {
 
     @Bean
     @ConditionalOnMissingBean
-    public KnowledgeClient knowledgeClient(
+    public KnowledgeClient knowledgeServiceClient(
             @Value("${knowledge.client.base-url}") String baseUrl,
             @Value("${knowledge.client.access-key}") String ak,
             @Value("${knowledge.client.secret-key}") String sk,
@@ -2318,7 +2318,7 @@ knowledge-service 不可用时降级返回空列表，conversation-service 走�
 @Override
 public List<ChunkHit> vectorSearch(float[] queryVector, int topK, String kbId) {
     return circuitBreaker.executeSupplier(() -> {
-        SearchResponse resp = knowledgeClient.search(
+        SearchResponse resp = knowledgeServiceClient.search(
             SearchRequest.of(VectorUtils.toStr(queryVector), kbId, topK));
         return resp.getHits().stream().map(ChunkHitAssembler::toDomain).toList();
     });

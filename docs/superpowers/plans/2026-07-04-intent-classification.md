@@ -451,12 +451,12 @@ private final SessionQueueService sessionQueueService;
 ```java
 public ChatAppService(DynamicAiClient aiClient,
                       ConversationHistoryRepository historyRepository,
-                      KnowledgeClient knowledgeClient,
+                      KnowledgeClient knowledgeServiceClient,
                       IntentClassifier intentClassifier,
                       SessionQueueService sessionQueueService) {
     this.aiClient             = aiClient;
     this.historyRepository    = historyRepository;
-    this.knowledgeClient      = knowledgeClient;
+    this.knowledgeServiceClient      = knowledgeServiceClient;
     this.intentClassifier     = intentClassifier;
     this.sessionQueueService  = sessionQueueService;
 }
@@ -565,7 +565,7 @@ import com.aria.conversation.infrastructure.ai.DynamicAiClient;
 import com.aria.conversation.infrastructure.ai.IntentClassifier;
 import com.aria.conversation.infrastructure.ai.IntentResult;
 import com.aria.conversation.infrastructure.ai.IntentType;
-import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
+import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -588,7 +588,7 @@ class ChatAppServiceIntentTest {
 
     @Mock private DynamicAiClient aiClient;
     @Mock private ConversationHistoryRepository historyRepository;
-    @Mock private KnowledgeClient knowledgeClient;
+    @Mock private KnowledgeClient knowledgeServiceClient;
     @Mock private IntentClassifier intentClassifier;
     @Mock private SessionQueueService sessionQueueService;
 
@@ -596,7 +596,7 @@ class ChatAppServiceIntentTest {
 
     @BeforeEach
     void setUp() {
-        service = new ChatAppService(aiClient, historyRepository, knowledgeClient,
+        service = new ChatAppService(aiClient, historyRepository, knowledgeServiceClient,
                                      intentClassifier, sessionQueueService);
         // 默认 findAll 返回空列表，避免 NPE
         when(historyRepository.findAll(anyString())).thenReturn(List.of());

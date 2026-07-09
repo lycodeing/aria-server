@@ -2467,7 +2467,7 @@ package com.aria.conversation.application.service.route;
 import com.aria.conversation.application.service.ChatEvent;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.infrastructure.dit.pipeline.DitPipeline.RouteResult;
-import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
+import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
@@ -2485,7 +2485,7 @@ public class FallbackRouteHandler implements RouteResultHandler {
     private static final String BASE_SYSTEM_PROMPT = "你是一名专业的智能客服助手。请用简洁、友好的语言回答用户问题。";
 
     private final DynamicModelFactory modelFactory;
-    private final KnowledgeClient knowledgeClient;
+    private final KnowledgeClient knowledgeServiceClient;
     private final ConversationHistoryRepository historyRepository;
 
     @Override
@@ -2495,7 +2495,7 @@ public class FallbackRouteHandler implements RouteResultHandler {
     public Flux<ChatEvent> handle(String sessionId, String userMessage,
                                    RouteResult route, Map<String, Object> sessionCtx) {
         RouteResult.FallbackResult r = (RouteResult.FallbackResult) route;
-        List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
+        List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(userMessage);
         String systemPrompt = buildSystemPrompt(hits, r.systemPromptAddon());
         List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
         StringBuilder reply = new StringBuilder();
@@ -2562,7 +2562,7 @@ import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
 import com.aria.conversation.infrastructure.dit.domain.SwitchType;
-import com.aria.conversation.infrastructure.knowledge.KnowledgeClient;
+import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -2608,7 +2608,7 @@ public class DomainAgentService {
     private final DomainRepository domainRepo;
     private final HttpToolRunner httpToolRunner;
     private final SessionChatMemoryStore memoryStore;
-    private final KnowledgeClient knowledgeClient;
+    private final KnowledgeClient knowledgeServiceClient;
     private final SessionDomainRepository sessionDomainRepo;
     private final SessionDomainSwitchRepository domainSwitchRepo;
     private final ObjectMapper objectMapper;
@@ -2625,7 +2625,7 @@ public class DomainAgentService {
         log.debug("[DomainAgent] streamChat start sessionId={} domainCode={}", sessionId, domainCode);
 
         // 1. per-request system prompt（含 RAG 检索）
-        List<KnowledgeSearchResult.Hit> hits = knowledgeClient.search(userMessage);
+        List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(userMessage);
         String systemPrompt = buildSystemPrompt(hits, domainCode);
 
         // 2. per-request Sinks，通过构造注入 listener（避免 ThreadLocal + Reactor 线程问题）
