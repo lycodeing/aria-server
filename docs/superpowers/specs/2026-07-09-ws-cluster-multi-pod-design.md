@@ -389,23 +389,49 @@ public void removeStalePod(String deadPodId) {
 /**
  * 跨 Pod WS 投递命令，序列化为 JSON 后通过 RabbitMQ 传递。
  *
- * @param targetType  投递目标类型：AGENT 或 VISITOR
- * @param targetId    投递目标 ID（agentId 或 sessionId）
- * @param payload     原始消息对象（已是类型化消息 record，如 WsChatMessage）
+ * <p>payload 序列化说明：{@code Object payload} 经 Jackson 反序列化后类型擦除为 {@link java.util.LinkedHashMap}，
+ * 无法还原为原始 record 类型。因此使用 {@code payloadClass + payloadJson} 两字段替代，
+ * 在发送端序列化，在消费端按类型还原，彻底消除类型擦除问题。
+ *
+ * @param targetType          投递目标类型：AGENT / VISITOR / KICK_AGENT
+ * @param targetId            投递目标 ID（agentId 或 sessionId）
+ * @param payloadClass        payload 的完整类名（用于消费端反序列化，KICK_AGENT 时为 null）
+ * @param payloadJson         payload 的 JSON 字符串（消费端按 payloadClass 还原，KICK_AGENT 时为 null）
+ * @param excludeWsSessionId  KICK_AGENT 时记录新连接的 wsSessionId（仅供日志，可为 null）
  */
 public record WsDeliveryCommand(
         TargetType targetType,
         String targetId,
-        Object payload
+        String payloadClass,
+        String payloadJson,
+        String excludeWsSessionId
 ) {
-    public enum TargetType { AGENT, VISITOR }
+    public enum TargetType { AGENT, VISITOR, KICK_AGENT }
 
-    public static WsDeliveryCommand toAgent(String agentId, Object payload) {
-        return new WsDeliveryCommand(TargetType.AGENT, agentId, payload);
+    /**
+     * 向座席投递消息。payload 在此处预先序列化，消费端按类名还原。
+     */
+    public static WsDeliveryCommand toAgent(String agentId, Object payload, ObjectMapper objectMapper)
+            throws JsonProcessingException {
+        return new WsDeliveryCommand(TargetType.AGENT, agentId,
+                payload.getClass().getName(), objectMapper.writeValueAsString(payload), null);
     }
 
-    public static WsDeliveryCommand toVisitor(String sessionId, Object payload) {
-        return new WsDeliveryCommand(TargetType.VISITOR, sessionId, payload);
+    /**
+     * 向访客投递消息。
+     */
+    public static WsDeliveryCommand toVisitor(String sessionId, Object payload, ObjectMapper objectMapper)
+            throws JsonProcessingException {
+        return new WsDeliveryCommand(TargetType.VISITOR, sessionId,
+                payload.getClass().getName(), objectMapper.writeValueAsString(payload), null);
+    }
+
+    /**
+     * KICK 命令：通知目标 Pod 关闭该 agentId 的所有旧连接。
+     * excludeWsSessionId 为新连接的 wsSessionId，仅供日志追踪，消费端无需使用。
+     */
+    public static WsDeliveryCommand kickAgent(String agentId, String excludeWsSessionId) {
+        return new WsDeliveryCommand(TargetType.KICK_AGENT, agentId, null, null, excludeWsSessionId);
     }
 }
 ```
@@ -424,8 +450,9 @@ public class WsMessageRouter {
     private final PodIdentity podIdentity;
     private final WsPresenceRegistry presenceRegistry;
     private final AgentConnectionRegistry agentRegistry;
-    private final ChatWebSocketHandler chatHandler;   // 通过 VisitorNotifier 接口
+    private final ChatWebSocketHandler chatHandler;   // 仅用于本地访客推送，不经过路由层
     private final RabbitTemplate rabbitTemplate;
+    private final ObjectMapper objectMapper;
 
     /**
      * 向座席推送消息。
@@ -449,7 +476,7 @@ public class WsMessageRouter {
                 agentRegistry.broadcast(agentId, payload);
             } else {
                 // 跨 Pod：发 MQ，目标 Pod 收到后再做本地 broadcast
-                deliver(pod, WsDeliveryCommand.toAgent(agentId, payload));
+                deliver(pod, WsDeliveryCommand.toAgent(agentId, payload, objectMapper));
             }
         }
     }
@@ -461,6 +488,9 @@ public class WsMessageRouter {
      * 说明：访客 presence 是 String（单 Pod），不是 Set。
      * 访客重连时 visitorSessions.put 会覆盖旧连接并执行 closeStaleSession，
      * 始终只有一个活跃连接，因此 presence 只需记录单个 podId。
+     *
+     * ⚠️ 本地路径调用 chatHandler.pushLocalVisitor()（直接写 socket），
+     * 而非 chatHandler.notifyVisitor()（会再次走路由），防止无限递归。
      */
     public void sendToVisitor(String sessionId, Object payload) {
         String pod = presenceRegistry.getVisitorPod(sessionId);
@@ -469,9 +499,11 @@ public class WsMessageRouter {
             return;
         }
         if (podIdentity.isLocal(pod)) {
-            chatHandler.notifyVisitor(sessionId, payload);
+            // 直接调用本地推送（visitorNotifier.notifyVisitor = 本地 socket 写入，不经过路由）
+            // ⚠️ 不能在此调用 router.sendToVisitor()，否则产生无限递归
+            visitorNotifier.notifyVisitor(sessionId, payload);
         } else {
-            deliver(pod, WsDeliveryCommand.toVisitor(sessionId, payload));
+            deliver(pod, WsDeliveryCommand.toVisitor(sessionId, payload, objectMapper));
         }
     }
 
@@ -489,6 +521,19 @@ public class WsMessageRouter {
         } catch (Exception e) {
             log.warn("[WsRouter] MQ 投递失败 targetPod={} msg={}", targetPod, e.getMessage());
         }
+    }
+
+    /**
+     * 向目标 Pod 发送 KICK 命令。
+     * KICK 模式下由 {@link com.aria.conversation.infrastructure.websocket.AgentChannelWsHandler} 调用，
+     * 通知目标 Pod 关闭该 agentId 的所有旧连接。
+     *
+     * @param targetPod         目标 Pod 的 podId（RabbitMQ 队列名）
+     * @param agentId           被踢座席 ID
+     * @param newSessionWsId    新连接的 wsSessionId（仅供目标 Pod 日志追踪，不影响逻辑）
+     */
+    public void sendKick(String targetPod, String agentId, String newSessionWsId) {
+        deliver(targetPod, WsDeliveryCommand.kickAgent(agentId, newSessionWsId));
     }
 }
 ```
@@ -525,12 +570,16 @@ public class WsDeliveryConsumer {
 
     private final AgentConnectionRegistry agentRegistry;
     private final VisitorNotifier visitorNotifier;
+    private final ObjectMapper objectMapper;   // 用于还原 payloadJson → 原始类型
 
     /**
      * 接收跨 Pod 投递的 WS 消息，执行本地推送。
      *
      * <p>routing key = #{@podIdentity.get()}（SpEL，运行时求值为本 Pod UUID），
      * 确保只有发给本 Pod 的消息才路由到此队列。
+     *
+     * <p>payload 还原：{@link WsDeliveryCommand} 以 {@code payloadClass + payloadJson} 形式传递，
+     * 避免 Jackson 反序列化时 {@code Object} 类型擦除为 {@link java.util.LinkedHashMap}。
      */
     @RabbitListener(bindings = @QueueBinding(
             value    = @Queue(exclusive = "true", autoDelete = "true"),
@@ -538,18 +587,37 @@ public class WsDeliveryConsumer {
             key      = "#{@podIdentity.get()}"
     ))
     public void onDelivery(WsDeliveryCommand cmd) {
-        switch (cmd.targetType()) {
-            case AGENT   -> agentRegistry.broadcast(cmd.targetId(), cmd.payload());
-            case VISITOR -> visitorNotifier.notifyVisitor(cmd.targetId(), cmd.payload());
-            case KICK_AGENT -> {
-                agentRegistry.broadcastExcept(cmd.targetId(),
-                        findLocalSession(cmd.excludeWsSessionId()),
-                        WsKickedOutMessage.INSTANCE);
-                agentRegistry.closeAllExcept(cmd.targetId(),
-                        findLocalSession(cmd.excludeWsSessionId()));
+        try {
+            switch (cmd.targetType()) {
+                case AGENT -> {
+                    Object payload = restorePayload(cmd);
+                    agentRegistry.broadcast(cmd.targetId(), payload);
+                }
+                case VISITOR -> {
+                    Object payload = restorePayload(cmd);
+                    visitorNotifier.notifyVisitor(cmd.targetId(), payload);
+                }
+                case KICK_AGENT -> {
+                    // 远端 Pod 收到 KICK 命令时，本 Pod 上该 agentId 的所有连接均为旧连接
+                    // （新连接在发出 KICK 命令的 Pod 上），无需 exclude，全部推 KICKED_OUT 并关闭
+                    log.info("[WsDelivery] 收到 KICK 命令，关闭本 Pod 旧连接 agentId={} srcWsId={}",
+                            cmd.targetId(), cmd.excludeWsSessionId());
+                    agentRegistry.broadcast(cmd.targetId(), WsKickedOutMessage.INSTANCE);
+                    agentRegistry.closeAll(cmd.targetId());
+                }
+                default -> log.warn("[WsDelivery] 未知 targetType={}", cmd.targetType());
             }
+        } catch (Exception e) {
+            log.error("[WsDelivery] 消息处理异常 type={} id={}", cmd.targetType(), cmd.targetId(), e);
         }
         log.debug("[WsDelivery] 本地推送完成 type={} id={}", cmd.targetType(), cmd.targetId());
+    }
+
+    /** 按 payloadClass 将 payloadJson 还原为原始消息对象 */
+    @SuppressWarnings("unchecked")
+    private Object restorePayload(WsDeliveryCommand cmd) throws Exception {
+        Class<?> clazz = Class.forName(cmd.payloadClass());
+        return objectMapper.readValue(cmd.payloadJson(), clazz);
     }
 }
 ```
@@ -646,7 +714,8 @@ try {
         if (podIdentity.isLocal(pod)) {
             registry.broadcastExcept(agentId, session, WsKickedOutMessage.INSTANCE);
         } else {
-            router.sendKickToPod(pod, agentId, session.getId());
+            // 向目标 Pod 发 KICK 命令，目标 Pod 负责关闭本地所有旧连接
+            router.sendKick(pod, agentId, session.getId());
         }
     }
 
@@ -661,34 +730,30 @@ try {
 
 ### 6.3 跨 Pod KICK 命令
 
-扩展 `WsDeliveryCommand` 支持 KICK 操作：
+`WsDeliveryCommand.kickAgent()` 只需携带 `agentId` 和 `excludeWsSessionId`（仅用于日志，不影响逻辑）：
 
 ```java
-public record WsDeliveryCommand(
-        TargetType targetType,
-        String targetId,
-        Object payload,
-        String excludeWsSessionId   // KICK 时排除的新连接 wsSessionId（可为 null）
-) {
-    public enum TargetType { AGENT, VISITOR, KICK_AGENT }
-
-    public static WsDeliveryCommand kickAgent(String agentId, String excludeWsSessionId) {
-        return new WsDeliveryCommand(TargetType.KICK_AGENT, agentId, null, excludeWsSessionId);
-    }
+public static WsDeliveryCommand kickAgent(String agentId, String excludeWsSessionId) {
+    return new WsDeliveryCommand(TargetType.KICK_AGENT, agentId, null, null, excludeWsSessionId);
 }
 ```
 
-`WsDeliveryConsumer.onDelivery` 处理 KICK：
+`WsDeliveryConsumer.onDelivery` 处理 `KICK_AGENT`（已在 §5.3 中定义）：
 
 ```java
 case KICK_AGENT -> {
-    // 向旧连接推 KICKED_OUT（排除新连接）
-    registry.broadcastExcept(cmd.targetId(), findLocalSession(cmd.excludeWsSessionId()),
-            WsKickedOutMessage.INSTANCE);
-    // 关闭旧连接
-    registry.closeAllExcept(cmd.targetId(), findLocalSession(cmd.excludeWsSessionId()));
+    // 远端 Pod 收到 KICK 命令时，本 Pod 上该 agentId 的所有连接均为旧连接（新连接在另一个 Pod），
+    // 无需 exclude，向所有旧连接推 KICKED_OUT 后全部关闭
+    log.info("[WsDelivery] 收到 KICK 命令 agentId={} srcWsId={}", cmd.targetId(), cmd.excludeWsSessionId());
+    agentRegistry.broadcast(cmd.targetId(), WsKickedOutMessage.INSTANCE);
+    agentRegistry.closeAll(cmd.targetId());   // 关闭本 Pod 上该 agentId 的所有连接
 }
 ```
+
+> **为何不需要 excludeWsSessionId**：
+> 新连接在 Pod A 上，KICK 命令发到 Pod B。Pod B 上只有旧连接，不存在新连接，
+> 因此无需排除——全部推 KICKED_OUT 后关闭即可。
+> `excludeWsSessionId` 仅用于日志追踪，帮助排查哪条新连接触发了 KICK。
 
 ### 6.4 KICK 模式时序图（多 Pod）
 
@@ -897,6 +962,21 @@ public void cleanup() {
 +     }
 +     cancelHeartbeat(session.getId());
   }
+
++ /**
++  * 关闭该座席在本 Pod 上的所有连接。
++  * 用于 KICK 命令的远端 Pod 处理：收到 KICK_AGENT 时，本 Pod 上该 agentId 的
++  * 所有连接均为旧连接，向所有旧连接推 KICKED_OUT 后全部关闭。
++  */
++ public void closeAll(String agentId) {
++     Set<WebSocketSession> sessions = agentToSessions.get(agentId);
++     if (sessions == null) return;
++     for (WebSocketSession session : sessions) {
++         if (session.isOpen()) {
++             try { session.close(CloseStatus.GOING_AWAY); } catch (IOException ignored) {}
++         }
++     }
++ }
 ```
 
 **AgentChannelWsHandler.java**
@@ -956,15 +1036,31 @@ public void cleanup() {
 +     router.sendToAgent(agentId, payload);
   }
 
-  // notifyVisitor：走 WsMessageRouter（跨 Pod 访客推送）
+  // notifyVisitor：保持本地直推语义，不走路由
+  // ⚠️ 此方法不能改为调用 router.sendToVisitor()！
+  // WsMessageRouter.sendToVisitor 本地路径通过 visitorNotifier 接口调用此方法做本地 socket 写入。
+  // 若此方法改调 router，则产生：notifyVisitor → router.sendToVisitor → visitorNotifier.notifyVisitor 无限递归。
   @Override
   public void notifyVisitor(String sessionId, Object payload) {
--     WebSocketSession vs = visitorSessions.get(sessionId);
--     if (vs == null || !vs.isOpen()) { log.warn(...); return; }
--     sendJson(vs, payload);
-+     router.sendToVisitor(sessionId, payload);
+      // 保持原有实现不变：直接写本地 visitorSessions socket
+      WebSocketSession vs = visitorSessions.get(sessionId);
+      if (vs == null || !vs.isOpen()) { log.warn(...); return; }
+      sendJson(vs, payload);
   }
 ```
+
+**AgentChannelWsHandler.java**（改造点：`handleTextMessage` 中的访客推送走路由层）
+
+```diff
++ private final WsMessageRouter router;   // 新增注入
+
+  // handleTextMessage 中，座席回复访客时：
+- visitorNotifier.notifyVisitor(sessionId, WsChatMessage.fromAgent(...));
++ router.sendToVisitor(sessionId, WsChatMessage.fromAgent(...));  // 通过路由层，支持跨 Pod 投递
+
+  // TYPING 信令同理：
+- visitorNotifier.notifyVisitor(sessionId, WsTypingMessage.of(sessionId, ts));
++ router.sendToVisitor(sessionId, WsTypingMessage.of(sessionId, ts));
 
 **RabbitMQConfig.java**
 
