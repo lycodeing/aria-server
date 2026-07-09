@@ -490,69 +490,106 @@ public class WsMessageRouter {
             log.warn("[WsRouter] MQ 投递失败 targetPod={} msg={}", targetPod, e.getMessage());
         }
     }
-        } catch (Exception e) {
-            log.warn("[WsRouter] MQ 投递失败 targetPod={} msg={}", targetPod, e.getMessage());
-        }
-    }
 }
 ```
 
 ### 5.3 WsDeliveryConsumer（本 Pod 消费）
 
+与 `SessionEventSubscriber` 保持一致的风格：**静态拓扑（Exchange）在 `RabbitMQConfig` 声明为 `@Bean`，动态部分（匿名队列 + routing key）在 `@RabbitListener` 注解里声明**。
+
 ```java
 // infrastructure/ws/cluster/WsDeliveryConsumer.java
+/**
+ * WS 跨 Pod 投递消费者。
+ *
+ * <p>监听本 Pod 专属的匿名队列（exclusive + autoDelete），
+ * routing key = podId（UUID），由 {@link WsMessageRouter} 根据 Redis presence 精确路由。
+ *
+ * <p>队列声明规则（与 SessionEventSubscriber.onSessionEvent 同款模式）：
+ * <ul>
+ *   <li>Exchange（ws.delivery Direct）静态，在 {@link RabbitMQConfig} 中声明为 @Bean</li>
+ *   <li>队列动态（匿名），每 Pod 启动时由 Spring AMQP 自动创建，exclusive + autoDelete，
+ *       Pod 停止时队列自动删除，不积压离线消息</li>
+ *   <li>routing key 通过 SpEL #{@podIdentity.get()} 运行时求值，绑定到本 Pod 的 UUID</li>
+ * </ul>
+ *
+ * <p>Pod 崩溃场景：队列随连接断开自动删除，其他 Pod 向此 podId 发的消息
+ * 因找不到队列而被 broker 静默丢弃（实时推送中断）。
+ * 消息数据已写入 ConversationHistoryRepository，客户端重连后通过 sinceSeq 补全。
+ * 如需即时感知 Pod 下线，可在 RabbitTemplate 启用 mandatory+ReturnsCallback（见设计文档 §4.5）。
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class WsDeliveryConsumer implements InitializingBean {
+public class WsDeliveryConsumer {
 
-    private static final String WS_DELIVERY_EXCHANGE = "ws.delivery";
-
-    private final PodIdentity podIdentity;
     private final AgentConnectionRegistry agentRegistry;
     private final VisitorNotifier visitorNotifier;
-    private final RabbitAdmin rabbitAdmin;
-    private final SimpleMessageListenerContainer container;
 
-    @Override
-    public void afterPropertiesSet() {
-        // podId 初始化后才能注册队列，PodIdentity 的 afterPropertiesSet 先执行
-        String podId = podIdentity.get();
-
-        // 将本 Pod 专属队列绑定到 ws.delivery Direct Exchange
-        Binding binding = BindingBuilder
-                .bind(new Queue(podId, false, true, true))  // exclusive, autoDelete
-                .to(new DirectExchange(WS_DELIVERY_EXCHANGE))
-                .with(podId);
-        rabbitAdmin.declareBinding(binding);
-
-        // 动态注册监听器
-        container.addQueueNames(podId);
-        log.info("[WsDelivery] 本 Pod 投递队列已绑定 podId={}", podId);
-    }
-
-    /** 处理跨 Pod 投递的 WS 消息 */
+    /**
+     * 接收跨 Pod 投递的 WS 消息，执行本地推送。
+     *
+     * <p>routing key = #{@podIdentity.get()}（SpEL，运行时求值为本 Pod UUID），
+     * 确保只有发给本 Pod 的消息才路由到此队列。
+     */
+    @RabbitListener(bindings = @QueueBinding(
+            value    = @Queue(exclusive = "true", autoDelete = "true"),
+            exchange = @Exchange(value = "ws.delivery", type = "direct", durable = "true"),
+            key      = "#{@podIdentity.get()}"
+    ))
     public void onDelivery(WsDeliveryCommand cmd) {
         switch (cmd.targetType()) {
             case AGENT   -> agentRegistry.broadcast(cmd.targetId(), cmd.payload());
             case VISITOR -> visitorNotifier.notifyVisitor(cmd.targetId(), cmd.payload());
+            case KICK_AGENT -> {
+                agentRegistry.broadcastExcept(cmd.targetId(),
+                        findLocalSession(cmd.excludeWsSessionId()),
+                        WsKickedOutMessage.INSTANCE);
+                agentRegistry.closeAllExcept(cmd.targetId(),
+                        findLocalSession(cmd.excludeWsSessionId()));
+            }
         }
         log.debug("[WsDelivery] 本地推送完成 type={} id={}", cmd.targetType(), cmd.targetId());
     }
 }
 ```
 
-### 5.4 RabbitMQ 配置补充
+### 5.4 RabbitMQConfig 补充（静态 Exchange 声明）
+
+`ws.delivery` Exchange 是静态拓扑资源，与 `conversationExchange`、`conversationEventsExchange` 同等地位，统一在 `RabbitMQConfig` 中声明：
 
 ```java
 // infrastructure/config/RabbitMQConfig.java 新增
+
+/**
+ * WS 跨 Pod 投递 Exchange（Direct 类型）。
+ *
+ * <p>每个 Pod 启动时，{@link WsDeliveryConsumer} 通过 @RabbitListener 注解
+ * 自动绑定一个 exclusive + autoDelete 的匿名队列，routing key = podId（UUID）。
+ * {@link WsMessageRouter} 根据 Redis presence 查到目标 podId 后，
+ * 以该 podId 为 routing key 精确投递到目标 Pod 的队列。
+ *
+ * <p>与 cs.conversation.events（Fanout）的区别：
+ * Fanout 向所有绑定队列广播，此 Exchange 按 routing key 精确路由，
+ * 保证消息只到达目标 Pod。
+ */
 @Bean
 public DirectExchange wsDeliveryExchange() {
-    // durable=true 保证 broker 重启后 exchange 仍存在
-    // 队列是 autoDelete，broker 重启时会重新声明
-    return new DirectExchange("ws.delivery", true, false);
+    // durable=true：broker 重启后 exchange 仍存在
+    // 队列是 autoDelete，pod 重启时由 @RabbitListener 重新声明绑定
+    return ExchangeBuilder.directExchange("ws.delivery").durable(true).build();
 }
 ```
+
+**分层原则说明**：
+
+| 资源 | 特点 | 声明位置 |
+|------|------|---------|
+| `ws.delivery` Exchange | 静态，全局唯一 | `RabbitMQConfig @Bean` |
+| 匿名队列 | 动态，每 Pod 不同，exclusive + autoDelete | `@RabbitListener` 注解 |
+| 绑定（routing key = podId） | 动态，运行时才知道 podId | `@RabbitListener` SpEL |
+
+`@RabbitListener` 里声明的 `@Exchange` 与 Config Bean 声明的是同一个 Exchange（幂等声明，属性一致时不重复创建），两者不冲突。
 
 ### 5.5 调用链路全景（改造后）
 
