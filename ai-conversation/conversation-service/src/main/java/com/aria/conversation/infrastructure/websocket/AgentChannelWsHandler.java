@@ -15,7 +15,6 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
-import java.io.IOException;
 import java.time.Instant;
 import java.util.Map;
 
@@ -81,8 +80,8 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
             registry.register(agentId, session);
         }
 
-        // 通知新端连接成功（锁外推送）
-        sendJson(session, Map.of("type", MSG_TYPE_CONNECTED));
+        // 通知新端连接成功，通过 Registry 锁发送，避免与并发广播产生帧竞态
+        registry.sendToSession(session, Map.of("type", MSG_TYPE_CONNECTED));
         log.info("[AgentWS] 座席连接建立 agentId={} wsId={} mode={}", agentId, session.getId(), multiLoginMode);
     }
 
@@ -90,7 +89,7 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
     protected void handleTextMessage(@NonNull WebSocketSession session, TextMessage message) throws Exception {
         if (message.getPayloadLength() > MAX_MESSAGE_BYTES) {
             log.warn("[AgentWS] 消息超过最大长度 wsId={} size={}", session.getId(), message.getPayloadLength());
-            sendJson(session, Map.of("type", "ERROR", "message", "消息长度超过限制（最大 64KB）"));
+            registry.sendToSession(session, Map.of("type", "ERROR", "message", "消息长度超过限制（最大 64KB）"));
             session.close(CloseStatus.NOT_ACCEPTABLE);
             return;
         }
@@ -149,7 +148,6 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
         registry.unregister(session);
     }
 
-    @SuppressWarnings("unchecked")
     private Map<String, Object> parseBody(String payload, String wsId) {
         try {
             return objectMapper.readValue(payload, new TypeReference<Map<String, Object>>() {
@@ -160,11 +158,5 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
         }
     }
 
-    private void sendJson(WebSocketSession session, Object payload) {
-        try {
-            session.sendMessage(new TextMessage(objectMapper.writeValueAsString(payload)));
-        } catch (IOException e) {
-            log.warn("[AgentWS] 发送失败 wsId={} msg={}", session.getId(), e.getMessage());
-        }
-    }
+
 }

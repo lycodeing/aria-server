@@ -36,21 +36,25 @@ public class AgentConnectionRegistry {
 
     private final ObjectMapper objectMapper;
 
-    /** 正向索引：agentId → 该座席所有在线 WS 连接 */
-    private final ConcurrentHashMap<String, CopyOnWriteArraySet<WebSocketSession>> agentToSessions
-            = new ConcurrentHashMap<>();
+    /**
+     * 正向索引：agentId → 该座席所有在线 WS 连接
+     */
+    private final ConcurrentHashMap<String, CopyOnWriteArraySet<WebSocketSession>> agentToSessions = new ConcurrentHashMap<>();
 
-    /** 反向索引：wsSession.getId() → agentId */
-    private final ConcurrentHashMap<String, String> sessionIdToAgentId
-            = new ConcurrentHashMap<>();
+    /**
+     * 反向索引：wsSession.getId() → agentId
+     */
+    private final ConcurrentHashMap<String, String> sessionIdToAgentId = new ConcurrentHashMap<>();
 
-    /** per-session 发送锁：wsSession.getId() → lock */
-    private final ConcurrentHashMap<String, Object> sendLocks
-            = new ConcurrentHashMap<>();
+    /**
+     * per-session 发送锁：wsSession.getId() → lock
+     */
+    private final ConcurrentHashMap<String, Object> sendLocks = new ConcurrentHashMap<>();
 
-    /** per-agentId 粗粒度锁，供 KICK 模式三步原子化使用 */
-    private final ConcurrentHashMap<String, Object> agentLocks
-            = new ConcurrentHashMap<>();
+    /**
+     * per-agentId 粗粒度锁，供 KICK 模式三步原子化使用
+     */
+    private final ConcurrentHashMap<String, Object> agentLocks = new ConcurrentHashMap<>();
 
     /**
      * 注册新连接。
@@ -153,6 +157,17 @@ public class AgentConnectionRegistry {
      */
     public Object getAgentLock(String agentId) {
         return agentLocks.computeIfAbsent(agentId, k -> new Object());
+    }
+
+    /**
+     * 向指定连接发送单条消息（复用 per-session 发送锁，保证线程安全）。
+     * 用于向新建立的连接推送初始信令（如 CONNECTED），确保与并发广播不产生帧竞争。
+     *
+     * @param session 目标 WS 连接
+     * @param payload 消息对象（序列化为 JSON）
+     */
+    public void sendToSession(WebSocketSession session, Object payload) {
+        sendJson(session, payload);
     }
 
     /**

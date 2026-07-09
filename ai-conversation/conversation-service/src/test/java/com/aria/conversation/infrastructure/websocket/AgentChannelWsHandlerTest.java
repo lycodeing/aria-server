@@ -55,9 +55,11 @@ class AgentChannelWsHandlerTest {
         handler.afterConnectionEstablished(session);
 
         verify(registry).register("agent-1", session);
-        verify(session).sendMessage(argThat(msg -> {
-            String payload = ((TextMessage) msg).getPayload();
-            return payload.contains("CONNECTED");
+        // CONNECTED 信令现在通过 registry.sendToSession 发送，确保复用 per-session 锁
+        verify(registry).sendToSession(eq(session), argThat(p -> {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> map = (Map<String, Object>) p;
+            return "CONNECTED".equals(map.get("type"));
         }));
         // BROADCAST 模式不调用 broadcastExcept 和 closeAllExcept
         verify(registry, never()).broadcastExcept(any(), any(), any());
