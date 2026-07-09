@@ -2,10 +2,12 @@ package com.aria.conversation.infrastructure.websocket.cluster;
 
 import com.aria.conversation.infrastructure.websocket.AgentConnectionRegistry;
 import com.aria.conversation.infrastructure.websocket.VisitorNotifier;
+import com.aria.conversation.infrastructure.websocket.cluster.WsClusterConstants;
 import com.aria.conversation.infrastructure.websocket.message.WsChatMessage;
 import com.aria.conversation.infrastructure.websocket.message.WsConnectedMessage;
 import com.aria.conversation.infrastructure.websocket.message.WsErrorMessage;
 import com.aria.conversation.infrastructure.websocket.message.WsKickedOutMessage;
+import com.aria.conversation.infrastructure.websocket.message.WsMessageType;
 import com.aria.conversation.infrastructure.websocket.message.WsTypingMessage;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -45,7 +47,7 @@ public class WsDeliveryConsumer {
      */
     @RabbitListener(bindings = @QueueBinding(
             value    = @Queue(name = "#{@podIdentity.get()}", exclusive = "true", autoDelete = "true"),
-            exchange = @Exchange(value = "ws.delivery", type = "direct", durable = "true"),
+            exchange = @Exchange(value = WsClusterConstants.WS_DELIVERY_EXCHANGE, type = "direct", durable = "true"),
             key      = "#{@podIdentity.get()}"
     ))
     public void onDelivery(WsDeliveryCommand cmd) {
@@ -78,16 +80,22 @@ public class WsDeliveryConsumer {
     /**
      * 按 WsMessageType 枚举还原 payload。
      * Java 17 if-else if 链（非 Java 21 pattern matching switch）。
-     * KICKED_OUT 不走此路径，由 KICK_AGENT targetType 直接处理。
+     *
+     * <p>注意：{@link WsMessageType#CONNECTED} 分支在正常运行中不可达——CONNECTED 消息仅在
+     * 连接建立时本地推送，不经过 {@link WsMessageRouter} 跨 Pod 路由。保留此分支以防编程错误时
+     * 提供明确的错误信息，而非静默反序列化为错误类型。
+     *
+     * <p>{@link WsMessageType#KICKED_OUT} 不走此路径，由 KICK_AGENT targetType 直接处理。
      */
     private Object restorePayload(WsDeliveryCommand cmd) throws JsonProcessingException {
-        if (cmd.wsMessageType() == com.aria.conversation.infrastructure.websocket.message.WsMessageType.MESSAGE) {
+        if (cmd.wsMessageType() == WsMessageType.MESSAGE) {
             return objectMapper.readValue(cmd.payloadJson(), WsChatMessage.class);
-        } else if (cmd.wsMessageType() == com.aria.conversation.infrastructure.websocket.message.WsMessageType.TYPING) {
+        } else if (cmd.wsMessageType() == WsMessageType.TYPING) {
             return objectMapper.readValue(cmd.payloadJson(), WsTypingMessage.class);
-        } else if (cmd.wsMessageType() == com.aria.conversation.infrastructure.websocket.message.WsMessageType.CONNECTED) {
+        } else if (cmd.wsMessageType() == WsMessageType.CONNECTED) {
+            // 此分支在正常运行中不可达，见方法 Javadoc
             return objectMapper.readValue(cmd.payloadJson(), WsConnectedMessage.class);
-        } else if (cmd.wsMessageType() == com.aria.conversation.infrastructure.websocket.message.WsMessageType.ERROR) {
+        } else if (cmd.wsMessageType() == WsMessageType.ERROR) {
             return objectMapper.readValue(cmd.payloadJson(), WsErrorMessage.class);
         } else {
             throw new IllegalArgumentException(

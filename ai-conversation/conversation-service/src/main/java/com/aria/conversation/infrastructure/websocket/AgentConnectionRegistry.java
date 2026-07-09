@@ -19,6 +19,8 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
+import jakarta.annotation.PreDestroy;
+
 /**
  * 座席 WebSocket 连接注册表。
  *
@@ -222,13 +224,34 @@ public class AgentConnectionRegistry {
 
     /**
      * 获取指定座席的 per-agentId 粗粒度锁。
-     * KICK 模式下用于将 register+broadcastExcept+closeAllExcept 三步原子化。
+     *
+     * <p>注意：KICK 模式已改用 Redisson 分布式锁（{@link org.redisson.api.RLock}），
+     * 此方法的 KICK 场景已不再被外部调用。agentLocks 仅保留用于 {@link #unregister} 中
+     * 原子清理空 Set 时防内存泄漏。
      *
      * @param agentId 座席 ID
      * @return 锁对象（同一 agentId 始终返回同一实例）
      */
-    public Object getAgentLock(String agentId) {
+    Object getAgentLock(String agentId) {
         return agentLocks.computeIfAbsent(agentId, k -> new Object());
+    }
+
+    /**
+     * 优雅关闭心跳调度器。
+     * Spring 容器停止时调用，确保 JVM 可以正常退出（非守护线程池须显式关闭）。
+     */
+    @PreDestroy
+    public void shutdown() {
+        heartbeatScheduler.shutdown();
+        try {
+            if (!heartbeatScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                heartbeatScheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            heartbeatScheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        log.info("[AgentRegistry] 心跳调度器已关闭");
     }
 
     /**
