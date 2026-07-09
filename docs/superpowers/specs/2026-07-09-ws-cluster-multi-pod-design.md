@@ -244,34 +244,65 @@ ws:agent:pods:{agentId}   →  Set{"amq.gen-AAA", "amq.gen-BBB"}  TTL: 90s
 
 ### 4.2 WsPresenceRegistry 组件
 
+**Key 常量**：WS 集群 presence 相关 Redis key 前缀统一添加到项目已有的
+`infrastructure/cache/ConversationCacheKeys.java`，与其他模块 Redis key 集中管理：
+
+```java
+// 追加到 ConversationCacheKeys.java
+/** WS 访客 presence key 前缀，格式：{@code ws:visitor:pod:{sessionId}} */
+public static final String WS_VISITOR_POD_PREFIX = "ws:visitor:pod:";
+
+/** WS 座席 presence key 前缀，格式：{@code ws:agent:pods:{agentId}} */
+public static final String WS_AGENT_PODS_PREFIX = "ws:agent:pods:";
+```
+
+`WsClusterConstants.java` 保留 RabbitMQ Exchange 名称和 Redis 锁 key 前缀，Redis presence key 前缀移到 `ConversationCacheKeys`。
+
+---
+
 ```java
 // infrastructure/ws/cluster/WsPresenceRegistry.java
 @Component
 @RequiredArgsConstructor
 public class WsPresenceRegistry {
 
-    private static final String VISITOR_KEY  = "ws:visitor:pod:";
-    private static final String AGENT_KEY    = "ws:agent:pods:";
-    private static final Duration TTL        = Duration.ofSeconds(90);
+    private static final Duration TTL = Duration.ofSeconds(90);
 
+    /**
+     * 访客 presence 操作使用 {@link RedisCacheHelper}（String 类型）。
+     * 工具类封装了 set/get/delete/expire，强制 TTL 校验，与项目其他模块保持一致。
+     */
+    private final RedisCacheHelper cache;
+
+    /**
+     * 座席 presence 操作使用 {@link StringRedisTemplate}（Set 类型）。
+     * {@link RedisCacheHelper} 仅封装了 String/Hash/List 操作，未封装 Set 类型，
+     * 因此 SADD/SREM/SMEMBERS 直接使用 StringRedisTemplate。
+     */
     private final StringRedisTemplate redis;
 
-    /** 访客连接建立：记录 sessionId → podId */
+    /** 访客连接建立：记录 sessionId → podId（单命令原子写入，强制 TTL） */
     public void registerVisitor(String sessionId, String podId) {
-        redis.opsForValue().set(VISITOR_KEY + sessionId, podId, TTL);
+        cache.set(WS_VISITOR_POD_PREFIX + sessionId, podId, TTL);
     }
 
     /** 访客连接断开：删除 presence */
     public void unregisterVisitor(String sessionId) {
-        redis.delete(VISITOR_KEY + sessionId);
+        cache.delete(WS_VISITOR_POD_PREFIX + sessionId);
     }
 
     /** 查询访客所在 podId */
     public String getVisitorPod(String sessionId) {
-        return redis.opsForValue().get(VISITOR_KEY + sessionId);
+        return cache.get(WS_VISITOR_POD_PREFIX + sessionId);
     }
 
-    /** 座席连接建立：将 podId 加入 agentId 的 podId 集合
+    /** 刷新访客 presence TTL（心跳调用） */
+    public void refreshVisitor(String sessionId) {
+        cache.expire(WS_VISITOR_POD_PREFIX + sessionId, TTL);
+    }
+
+    /**
+     * 座席连接建立：将 podId 加入 agentId 的 podId 集合。
      *
      * <p>⚠️ 原子性说明：SADD + EXPIRE 是两条独立 Redis 命令，非原子操作。
      * 若 Pod 在两步之间崩溃，或 EXPIRE 因网络抖动失败，key 将永久没有 TTL 导致内存泄漏。
@@ -281,33 +312,28 @@ public class WsPresenceRegistry {
      * redis.call('EXPIRE', KEYS[1], ARGV[2])
      * return added
      * </pre>
-     * 或使用 {@code StringRedisTemplate.executePipelined()} 流水线发送（减少网络往返，
-     * 但严格来说非原子；Lua 脚本是唯一真正原子的方案）。
+     * Lua 脚本是唯一真正原子的方案；{@code executePipelined} 减少 RTT 但非严格原子。
      */
     public void registerAgent(String agentId, String podId) {
-        redis.opsForSet().add(AGENT_KEY + agentId, podId);
-        redis.expire(AGENT_KEY + agentId, TTL);
+        redis.opsForSet().add(WS_AGENT_PODS_PREFIX + agentId, podId);
+        cache.expire(WS_AGENT_PODS_PREFIX + agentId, TTL);  // 复用工具类的 expire
     }
 
-    /** 座席连接断开：从集合中移除 podId（本 Pod 无此 agentId 其他连接时） */
+    /** 座席连接断开：从集合中移除 podId */
     public void unregisterAgent(String agentId, String podId) {
-        redis.opsForSet().remove(AGENT_KEY + agentId, podId);
-        // 集合为空时自动过期，无需手动删除
+        redis.opsForSet().remove(WS_AGENT_PODS_PREFIX + agentId, podId);
+        // 集合为空时 TTL 自然到期，无需手动删除
     }
 
     /** 查询座席所在的所有 podId */
     public Set<String> getAgentPods(String agentId) {
-        Set<String> members = redis.opsForSet().members(AGENT_KEY + agentId);
+        Set<String> members = redis.opsForSet().members(WS_AGENT_PODS_PREFIX + agentId);
         return members != null ? members : Collections.emptySet();
     }
 
-    /** 刷新 TTL（心跳调用，防止 presence 过期） */
-    public void refreshVisitor(String sessionId) {
-        redis.expire(VISITOR_KEY + sessionId, TTL);
-    }
-
+    /** 刷新座席 presence TTL（心跳调用） */
     public void refreshAgent(String agentId) {
-        redis.expire(AGENT_KEY + agentId, TTL);
+        cache.expire(WS_AGENT_PODS_PREFIX + agentId, TTL);
     }
 }
 ```
