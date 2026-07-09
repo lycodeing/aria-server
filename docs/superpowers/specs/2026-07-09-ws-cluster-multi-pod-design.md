@@ -120,8 +120,8 @@ Pod 停止时：RabbitMQ auto-delete 队列自动消失，Redis TTL 自动过期
 | 组件 | 改动摘要 |
 |------|---------|
 | `AgentConnectionRegistry` | `register/unregister` 同步写/删 Redis presence |
-| `ChatWebSocketHandler` | 访客连接维护 presence；`notifyVisitor` 走 `WsMessageRouter` |
-| `AgentChannelWsHandler` | KICK 锁换 Redisson `RLock`；KICK 广播走 `WsMessageRouter` |
+| `ChatWebSocketHandler` | 访客连接维护 presence；`notifyVisitor` **保持本地直推不变**（作为 `VisitorNotifier` 接口实现，不走路由层，防无限递归） |
+| `AgentChannelWsHandler` | KICK 锁换 Redisson `RLock`；座席回复/TYPING 改调 `router.sendToVisitor()`（**跨 Pod 访客推送的入口**） |
 | `ChatWebSocketHandler.notifyAgent` | 走 `WsMessageRouter` 路由，不直接 broadcast |
 | `PersistHandler` | 分布式锁换 Redisson `RLock`（修复 TTL 数据安全）|
 | `DocExpiryScheduler` | 分布式锁换 Redisson `RLock` |
@@ -269,7 +269,19 @@ public class WsPresenceRegistry {
         return redis.opsForValue().get(VISITOR_KEY + sessionId);
     }
 
-    /** 座席连接建立：将 podId 加入 agentId 的 podId 集合 */
+    /** 座席连接建立：将 podId 加入 agentId 的 podId 集合
+     *
+     * <p>⚠️ 原子性说明：SADD + EXPIRE 是两条独立 Redis 命令，非原子操作。
+     * 若 Pod 在两步之间崩溃，或 EXPIRE 因网络抖动失败，key 将永久没有 TTL 导致内存泄漏。
+     * 实现时应使用 Lua 脚本合并两步操作：
+     * <pre>
+     * local added = redis.call('SADD', KEYS[1], ARGV[1])
+     * redis.call('EXPIRE', KEYS[1], ARGV[2])
+     * return added
+     * </pre>
+     * 或使用 {@code StringRedisTemplate.executePipelined()} 流水线发送（减少网络往返，
+     * 但严格来说非原子；Lua 脚本是唯一真正原子的方案）。
+     */
     public void registerAgent(String agentId, String podId) {
         redis.opsForSet().add(AGENT_KEY + agentId, podId);
         redis.expire(AGENT_KEY + agentId, TTL);
@@ -627,15 +639,22 @@ public class WsDeliveryConsumer {
     /**
      * 接收跨 Pod 投递的 WS 消息，执行本地推送。
      *
-     * <p>routing key = #{@podIdentity.get()}（SpEL，运行时求值为本 Pod UUID），
+     * <p>routing key = #{@podIdentity.get()}（SpEL，运行时求值为本 Pod 的队列名），
      * 确保只有发给本 Pod 的消息才路由到此队列。
+     *
+     * <p>队列名称说明：{@code name = "#{@podIdentity.get()}"} 使 @RabbitListener 监听
+     * {@link PodIdentity} 已声明的同一个队列（不额外创建新队列）。
+     * 若省略 name 而使用匿名 @Queue，Spring AMQP 会创建第二个独立匿名队列，
+     * routing key 虽然仍能匹配（Direct Exchange 按 binding key 路由，不按队列名），
+     * 但 PodIdentity 声明的队列会成为无消费者的浪费资源，且 Pod 停止时
+     * 只有 WsDeliveryConsumer 的队列会随连接断开自动删除，语义不清晰。
      *
      * <p>payload 还原：{@link WsDeliveryCommand} 以 {@code wsMessageType + payloadJson} 形式传递，
      * 消费端按 {@link WsMessageType} 枚举 switch 还原为具体 record 类型，
      * 避免 Jackson 反序列化时 {@code Object} 类型擦除为 {@link java.util.LinkedHashMap}。
      */
     @RabbitListener(bindings = @QueueBinding(
-            value    = @Queue(exclusive = "true", autoDelete = "true"),
+            value    = @Queue(name = "#{@podIdentity.get()}", exclusive = "true", autoDelete = "true"),
             exchange = @Exchange(value = "ws.delivery", type = "direct", durable = "true"),
             key      = "#{@podIdentity.get()}"
     ))
@@ -767,8 +786,8 @@ if (!acquired) {
 }
 try {
     // ① 注册新连接到本 Pod
+    // registry.register() 内部已调用 presenceRegistry.registerAgent()，无需再次显式调用
     registry.register(agentId, session);
-    presenceRegistry.registerAgent(agentId, podIdentity.get());
 
     // ② 向所有 Pod 上的旧连接推送 KICKED_OUT（含本 Pod 和跨 Pod）
     Set<String> allPods = presenceRegistry.getAgentPods(agentId);
