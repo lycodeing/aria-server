@@ -92,7 +92,10 @@ public class BuiltinTools {
             return "域切换失败，请重试。";
         }
 
-        return "正在为您切换到对应服务...";
+        // 返回明确的成功信号，防止 LLM 误判切换未完成而反复调用
+        return String.format(
+                "[DOMAIN_SWITCHED] 已成功切换到「%s」服务域。请告知用户切换完成，并请用户重新描述问题。不要再调用任何其他工具。",
+                targetDomainCode);
     }
 
     /**

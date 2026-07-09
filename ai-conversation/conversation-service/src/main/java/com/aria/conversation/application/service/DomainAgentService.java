@@ -394,7 +394,14 @@ public class DomainAgentService {
         // ---- switch_domain ----
         ToolSpecification switchDomainSpec = ToolSpecification.builder()
                 .name("switch_domain")
-                .description("当用户问题与当前服务域无关时调用，切换到正确的服务域。可用域列表见系统提示。")
+                .description("""
+                        当用户问题与当前服务域无关、需要切换到其他服务域时调用。
+                        【重要规则】：
+                        1. 每次对话只调用一次，调用后立即停止所有其他工具调用；
+                        2. 调用成功后不要再调用任何工具（包括天气、订单等查询工具）；
+                        3. 切换后只需告知用户已切换域，并请用户在新对话中重新提问；
+                        4. 如果工具返回了切换成功信号，说明切换已完成，不要重复调用。
+                        可用域列表见系统提示。""")
                 .parameters(JsonObjectSchema.builder()
                         .addProperty("targetDomainCode", JsonStringSchema.builder()
                                 .description("目标域 code").build())
