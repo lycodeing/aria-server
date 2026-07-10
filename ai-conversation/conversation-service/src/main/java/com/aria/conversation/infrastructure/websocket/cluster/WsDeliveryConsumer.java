@@ -73,7 +73,7 @@ public class WsDeliveryConsumer {
             log.error("[WsDelivery] 消息处理异常 type={} id={}",
                     cmd.targetType(), cmd.targetId(), e);
         }
-        log.debug("[WsDelivery] 本地推送完成 type={} id={}", cmd.targetType(), cmd.targetId());
+        log.info("[WsDelivery] 本地推送完成 type={} id={}", cmd.targetType(), cmd.targetId());
     }
 
     /**
