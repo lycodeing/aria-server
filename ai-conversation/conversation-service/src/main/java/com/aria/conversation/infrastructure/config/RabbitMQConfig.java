@@ -83,11 +83,18 @@ public class RabbitMQConfig {
             }
         });
         // Publisher Returns 回调：消息路由到 Exchange 但找不到队列时触发
-        template.setReturnsCallback(returned ->
+        // ws.delivery NO_ROUTE 是正常现象（目标 Pod 已下线，队列随之删除），用 WARN 级别
+        // 其他 Exchange 的 NO_ROUTE 属于异常，保持 ERROR 级别
+        template.setReturnsCallback(returned -> {
+            if ("ws.delivery".equals(returned.getExchange())) {
+                log.warn("[MQ] ws.delivery 无法路由，目标 Pod 可能已下线 routingKey={} replyCode={}",
+                        returned.getRoutingKey(), returned.getReplyCode());
+            } else {
                 log.error("[MQ] Message returned，无法路由到队列: exchange={} routingKey={} replyCode={} replyText={}",
                         returned.getExchange(), returned.getRoutingKey(),
-                        returned.getReplyCode(), returned.getReplyText())
-        );
+                        returned.getReplyCode(), returned.getReplyText());
+            }
+        });
         template.setMandatory(true);
         return template;
     }
