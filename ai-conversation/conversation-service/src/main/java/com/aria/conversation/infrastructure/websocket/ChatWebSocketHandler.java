@@ -213,20 +213,20 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     /**
      * 通知座席。通过应用层查询 agentId，再由 {@link AgentConnectionRegistry} 广播。
      *
-     * <p>TYPING 信号在入口处直接跳过（ephemeral 信号允许丢失，跳过 Redis 查询），
-     * 业务消息才走 SessionQueueService 查 agentId + registry.broadcast。
+     * <p>TYPING 信号（ephemeral）：允许丢失，座席未分配时静默跳过，不打 warn 日志，不走 Redis 查询（通过快速失败路径）。
+     * 业务消息（MESSAGE）：座席未分配时打 warn 日志。
      *
      * @param sessionId 会话 ID
      * @param payload   消息对象
      */
     public void notifyAgent(String sessionId, Object payload) {
-        // TYPING 信号为 ephemeral，直接跳过 Redis 查询和广播（避免不必要的 Redis I/O）
-        if (payload instanceof WsTypingMessage) {
-            return;
-        }
+        boolean isTyping = payload instanceof WsTypingMessage;
         String agentId = sessionQueueService.getAgentId(sessionId);
         if (agentId == null) {
-            log.warn("[WS] notifyAgent 跳过：sessionId={} 尚未分配座席或会话已关闭", sessionId);
+            // TYPING 是 ephemeral 信号，座席未分配时静默丢弃；业务消息打 warn
+            if (!isTyping) {
+                log.warn("[WS] notifyAgent 跳过：sessionId={} 尚未分配座席或会话已关闭", sessionId);
+            }
             return;
         }
         router.sendToAgent(agentId, payload);

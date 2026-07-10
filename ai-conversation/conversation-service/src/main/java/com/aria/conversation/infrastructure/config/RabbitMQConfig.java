@@ -84,14 +84,17 @@ public class RabbitMQConfig {
             }
         });
         // Publisher Returns 回调：消息路由到 Exchange 但找不到队列时触发
-        // ws.delivery NO_ROUTE 是正常现象（目标 Pod 已下线，队列随之删除），立即清理死 Pod presence
+        // ws.delivery NO_ROUTE 是正常现象（目标 Pod 已下线，队列随之删除），异步清理死 Pod presence
+        // ⚠️ ReturnsCallback 在 MQ connection 线程中执行，removeStalePod 包含 Redis SCAN，
+        //    必须异步化，避免阻塞 MQ 连接导致消息积压
         // 其他 Exchange 的 NO_ROUTE 属于异常，保持 ERROR 级别
         template.setReturnsCallback(returned -> {
             if ("ws.delivery".equals(returned.getExchange())) {
                 String deadPodId = returned.getRoutingKey();
-                log.warn("[MQ] ws.delivery 无法路由，Pod 已下线，立即清理 presence podId={}", deadPodId);
-                // 即时清理：将推送中断窗口从 TTL 90s 压缩到接近 0（第一条失败时触发）
-                presenceRegistry.removeStalePod(deadPodId);
+                log.warn("[MQ] ws.delivery 无法路由，Pod 已下线，异步清理 presence podId={}", deadPodId);
+                // 异步执行：SCAN 操作不阻塞 MQ connection 线程
+                java.util.concurrent.CompletableFuture.runAsync(
+                        () -> presenceRegistry.removeStalePod(deadPodId));
             } else {
                 log.error("[MQ] Message returned，无法路由到队列: exchange={} routingKey={} replyCode={} replyText={}",
                         returned.getExchange(), returned.getRoutingKey(),

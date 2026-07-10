@@ -49,12 +49,25 @@ class ChatWebSocketHandlerNotifyAgentTest {
     }
 
     @Test
-    @DisplayName("TYPING 消息直接跳过，不查 Redis 也不广播")
+    @DisplayName("TYPING 消息：座席未分配时静默跳过，不调用 router，不打 warn 日志")
     void typing_skips_redis_lookup() {
+        // 新行为：TYPING 会查询 agentId（避免死代码），但 agentId 为 null 时静默跳过
+        when(sessionQueueService.getAgentId("sess-1")).thenReturn(null);
+
         handler.notifyAgent("sess-1", WsTypingMessage.of("sess-1", System.currentTimeMillis() / 1000));
 
-        verifyNoInteractions(sessionQueueService);
+        verify(sessionQueueService).getAgentId("sess-1");
         verifyNoInteractions(router);
+    }
+
+    @Test
+    @DisplayName("TYPING 消息：座席已分配时通过 router 转发")
+    void typing_routes_when_agent_assigned() {
+        when(sessionQueueService.getAgentId("sess-1")).thenReturn("agent-001");
+
+        handler.notifyAgent("sess-1", WsTypingMessage.of("sess-1", System.currentTimeMillis() / 1000));
+
+        verify(router).sendToAgent(eq("agent-001"), any(WsTypingMessage.class));
     }
 
     @Test
