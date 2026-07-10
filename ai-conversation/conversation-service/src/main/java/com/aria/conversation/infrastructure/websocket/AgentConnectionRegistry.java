@@ -5,6 +5,7 @@ import com.aria.conversation.infrastructure.websocket.cluster.WsPresenceRegistry
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -41,7 +42,7 @@ import jakarta.annotation.PreDestroy;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor(onConstructor_ = {@org.springframework.beans.factory.annotation.Autowired})
+@RequiredArgsConstructor(onConstructor_ = {@Autowired})
 public class AgentConnectionRegistry {
 
     private final ObjectMapper objectMapper;

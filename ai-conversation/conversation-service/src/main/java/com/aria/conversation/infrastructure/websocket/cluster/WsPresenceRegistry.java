@@ -36,6 +36,20 @@ public class WsPresenceRegistry {
 
     private static final Duration TTL = Duration.ofSeconds(90);
 
+    /**
+     * 访客 presence 原子条件删除脚本：仅当 value == deadPodId 时才删除 key，防止 TOCTOU 竞态。
+     * DefaultRedisScript 是线程安全的，提取为静态常量避免每次调用重复构造和 SHA1 计算。
+     */
+    private static final org.springframework.data.redis.core.script.DefaultRedisScript<Long>
+            CONDITIONAL_DELETE_SCRIPT;
+
+    static {
+        CONDITIONAL_DELETE_SCRIPT = new org.springframework.data.redis.core.script.DefaultRedisScript<>(
+                "if redis.call('get', KEYS[1]) == ARGV[1] then " +
+                "return redis.call('del', KEYS[1]) else return 0 end",
+                Long.class);
+    }
+
     private final RedisCacheHelper    cache;
     private final StringRedisTemplate redis;
 
@@ -152,22 +166,14 @@ public class WsPresenceRegistry {
             log.warn("[PresenceRegistry] 清理座席 presence 异常 deadPodId={} msg={}", deadPodId, e.getMessage());
         }
 
-        // 2. 原子条件删除指向死 Pod 的访客 presence key（Lua 脚本防 TOCTOU 竞态）
-        // 竞态场景：SCAN 读到 key 后、删除前，访客已重连并写入新 podId，直接 delete 会误删新 presence
-        // Lua 脚本确保"仅当 value == deadPodId 时才删除"的原子语义
-        String conditionalDeleteScript =
-                "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
-        org.springframework.data.redis.core.script.DefaultRedisScript<Long> script =
-                new org.springframework.data.redis.core.script.DefaultRedisScript<>(
-                        conditionalDeleteScript, Long.class);
-
+        // 2. 原子条件删除指向死 Pod 的访客 presence key（静态 Lua 脚本防 TOCTOU 竞态）
         ScanOptions visitorOpts = ScanOptions.scanOptions()
                 .match(ConversationCacheKeys.WS_VISITOR_POD_PREFIX + "*").count(200).build();
         try (Cursor<String> cursor = redis.scan(visitorOpts)) {
             while (cursor.hasNext()) {
                 String key = cursor.next();
                 try {
-                    Long deleted = redis.execute(script,
+                    Long deleted = redis.execute(CONDITIONAL_DELETE_SCRIPT,
                             java.util.Collections.singletonList(key), deadPodId);
                     if (deleted != null && deleted > 0) visitorCleaned++;
                 } catch (Exception ex) {

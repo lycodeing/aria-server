@@ -69,11 +69,12 @@ public class WsDeliveryConsumer {
                 }
                 default -> log.warn("[WsDelivery] 未知 targetType={}", cmd.targetType());
             }
+            // 仅处理成功时打印推送完成日志，异常路径不打印，避免日志语义误导
+            log.info("[WsDelivery] 本地推送完成 type={} id={}", cmd.targetType(), cmd.targetId());
         } catch (Exception e) {
             log.error("[WsDelivery] 消息处理异常 type={} id={}",
                     cmd.targetType(), cmd.targetId(), e);
         }
-        log.info("[WsDelivery] 本地推送完成 type={} id={}", cmd.targetType(), cmd.targetId());
     }
 
     /**

@@ -73,7 +73,9 @@ public class RabbitMQConfig {
     @Primary
     public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory,
                                          MessageConverter jsonMessageConverter,
-                                         com.aria.conversation.infrastructure.websocket.cluster.WsPresenceRegistry presenceRegistry) {
+                                         com.aria.conversation.infrastructure.websocket.cluster.WsPresenceRegistry presenceRegistry,
+                                         @org.springframework.beans.factory.annotation.Qualifier("presenceCleanupExecutor")
+                                         java.util.concurrent.Executor presenceCleanupExecutor) {
         RabbitTemplate template = new RabbitTemplate(connectionFactory);
         template.setMessageConverter(jsonMessageConverter);
         // Publisher Confirms 回调：Broker 持久化确认 / 拒绝时触发
@@ -92,9 +94,9 @@ public class RabbitMQConfig {
             if ("ws.delivery".equals(returned.getExchange())) {
                 String deadPodId = returned.getRoutingKey();
                 log.warn("[MQ] ws.delivery 无法路由，Pod 已下线，异步清理 presence podId={}", deadPodId);
-                // 异步执行：SCAN 操作不阻塞 MQ connection 线程
+                // 异步执行：使用专用线程池，避免阻塞 MQ connection 线程（ForkJoinPool 不适合 I/O 阻塞操作）
                 java.util.concurrent.CompletableFuture.runAsync(
-                        () -> presenceRegistry.removeStalePod(deadPodId));
+                        () -> presenceRegistry.removeStalePod(deadPodId), presenceCleanupExecutor);
             } else {
                 log.error("[MQ] Message returned，无法路由到队列: exchange={} routingKey={} replyCode={} replyText={}",
                         returned.getExchange(), returned.getRoutingKey(),
@@ -201,5 +203,26 @@ public class RabbitMQConfig {
     public org.springframework.amqp.rabbit.core.RabbitAdmin rabbitAdmin(
             ConnectionFactory connectionFactory) {
         return new org.springframework.amqp.rabbit.core.RabbitAdmin(connectionFactory);
+    }
+
+    /**
+     * presence 清理专用线程池。
+     *
+     * <p>供 {@code ReturnsCallback} 异步执行 {@code removeStalePod()} Redis SCAN 操作。
+     * 使用专用线程池而非公共 ForkJoinPool，避免 I/O 阻塞影响 JVM 并行任务吞吐。
+     * 核心线程数 1 已足够（No-Route 事件频率极低），最大 2 应对偶发并发下线场景。
+     */
+    @Bean("presenceCleanupExecutor")
+    public java.util.concurrent.Executor presenceCleanupExecutor() {
+        java.util.concurrent.ThreadPoolExecutor executor = new java.util.concurrent.ThreadPoolExecutor(
+                1, 2, 60L, java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<>(50),
+                r -> {
+                    Thread t = new Thread(r, "presence-cleanup");
+                    t.setDaemon(true);
+                    return t;
+                },
+                new java.util.concurrent.ThreadPoolExecutor.DiscardOldestPolicy());
+        return executor;
     }
 }

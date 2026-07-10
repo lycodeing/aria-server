@@ -133,15 +133,19 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      * @param message 接收到的消息
      * @return true 表示长度合法，false 表示已处理超长消息
      */
-    private boolean checkMessageLength(WebSocketSession session, TextMessage message) throws IOException {
+    private boolean checkMessageLength(WebSocketSession session, TextMessage message) {
         if (message.getPayloadLength() <= MAX_MESSAGE_BYTES) {
             return true;
         }
         String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
         log.warn("[WS] 消息超过最大长度限制 sessionId={} size={}", sessionId, message.getPayloadLength());
-        session.sendMessage(new TextMessage(objectMapper.writeValueAsString(
-                WsErrorMessage.of("消息长度超过限制（最大 64KB）"))));
-        session.close(CloseStatus.NOT_ACCEPTABLE);
+        // 通过 VisitorSessionRegistry 发送，复用 per-session 发送锁，避免与并发推送产生帧竞争
+        visitorSessionRegistry.notifyVisitor(sessionId, WsErrorMessage.of("消息长度超过限制（最大 64KB）"));
+        try {
+            session.close(CloseStatus.NOT_ACCEPTABLE);
+        } catch (java.io.IOException e) {
+            log.warn("[WS] 关闭超长消息连接失败 sessionId={} msg={}", sessionId, e.getMessage());
+        }
         return false;
     }
 
