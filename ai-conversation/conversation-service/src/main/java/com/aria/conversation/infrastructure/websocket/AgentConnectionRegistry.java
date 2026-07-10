@@ -237,11 +237,18 @@ public class AgentConnectionRegistry {
     }
 
     /**
-     * 优雅关闭心跳调度器。
-     * Spring 容器停止时调用，确保 JVM 可以正常退出（非守护线程池须显式关闭）。
+     * 优雅关闭：清理本 Pod 所有在线座席的 Redis presence，再关闭心跳调度器。
+     * Spring 容器停止时调用，确保 JVM 可以正常退出，并避免旧 Pod presence 残留。
      */
     @PreDestroy
     public void shutdown() {
+        // 层1 优雅关闭：主动清理所有座席 presence，缩短旧数据残留窗口
+        if (presenceRegistry != null && podIdentity != null) {
+            String myPodId = podIdentity.get();
+            sessionIdToAgentId.forEach((wsSessionId, agentId) ->
+                    presenceRegistry.unregisterAgent(agentId, myPodId));
+            log.info("[AgentRegistry] 优雅关闭：已清理 {} 个座席 presence", sessionIdToAgentId.size());
+        }
         heartbeatScheduler.shutdown();
         try {
             if (!heartbeatScheduler.awaitTermination(5, TimeUnit.SECONDS)) {

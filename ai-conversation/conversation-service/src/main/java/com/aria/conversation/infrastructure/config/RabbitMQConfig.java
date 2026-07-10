@@ -72,7 +72,8 @@ public class RabbitMQConfig {
     @Bean
     @Primary
     public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory,
-                                         MessageConverter jsonMessageConverter) {
+                                         MessageConverter jsonMessageConverter,
+                                         com.aria.conversation.infrastructure.websocket.cluster.WsPresenceRegistry presenceRegistry) {
         RabbitTemplate template = new RabbitTemplate(connectionFactory);
         template.setMessageConverter(jsonMessageConverter);
         // Publisher Confirms 回调：Broker 持久化确认 / 拒绝时触发
@@ -83,12 +84,14 @@ public class RabbitMQConfig {
             }
         });
         // Publisher Returns 回调：消息路由到 Exchange 但找不到队列时触发
-        // ws.delivery NO_ROUTE 是正常现象（目标 Pod 已下线，队列随之删除），用 WARN 级别
+        // ws.delivery NO_ROUTE 是正常现象（目标 Pod 已下线，队列随之删除），立即清理死 Pod presence
         // 其他 Exchange 的 NO_ROUTE 属于异常，保持 ERROR 级别
         template.setReturnsCallback(returned -> {
             if ("ws.delivery".equals(returned.getExchange())) {
-                log.warn("[MQ] ws.delivery 无法路由，目标 Pod 可能已下线 routingKey={} replyCode={}",
-                        returned.getRoutingKey(), returned.getReplyCode());
+                String deadPodId = returned.getRoutingKey();
+                log.warn("[MQ] ws.delivery 无法路由，Pod 已下线，立即清理 presence podId={}", deadPodId);
+                // 即时清理：将推送中断窗口从 TTL 90s 压缩到接近 0（第一条失败时触发）
+                presenceRegistry.removeStalePod(deadPodId);
             } else {
                 log.error("[MQ] Message returned，无法路由到队列: exchange={} routingKey={} replyCode={} replyText={}",
                         returned.getExchange(), returned.getRoutingKey(),

@@ -139,11 +139,15 @@ public class VisitorSessionRegistry implements VisitorNotifier {
     }
 
     /**
-     * 优雅关闭心跳调度器。
-     * Spring 容器停止时调用，确保 JVM 可以正常退出（非守护线程池须显式关闭）。
+     * 优雅关闭：清理本 Pod 所有在线访客的 Redis presence，再关闭心跳调度器。
+     * Spring 容器停止时调用，确保 JVM 可以正常退出，并避免旧 Pod presence 残留。
      */
     @PreDestroy
     public void shutdown() {
+        // 层1 优雅关闭：主动清理所有访客 presence
+        int count = visitorSessions.size();
+        visitorSessions.keySet().forEach(presenceRegistry::unregisterVisitor);
+        log.info("[VisitorRegistry] 优雅关闭：已清理 {} 个访客 presence", count);
         heartbeatScheduler.shutdown();
         try {
             if (!heartbeatScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
