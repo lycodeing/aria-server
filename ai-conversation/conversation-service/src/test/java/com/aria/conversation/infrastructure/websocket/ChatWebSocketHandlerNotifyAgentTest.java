@@ -38,13 +38,12 @@ class ChatWebSocketHandlerNotifyAgentTest {
     @BeforeEach
     void setUp() {
         // 字段声明顺序：objectMapper, historyRepository, sessionQueueService,
-        // agentConnectionRegistry, presenceRegistry, podIdentity, router
+        // agentConnectionRegistry, visitorSessionRegistry, router
         handler = new ChatWebSocketHandler(
                 new ObjectMapper(),
                 historyRepository,
                 sessionQueueService,
                 agentConnectionRegistry,
-                null,
                 null,
                 router);
     }

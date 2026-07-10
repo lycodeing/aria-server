@@ -1,7 +1,7 @@
 package com.aria.conversation.infrastructure.websocket.cluster;
 
 import com.aria.conversation.infrastructure.websocket.AgentConnectionRegistry;
-import com.aria.conversation.infrastructure.websocket.VisitorNotifier;
+import com.aria.conversation.infrastructure.websocket.VisitorSessionRegistry;
 import com.aria.conversation.infrastructure.websocket.message.WsChatMessage;
 import com.aria.conversation.infrastructure.websocket.message.WsConnectedMessage;
 import com.aria.conversation.infrastructure.websocket.message.WsErrorMessage;
@@ -37,7 +37,7 @@ import org.springframework.stereotype.Component;
 public class WsDeliveryConsumer {
 
     private final AgentConnectionRegistry agentRegistry;
-    private final VisitorNotifier         visitorNotifier;
+    private final VisitorSessionRegistry  visitorSessionRegistry;
     private final ObjectMapper            objectMapper;
 
     /**
@@ -58,7 +58,7 @@ public class WsDeliveryConsumer {
                 }
                 case VISITOR -> {
                     Object payload = restorePayload(cmd);
-                    visitorNotifier.notifyVisitor(cmd.targetId(), payload);
+                    visitorSessionRegistry.notifyVisitor(cmd.targetId(), payload);
                 }
                 case KICK_AGENT -> {
                     // 远端 Pod 上该 agentId 的所有连接均为旧连接，全部推 KICKED_OUT 后关闭

@@ -1,7 +1,7 @@
 package com.aria.conversation.infrastructure.websocket.cluster;
 
 import com.aria.conversation.infrastructure.websocket.AgentConnectionRegistry;
-import com.aria.conversation.infrastructure.websocket.VisitorNotifier;
+import com.aria.conversation.infrastructure.websocket.VisitorSessionRegistry;
 import com.aria.conversation.infrastructure.websocket.message.WsChatMessage;
 import com.aria.conversation.infrastructure.websocket.message.WsMessageType;
 import com.aria.conversation.infrastructure.websocket.cluster.WsClusterConstants;
@@ -27,7 +27,7 @@ class WsMessageRouterTest {
     @Mock PodIdentity podIdentity;
     @Mock WsPresenceRegistry presenceRegistry;
     @Mock AgentConnectionRegistry agentRegistry;
-    @Mock VisitorNotifier visitorNotifier;
+    @Mock VisitorSessionRegistry visitorSessionRegistry;
     @Mock RabbitTemplate rabbitTemplate;
 
     private WsMessageRouter router;
@@ -36,7 +36,7 @@ class WsMessageRouterTest {
     @BeforeEach
     void setUp() {
         router = new WsMessageRouter(podIdentity, presenceRegistry, agentRegistry,
-                visitorNotifier, rabbitTemplate, objectMapper);
+                visitorSessionRegistry, rabbitTemplate, objectMapper);
     }
 
     private WsChatMessage chatMsg() {
@@ -69,7 +69,7 @@ class WsMessageRouterTest {
         when(presenceRegistry.getVisitorPod("sess-1")).thenReturn("pod-A");
         when(podIdentity.isLocal("pod-A")).thenReturn(true);
         router.sendToVisitor("sess-1", chatMsg());
-        verify(visitorNotifier).notifyVisitor("sess-1", chatMsg());
+        verify(visitorSessionRegistry).notifyVisitor("sess-1", chatMsg());
         verifyNoInteractions(rabbitTemplate);
     }
 
@@ -95,7 +95,7 @@ class WsMessageRouterTest {
     void sendToVisitor_offline_skips() {
         when(presenceRegistry.getVisitorPod("sess-1")).thenReturn(null);
         router.sendToVisitor("sess-1", chatMsg());
-        verifyNoInteractions(visitorNotifier, rabbitTemplate);
+        verifyNoInteractions(visitorSessionRegistry, rabbitTemplate);
     }
 
     @Test

@@ -1,7 +1,7 @@
 package com.aria.conversation.infrastructure.websocket.cluster;
 
 import com.aria.conversation.infrastructure.websocket.AgentConnectionRegistry;
-import com.aria.conversation.infrastructure.websocket.VisitorNotifier;
+import com.aria.conversation.infrastructure.websocket.VisitorSessionRegistry;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -28,7 +28,7 @@ public class WsMessageRouter {
     private final PodIdentity             podIdentity;
     private final WsPresenceRegistry      presenceRegistry;
     private final AgentConnectionRegistry agentRegistry;
-    private final VisitorNotifier         visitorNotifier;
+    private final VisitorSessionRegistry  visitorSessionRegistry;
     private final RabbitTemplate          rabbitTemplate;
     private final ObjectMapper            objectMapper;
 
@@ -65,7 +65,7 @@ public class WsMessageRouter {
             return;
         }
         if (podIdentity.isLocal(pod)) {
-            visitorNotifier.notifyVisitor(sessionId, payload);
+            visitorSessionRegistry.notifyVisitor(sessionId, payload);
         } else {
             deliver(pod, WsDeliveryCommand.toVisitor(sessionId, payload, objectMapper));
         }
