@@ -52,8 +52,28 @@ public class ConversationEntity {
     /** 会话开始时间（入队时间） */
     private OffsetDateTime startedAt;
 
+    /**
+     * 座席接入时间（WAITING → ACTIVE 转换时刻）。
+     * 用于计算等待时长：accepted_at - started_at。
+     * WAITING / AI_CHAT 状态下为 NULL。
+     */
+    private OffsetDateTime acceptedAt;
+
+    /**
+     * 座席首条回复时间（role=agent 的第一条消息时间）。
+     * 用于计算首次响应时长（FRT）：first_reply_at - accepted_at。
+     * 由 ConversationMessageConsumer 在消费到首条 agent 消息时写入，仅写一次。
+     */
+    private OffsetDateTime firstReplyAt;
+
     /** 会话结束时间（NULL 表示进行中） */
     private OffsetDateTime endedAt;
+
+    /**
+     * 关闭发起方：agent=座席主动关闭, visitor=访客离开, system=系统超时/自动关闭。
+     * CLOSED 时必填，其余状态为 NULL。
+     */
+    private String closedBy;
 
     /** 记录创建时间 */
     private OffsetDateTime createdAt;

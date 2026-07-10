@@ -12,6 +12,7 @@ import com.aria.conversation.application.service.SessionQueueService.OnlineAgent
 import com.aria.conversation.application.service.VisitorHistoryService;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.infrastructure.mq.SessionEventSubscriber;
+import com.aria.conversation.infrastructure.mq.ConversationStreamEvent;
 import com.aria.conversation.interfaces.rest.vo.ReplySuggestionVO;
 import com.aria.conversation.interfaces.rest.vo.VisitorHistoryVO;
 import jakarta.annotation.PreDestroy;
@@ -133,13 +134,14 @@ public class SessionQueueController {
      * 结束会话。
      * <p>除了执行 SessionQueueService.close（清 Redis + 发 SESSION_END + DB 状态转 CLOSED），
      * 还主动以 NORMAL（code=1000）关闭访客端 WebSocket，触发前端显示"会话已结束"提示。
+     * closedBy 固定传 "agent"，表示由座席主动关闭。
      */
     @PostMapping("/{sessionId}/close")
     public R<Void> close(
             @PathVariable
             @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "sessionId 格式非法")
             String sessionId) {
-        queueService.close(sessionId);
+        queueService.close(sessionId, ConversationStreamEvent.CLOSED_BY_AGENT);
         visitorNotifier.closeVisitorSessionNormal(sessionId);
         return R.ok();
     }

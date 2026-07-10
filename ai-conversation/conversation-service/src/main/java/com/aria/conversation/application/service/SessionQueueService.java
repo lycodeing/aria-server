@@ -182,8 +182,11 @@ public class SessionQueueService {
     /**
      * 结束会话，从队列中移除，并向持久化 Direct Exchange 发布 SESSION_END 事件。
      * DB 关闭操作与 Redis 状态解耦：无论 Redis 有无数据都执行 DB 关闭。
+     *
+     * @param sessionId 会话唯一标识
+     * @param closedBy  关闭发起方（agent / visitor / system）
      */
-    public void close(String sessionId) {
+    public void close(String sessionId, String closedBy) {
         try {
             queueRepository.findById(sessionId).ifPresentOrElse(
                 old -> {
@@ -202,7 +205,7 @@ public class SessionQueueService {
                 }
             );
             queueRepository.delete(sessionId); // 幂等，无数据时 no-op
-            publishSessionEnd(sessionId);
+            publishSessionEnd(sessionId, closedBy);
         } catch (IllegalStateException e) {
             log.warn("[SessionQueue] close 状态机校验失败 sessionId={} msg={}", sessionId, e.getMessage());
         }
@@ -372,8 +375,8 @@ public class SessionQueueService {
                 "SESSION_TRANSFER", sessionId);
     }
 
-    private void publishSessionEnd(String sessionId) {
-        publishSafely(() -> publisher.publishSessionEnd(sessionId),
+    private void publishSessionEnd(String sessionId, String closedBy) {
+        publishSafely(() -> publisher.publishSessionEnd(sessionId, closedBy),
                 "SESSION_END", sessionId);
     }
 

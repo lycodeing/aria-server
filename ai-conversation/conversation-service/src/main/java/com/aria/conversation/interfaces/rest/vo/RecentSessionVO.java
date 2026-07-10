@@ -41,8 +41,14 @@ public class RecentSessionVO {
     /** 会话开始时间 */
     private OffsetDateTime startedAt;
 
+    /** 座席接入时间（WAITING→ACTIVE，可为 NULL） */
+    private OffsetDateTime acceptedAt;
+
     /** 会话结束时间 */
     private OffsetDateTime endedAt;
+
+    /** 关闭发起方（agent / visitor / system，进行中为 NULL） */
+    private String closedBy;
 
     /** 该会话的消息总数 */
     private long messageCount;

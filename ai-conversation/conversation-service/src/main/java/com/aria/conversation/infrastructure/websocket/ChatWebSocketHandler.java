@@ -192,7 +192,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
         if (PATH_SEGMENT_CHAT.equals(role)) {
             visitorSessionRegistry.unregister(sessionId, session);
-            log.info("[WS] visitor disconnected sessionId={}", sessionId);
+            log.info("[WS] visitor disconnected sessionId={} closeStatus={}", sessionId, status);
         }
     }
 

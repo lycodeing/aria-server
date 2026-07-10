@@ -524,11 +524,20 @@ CREATE TABLE cs_conversation.cs_conversation (
     tag character varying(50),
     status character varying(20) DEFAULT 'WAITING'::character varying NOT NULL,
     started_at timestamp with time zone DEFAULT now() NOT NULL,
+    accepted_at timestamp with time zone,
+    first_reply_at timestamp with time zone,
     ended_at timestamp with time zone,
+    closed_by character varying(20),
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     agent_id character varying(100) DEFAULT NULL::character varying
 );
+
+-- 存量数据库执行：
+-- ALTER TABLE cs_conversation.cs_conversation
+--     ADD COLUMN IF NOT EXISTS accepted_at   TIMESTAMPTZ,
+--     ADD COLUMN IF NOT EXISTS first_reply_at TIMESTAMPTZ,
+--     ADD COLUMN IF NOT EXISTS closed_by      VARCHAR(20);
 
 
 --

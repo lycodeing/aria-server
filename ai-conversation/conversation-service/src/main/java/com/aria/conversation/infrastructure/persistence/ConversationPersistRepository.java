@@ -212,13 +212,28 @@ public class ConversationPersistRepository {
      *
      * @param sessionId 会话唯一标识
      * @param endedAt   会话结束时间
+     * @param closedBy  关闭发起方（agent / visitor / system）
      */
-    public void closeConversation(String sessionId, OffsetDateTime endedAt) {
-        int affected = conversationMapper.closeBySessionId(sessionId, endedAt);
+    public void closeConversation(String sessionId, OffsetDateTime endedAt, String closedBy) {
+        int affected = conversationMapper.closeBySessionId(sessionId, endedAt, closedBy);
         if (affected == 0) {
             log.debug("[Persist] 会话不存在或已关闭，忽略 sessionId={}", sessionId);
         } else {
-            log.debug("[Persist] 会话关闭 sessionId={}", sessionId);
+            log.debug("[Persist] 会话关闭 sessionId={} closedBy={}", sessionId, closedBy);
+        }
+    }
+
+    /**
+     * 幂等写入座席首条回复时间（仅在 first_reply_at 为 NULL 时才写入）。
+     * 由 ConversationMessageConsumer 消费到首条 role=agent 消息时调用。
+     *
+     * @param sessionId    会话唯一标识
+     * @param firstReplyAt 座席首条回复时间
+     */
+    public void setFirstReplyAtIfAbsent(String sessionId, OffsetDateTime firstReplyAt) {
+        int affected = conversationMapper.setFirstReplyAtIfAbsent(sessionId, firstReplyAt);
+        if (affected > 0) {
+            log.debug("[Persist] 首次回复时间写入 sessionId={}", sessionId);
         }
     }
 

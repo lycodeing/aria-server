@@ -113,18 +113,26 @@ public class ConversationMessageConsumer {
     }
 
     /**
-     * 处理 SESSION_END：更新会话状态为 CLOSED，记录结束时间。
+     * 处理 SESSION_END：更新会话状态为 CLOSED，记录结束时间和关闭发起方。
      */
     private void handleSessionEnd(Map<String, Object> payload, String sessionId) {
+        String closedBy = str(payload, ConversationStreamEvent.FIELD_CLOSED_BY);
+        // 白名单校验：非法值（消息格式异常或未来扩展值）降级为 system，避免写入脏数据
+        if (!ConversationStreamEvent.isValidClosedBy(closedBy)) {
+            log.warn("[MQ Consumer] 非法 closedBy={}，降级为 system sessionId={}", closedBy, sessionId);
+            closedBy = ConversationStreamEvent.CLOSED_BY_SYSTEM;
+        }
         persistRepository.closeConversation(
                 sessionId,
-                toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)));
+                toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)),
+                closedBy);
     }
 
     /**
      * 处理 MESSAGE：写入消息明细，使用 {@link MessageRole} 枚举映射角色字段。
      * I1 修复：fromValue() 返回 null 时（未知/缺失 role）直接 ACK 丢弃，
      * 避免 null 写入 NOT NULL 列触发 DB 异常 → 无限重试 → DLQ 堆积。
+     * 补充：消费到首条 role=agent 消息时，幂等写入 first_reply_at。
      */
     private void handleMessage(Map<String, Object> payload, String sessionId) {
         String roleStr = str(payload, ConversationStreamEvent.FIELD_ROLE);
@@ -148,12 +156,18 @@ public class ConversationMessageConsumer {
                 log.warn("[MQ Consumer] 非法 seq={} sessionId={}", rawSeq, sessionId);
             }
         }
-        entity.setCreatedAt(toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)));
+        OffsetDateTime msgTime = toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP));
+        entity.setCreatedAt(msgTime);
         // tool 相关字段（可选，仅在 assistant 触发 tool_calls 或 tool 结果消息时非空）
         entity.setToolRequestId(str(payload, ConversationStreamEvent.FIELD_TOOL_REQUEST_ID));
         entity.setToolName(str(payload, ConversationStreamEvent.FIELD_TOOL_NAME));
         entity.setToolCallsJson(str(payload, ConversationStreamEvent.FIELD_TOOL_CALLS));
         persistRepository.saveMessages(List.of(entity));
+
+        // 首条 agent 消息：幂等写入 first_reply_at（仅在 first_reply_at 为 NULL 时才更新）
+        if (role == MessageRole.AGENT) {
+            persistRepository.setFirstReplyAtIfAbsent(sessionId, msgTime);
+        }
     }
 
     // -------------------------------------------------------

@@ -72,6 +72,32 @@ public final class ConversationStreamEvent {
      */
     public static final String FIELD_TOOL_CALLS = "toolCalls";
     /**
+     * 会话关闭发起方（agent / visitor / system），仅 SESSION_END 事件有效
+     */
+    public static final String FIELD_CLOSED_BY = "closedBy";
+
+    // ---- closedBy 合法取值常量 ----
+    /** 座席主动关闭 */
+    public static final String CLOSED_BY_AGENT   = "agent";
+    /** 访客主动离开 */
+    public static final String CLOSED_BY_VISITOR = "visitor";
+    /** 系统超时/自动关闭（兜底默认值） */
+    public static final String CLOSED_BY_SYSTEM  = "system";
+
+    /**
+     * 校验 closedBy 是否为合法值。
+     * 非法时调用方应降级为 {@link #CLOSED_BY_SYSTEM}。
+     *
+     * @param value 待校验值
+     * @return true 表示合法
+     */
+    public static boolean isValidClosedBy(String value) {
+        return CLOSED_BY_AGENT.equals(value)
+                || CLOSED_BY_VISITOR.equals(value)
+                || CLOSED_BY_SYSTEM.equals(value);
+    }
+
+    /**
      * 工具类，禁止实例化
      */
     private ConversationStreamEvent() {

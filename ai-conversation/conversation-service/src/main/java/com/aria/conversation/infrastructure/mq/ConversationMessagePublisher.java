@@ -164,15 +164,24 @@ public class ConversationMessagePublisher {
 
     /**
      * 发布会话结束事件（SESSION_END 类型），由 SessionQueueService.close() 触发。
+     *
+     * @param sessionId 会话 ID
+     * @param closedBy  关闭发起方（{@link ConversationStreamEvent#CLOSED_BY_AGENT} /
+     *                  {@link ConversationStreamEvent#CLOSED_BY_VISITOR} /
+     *                  {@link ConversationStreamEvent#CLOSED_BY_SYSTEM}）
      */
     @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 1000, multiplier = 2))
-    public void publishSessionEnd(String sessionId) {
-        Map<String, Object> payload = Map.of(
-                ConversationStreamEvent.FIELD_TYPE, ConversationStreamEvent.Type.SESSION_END.name(),
-                ConversationStreamEvent.FIELD_SESSION_ID, sessionId,
-                ConversationStreamEvent.FIELD_TIMESTAMP, Instant.now().getEpochSecond()
-        );
+    public void publishSessionEnd(String sessionId, String closedBy) {
+        // 非法值兜底，保证 DB 列写入合法枚举字符串
+        String effectiveClosedBy = ConversationStreamEvent.isValidClosedBy(closedBy)
+                ? closedBy
+                : ConversationStreamEvent.CLOSED_BY_SYSTEM;
+        Map<String, Object> payload = new LinkedHashMap<>(4);
+        payload.put(ConversationStreamEvent.FIELD_TYPE, ConversationStreamEvent.Type.SESSION_END.name());
+        payload.put(ConversationStreamEvent.FIELD_SESSION_ID, sessionId);
+        payload.put(ConversationStreamEvent.FIELD_TIMESTAMP, Instant.now().getEpochSecond());
+        payload.put(ConversationStreamEvent.FIELD_CLOSED_BY, effectiveClosedBy);
         rabbitTemplate.convertAndSend(exchange, routingKey, payload);
-        log.info("[MQ] SESSION_END published sessionId={}", sessionId);
+        log.info("[MQ] SESSION_END published sessionId={} closedBy={}", sessionId, effectiveClosedBy);
     }
 }

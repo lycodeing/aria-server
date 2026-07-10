@@ -135,7 +135,9 @@ public interface DashboardStatsMapper {
                 c.status          AS "status",
                 c.agent_id        AS "agentId",
                 c.started_at      AS "startedAt",
+                c.accepted_at     AS "acceptedAt",
                 c.ended_at        AS "endedAt",
+                c.closed_by       AS "closedBy",
                 COALESCE(
                     (SELECT COUNT(*) FROM cs_conversation.cs_conversation_message m
                      WHERE m.session_id = c.session_id), 0
@@ -158,4 +160,52 @@ public interface DashboardStatsMapper {
             ORDER BY "totalSessions" DESC
             """)
     List<AgentWorkloadItemVO> getAgentWorkload();
+
+    // ============================================================
+    // 时长类指标（需要 accepted_at / first_reply_at）
+    // ============================================================
+
+    /**
+     * 平均等待时长（秒）：从入队到座席接入。
+     * 仅统计已接入的会话（accepted_at IS NOT NULL）。
+     */
+    @Select("""
+            SELECT COALESCE(
+                EXTRACT(EPOCH FROM AVG(accepted_at - started_at))::bigint,
+                0
+            )
+            FROM cs_conversation.cs_conversation
+            WHERE accepted_at IS NOT NULL
+            """)
+    long avgWaitSeconds();
+
+    /**
+     * 平均处理时长（秒）：从座席接入到会话结束。
+     * 仅统计已关闭的人工会话（ended_at IS NOT NULL AND accepted_at IS NOT NULL）。
+     */
+    @Select("""
+            SELECT COALESCE(
+                EXTRACT(EPOCH FROM AVG(ended_at - accepted_at))::bigint,
+                0
+            )
+            FROM cs_conversation.cs_conversation
+            WHERE accepted_at IS NOT NULL
+              AND ended_at IS NOT NULL
+            """)
+    long avgHandleSeconds();
+
+    /**
+     * 平均首次响应时长（秒）：从座席接入到首条座席回复。
+     * 仅统计已有首条回复的会话（first_reply_at IS NOT NULL AND accepted_at IS NOT NULL）。
+     */
+    @Select("""
+            SELECT COALESCE(
+                EXTRACT(EPOCH FROM AVG(first_reply_at - accepted_at))::bigint,
+                0
+            )
+            FROM cs_conversation.cs_conversation
+            WHERE accepted_at IS NOT NULL
+              AND first_reply_at IS NOT NULL
+            """)
+    long avgFirstReplySeconds();
 }

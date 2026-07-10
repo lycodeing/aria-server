@@ -34,23 +34,23 @@ import java.util.List;
 public interface ConversationMapper extends BaseMapper<ConversationEntity> {
 
     /**
-     * 将会话状态从 WAITING 更新为 ACTIVE，并写入接入座席 ID。
+     * 将会话状态从 WAITING 更新为 ACTIVE，并写入接入座席 ID 和接入时间。
      * 仅当状态为 WAITING 时才更新，防止重复接入（幂等）。
      *
      * @param sessionId  会话唯一标识
      * @param agentId    接入座席 ID
-     * @param acceptedAt 接入时间
+     * @param acceptedAt 接入时间（写入 accepted_at 列，用于等待时长计算）
      * @return 受影响行数（0 表示不存在或已非 WAITING）
      */
     default int activateBySessionId(@Param("sessionId") String sessionId,
                                     @Param("agentId") String agentId,
                                     @Param("acceptedAt") OffsetDateTime acceptedAt) {
         return update(Wrappers.lambdaUpdate(ConversationEntity.class)
-                .set(ConversationEntity::getStatus,    SessionStatus.ACTIVE.getValue())
-                .set(ConversationEntity::getAgentId,   agentId)
-                .set(ConversationEntity::getUpdatedAt, acceptedAt)
-                .eq(ConversationEntity::getSessionId,  sessionId)
-                .eq(ConversationEntity::getStatus,     SessionStatus.WAITING.getValue())
+                .set(ConversationEntity::getStatus,     SessionStatus.ACTIVE.getValue())
+                .set(ConversationEntity::getAgentId,    agentId)
+                .set(ConversationEntity::getAcceptedAt, acceptedAt)
+                .eq(ConversationEntity::getSessionId,   sessionId)
+                .eq(ConversationEntity::getStatus,      SessionStatus.WAITING.getValue())
         );
     }
 
@@ -153,21 +153,41 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     }
 
     /**
-     * 将会话状态更新为 CLOSED，记录结束时间。
+     * 将会话状态更新为 CLOSED，记录结束时间和关闭发起方。
      * 仅当会话非 CLOSED 状态时才更新（幂等），防止重复关闭。
      *
      * @param sessionId 会话唯一标识
      * @param endedAt   结束时间
+     * @param closedBy  关闭发起方（agent / visitor / system）
      * @return 受影响行数（0 表示不存在或已关闭）
      */
     default int closeBySessionId(@Param("sessionId") String sessionId,
-                                 @Param("endedAt") OffsetDateTime endedAt) {
+                                 @Param("endedAt") OffsetDateTime endedAt,
+                                 @Param("closedBy") String closedBy) {
         return update(Wrappers.lambdaUpdate(ConversationEntity.class)
                 .set(ConversationEntity::getStatus,    SessionStatus.CLOSED.getValue())
                 .set(ConversationEntity::getEndedAt,   endedAt)
+                .set(ConversationEntity::getClosedBy,  closedBy)
                 .set(ConversationEntity::getUpdatedAt, endedAt)
                 .eq(ConversationEntity::getSessionId,  sessionId)
                 .ne(ConversationEntity::getStatus,     SessionStatus.CLOSED.getValue())
+        );
+    }
+
+    /**
+     * 仅在 first_reply_at 尚未写入时，设置座席首条回复时间（幂等，仅写一次）。
+     * 由 ConversationMessageConsumer 消费到首条 role=agent 消息时调用。
+     *
+     * @param sessionId    会话唯一标识
+     * @param firstReplyAt 座席首条回复时间
+     * @return 受影响行数（0 表示不存在或已设置过）
+     */
+    default int setFirstReplyAtIfAbsent(@Param("sessionId") String sessionId,
+                                        @Param("firstReplyAt") OffsetDateTime firstReplyAt) {
+        return update(Wrappers.lambdaUpdate(ConversationEntity.class)
+                .set(ConversationEntity::getFirstReplyAt, firstReplyAt)
+                .eq(ConversationEntity::getSessionId,     sessionId)
+                .isNull(ConversationEntity::getFirstReplyAt)
         );
     }
 }
