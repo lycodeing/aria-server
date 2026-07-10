@@ -18,7 +18,7 @@ public class WebMvcConfig implements WebMvcConfigurer {
     public void addFormatters(FormatterRegistry registry) {
         // String → DocStatus：统一转大写后匹配枚举常量，与原有手动转换行为一致
         registry.addConverter(String.class, DocStatus.class, value -> {
-            if (value == null || value.isBlank()) {
+            if (value.isBlank()) {
                 return null;
             }
             try {
