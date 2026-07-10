@@ -41,7 +41,7 @@ import jakarta.annotation.PreDestroy;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
+@RequiredArgsConstructor(onConstructor_ = {@org.springframework.beans.factory.annotation.Autowired})
 public class AgentConnectionRegistry {
 
     private final ObjectMapper objectMapper;

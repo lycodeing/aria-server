@@ -179,4 +179,29 @@ public class RabbitMQConfig {
     public FanoutExchange conversationEventsExchange() {
         return ExchangeBuilder.fanoutExchange(eventsExchange).durable(true).build();
     }
+
+    /**
+     * WS 跨 Pod 身份标识队列（匿名，exclusive + autoDelete）。
+     *
+     * <p>队列名即 podId，由 {@link com.aria.conversation.infrastructure.websocket.cluster.PodIdentity}
+     * 注入使用。Spring AMQP 在 {@link RabbitAdmin} 就绪后自动声明此队列，
+     * Pod 停止时队列随连接断开自动删除。
+     *
+     * <p>将队列声明放在 Config Bean 中（而非 PodIdentity.afterPropertiesSet），
+     * 避免 PodIdentity 注入 RabbitAdmin 时与其他依赖 PodIdentity 的 Bean 形成循环依赖。
+     */
+    @Bean
+    public AnonymousQueue wsPodDeliveryQueue() {
+        return new AnonymousQueue();
+    }
+
+    /**
+     * RabbitAdmin Bean，供 {@link com.aria.conversation.infrastructure.websocket.cluster.WsDeliveryConsumer}
+     * 的 @RabbitListener 注解动态绑定匿名队列到 ws.delivery Exchange 使用。
+     */
+    @Bean
+    public org.springframework.amqp.rabbit.core.RabbitAdmin rabbitAdmin(
+            ConnectionFactory connectionFactory) {
+        return new org.springframework.amqp.rabbit.core.RabbitAdmin(connectionFactory);
+    }
 }
