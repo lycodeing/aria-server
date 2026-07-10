@@ -39,11 +39,11 @@ public class RoleController {
     public R<PageVO<RoleVO>> list(
             @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(name = "size", defaultValue = "20") int size) {
+            @RequestParam(defaultValue = "20") int pageSize) {
         RolePageQuery query = new RolePageQuery();
         query.setKeyword(keyword);
         query.setPage(page);
-        query.setSize(size);
+        query.setSize(pageSize);
         PageResult<Role> result = roleAppService.list(query);
         List<RoleVO> vos = result.items().stream().map(RoleAssembler::toVO).toList();
         return R.ok(new PageVO<>(vos, result.total()));

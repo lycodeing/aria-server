@@ -83,6 +83,17 @@ public class AdminAiModelController {
         return R.ok();
     }
 
+    /**
+     * 启用/禁用：仅更新 isEnabled，不校验其他必填字段。
+     * 请求体：{ "enabled": true/false }
+     */
+    @PatchMapping("/{id}/enabled")
+    @SaCheckPermission("system:ai-model:update")
+    public R<Void> setEnabled(@PathVariable Long id, @RequestBody EnabledRequest req) {
+        service.setEnabled(id, req.isEnabled());
+        return R.ok();
+    }
+
     @DeleteMapping("/{id}")
     @SaCheckPermission("system:ai-model:delete")
     public R<Void> delete(@PathVariable Long id) {
@@ -120,5 +131,12 @@ public class AdminAiModelController {
                 .isDefault(do_.getIsDefault())
                 .isEnabled(do_.getIsEnabled())
                 .build();
+    }
+
+    // ---- Request DTO ----
+
+    @lombok.Data
+    public static class EnabledRequest {
+        private boolean enabled;
     }
 }

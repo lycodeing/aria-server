@@ -117,6 +117,22 @@ public class AiModelConfigService {
     }
 
     /**
+     * 启用/禁用配置。
+     * 仅更新 is_enabled 字段，不触碰其他字段，避免校验不必要的必填项。
+     */
+    @Transactional
+    public void setEnabled(Long id, boolean enabled) {
+        getOrThrow(id); // 确认记录存在
+        AiModelConfigDO upd = new AiModelConfigDO();
+        upd.setId(id);
+        upd.setIsEnabled(enabled);
+        upd.setUpdatedAt(LocalDateTime.now());
+        mapper.updateById(upd);
+        broadcastChangeAfterCommit();
+        log.info("[AiModelConfig] id={} isEnabled={}", id, enabled);
+    }
+
+    /**
      * 软删除配置。
      * 默认配置不允许删除，需先切换默认后再删除。
      */

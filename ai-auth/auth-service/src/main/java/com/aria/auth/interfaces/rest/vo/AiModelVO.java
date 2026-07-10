@@ -1,5 +1,6 @@
 package com.aria.auth.interfaces.rest.vo;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Builder;
 import lombok.Data;
 
@@ -20,8 +21,10 @@ public class AiModelVO {
      */
     private String modelType;
     /**
-     * 脱敏后的 API Key（格式：前4位****后4位）
+     * 脱敏后的 API Key（格式：前4位****后4位）。
+     * 序列化为 apiKeyEnc 以匹配前端 AiModelConfigItem 接口定义。
      */
+    @JsonProperty("apiKeyEnc")
     private String maskedApiKey;
     private String modelName;
     private Double temperature;

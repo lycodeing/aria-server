@@ -61,11 +61,11 @@ public class UserController {
     public R<PageVO<UserVO>> list(
             @RequestParam(required = false) String keyword,
             @RequestParam(defaultValue = "0") int page,
-            @RequestParam(name = "size", defaultValue = "20") int size) {
+            @RequestParam(defaultValue = "20") int pageSize) {
         UserPageQuery query = new UserPageQuery();
         query.setKeyword(keyword);
         query.setPage(page);
-        query.setSize(size);
+        query.setSize(pageSize);
         PageResult<User> result = userAppService.search(query);
         List<UserVO> items = result.items().stream().map(UserAssembler::toVO).toList();
         return R.ok(new PageVO<>(items, result.total()));

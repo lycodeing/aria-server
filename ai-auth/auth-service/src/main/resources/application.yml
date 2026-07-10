@@ -4,6 +4,10 @@ server:
 spring:
   application:
     name: aria-auth
+  autoconfigure:
+    # auth-service 不需要 KnowledgeClient（通过 LocalAiModelConfigProvider 直查数据库），
+    # 排除自动装配避免因缺少 AK/SK 导致启动失败
+    exclude: com.aria.sdk.knowledge.KnowledgeClientAutoConfig
   datasource:
     url: jdbc:postgresql://localhost:5432/ai_customerservice
     username: ${DB_USERNAME:postgres}
