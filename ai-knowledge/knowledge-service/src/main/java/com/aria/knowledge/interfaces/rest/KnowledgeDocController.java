@@ -6,6 +6,7 @@ import com.aria.knowledge.application.query.DocPageQuery;
 import com.aria.knowledge.application.service.DocIngestAppService;
 import com.aria.knowledge.application.service.KnowledgeDocQueryAppService;
 import com.aria.knowledge.application.service.KnowledgeSearchAppService;
+import com.aria.knowledge.domain.model.DocStatus;
 import com.aria.knowledge.domain.model.KnowledgeChunk;
 import com.aria.knowledge.domain.model.KnowledgeDoc;
 import com.aria.knowledge.interfaces.rest.vo.DocListVO;
