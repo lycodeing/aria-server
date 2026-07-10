@@ -85,7 +85,7 @@ public class WsMessageRouter {
     private void deliver(String targetPod, WsDeliveryCommand cmd) {
         try {
             rabbitTemplate.convertAndSend(WsClusterConstants.WS_DELIVERY_EXCHANGE, targetPod, cmd);
-            log.debug("[WsRouter] 跨 Pod 投递 targetPod={} type={} id={}",
+            log.info("[WsRouter] 跨 Pod 投递 targetPod={} type={} id={}",
                     targetPod, cmd.targetType(), cmd.targetId());
         } catch (Exception e) {
             log.warn("[WsRouter] MQ 投递失败 targetPod={} msg={}", targetPod, e.getMessage());

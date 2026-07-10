@@ -101,7 +101,7 @@ public class AgentConnectionRegistry {
                     30, 30, TimeUnit.SECONDS);
             heartbeats.put(session.getId(), hb);
         }
-        log.debug("[AgentRegistry] 注册连接 agentId={} wsId={}", agentId, session.getId());
+        log.info("[AgentRegistry] 注册连接 agentId={} wsId={}", agentId, session.getId());
     }
 
     /**
@@ -135,7 +135,7 @@ public class AgentConnectionRegistry {
         if (isEmpty[0] && presenceRegistry != null) {
             presenceRegistry.unregisterAgent(agentId, podIdentity.get());
         }
-        log.debug("[AgentRegistry] 注销连接 agentId={} wsId={}", agentId, session.getId());
+        log.info("[AgentRegistry] 注销连接 agentId={} wsId={}", agentId, session.getId());
     }
 
     /**

@@ -77,7 +77,7 @@ public class VisitorSessionRegistry implements VisitorNotifier {
                 () -> presenceRegistry.refreshVisitor(sessionId),
                 30, 30, TimeUnit.SECONDS);
         heartbeats.put(session.getId(), hb);
-        log.debug("[VisitorRegistry] 注册连接 sessionId={} wsId={}", sessionId, session.getId());
+        log.info("[VisitorRegistry] 注册连接 sessionId={} wsId={}", sessionId, session.getId());
     }
 
     /**
@@ -95,7 +95,7 @@ public class VisitorSessionRegistry implements VisitorNotifier {
         boolean removed = visitorSessions.remove(sessionId, session);
         if (removed) {
             presenceRegistry.unregisterVisitor(sessionId);
-            log.debug("[VisitorRegistry] 注销连接 sessionId={} wsId={}", sessionId, session.getId());
+            log.info("[VisitorRegistry] 注销连接 sessionId={} wsId={}", sessionId, session.getId());
         }
     }
 

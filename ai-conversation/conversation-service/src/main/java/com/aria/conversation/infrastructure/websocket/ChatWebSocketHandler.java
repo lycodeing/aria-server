@@ -173,7 +173,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         // 访客 → 存历史 → 转发给座席（payload 携带 seq 支持客户端断线重连后的 sinceSeq 增量同步）
         long seq = historyRepository.append(sessionId, MessageRole.USER.getValue(), content);
         notifyAgent(sessionId, WsChatMessage.fromVisitor(sessionId, content, seq, timestamp));
-        log.debug("[WS] user→agent sessionId={} seq={}", sessionId, seq);
+        log.info("[WS] user→agent sessionId={} seq={}", sessionId, seq);
     }
 
     @Override

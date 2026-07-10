@@ -147,7 +147,7 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
         }
         long seq = historyRepository.appendAgentMessage(sessionId, content);
         router.sendToVisitor(sessionId, WsChatMessage.fromAgent(sessionId, content, seq, ts));
-        log.debug("[AgentWS] agent→visitor sessionId={} seq={}", sessionId, seq);
+        log.info("[AgentWS] agent→visitor sessionId={} seq={}", sessionId, seq);
     }
 
     /**
