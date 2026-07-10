@@ -246,9 +246,12 @@ public class AgentConnectionRegistry {
         // 层1 优雅关闭：主动清理所有座席 presence，缩短旧数据残留窗口
         if (presenceRegistry != null && podIdentity != null) {
             String myPodId = podIdentity.get();
-            sessionIdToAgentId.forEach((wsSessionId, agentId) ->
-                    presenceRegistry.unregisterAgent(agentId, myPodId));
-            log.info("[AgentRegistry] 优雅关闭：已清理 {} 个座席 presence", sessionIdToAgentId.size());
+            // 去重：sessionIdToAgentId 以 wsSession.getId() 为 key，同一座席多端在线会有多条记录
+            // 使用 Set<String> 去重后再调 unregisterAgent，日志计数反映真实 agentId 数量
+            java.util.Set<String> uniqueAgents = new java.util.HashSet<>(sessionIdToAgentId.values());
+            uniqueAgents.forEach(agentId -> presenceRegistry.unregisterAgent(agentId, myPodId));
+            log.info("[AgentRegistry] 优雅关闭：已清理 {} 个座席 presence（共 {} 个 WS 连接）",
+                    uniqueAgents.size(), sessionIdToAgentId.size());
         }
         heartbeatScheduler.shutdown();
         try {

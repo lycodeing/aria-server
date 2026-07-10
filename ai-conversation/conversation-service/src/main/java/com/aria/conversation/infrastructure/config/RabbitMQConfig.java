@@ -214,15 +214,16 @@ public class RabbitMQConfig {
      */
     @Bean("presenceCleanupExecutor")
     public java.util.concurrent.Executor presenceCleanupExecutor() {
-        java.util.concurrent.ThreadPoolExecutor executor = new java.util.concurrent.ThreadPoolExecutor(
+        java.util.concurrent.atomic.AtomicInteger idx = new java.util.concurrent.atomic.AtomicInteger(0);
+        return new java.util.concurrent.ThreadPoolExecutor(
                 1, 2, 60L, java.util.concurrent.TimeUnit.SECONDS,
                 new java.util.concurrent.LinkedBlockingQueue<>(50),
                 r -> {
-                    Thread t = new Thread(r, "presence-cleanup");
+                    Thread t = new Thread(r, "presence-cleanup-" + idx.getAndIncrement());
                     t.setDaemon(true);
                     return t;
                 },
-                new java.util.concurrent.ThreadPoolExecutor.DiscardOldestPolicy());
-        return executor;
+                // 队列满时打 WARN 日志后丢弃，保证运维可感知（而非 DiscardOldestPolicy 静默丢弃）
+                (r, executor) -> log.warn("[PresenceCleanup] 线程池已满，丢弃 presence 清理任务，旧 Pod presence 将依赖 TTL 自然过期"));
     }
 }
