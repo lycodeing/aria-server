@@ -6,7 +6,6 @@ import com.aria.auth.application.query.UserPageQuery;
 import com.aria.auth.application.service.UserApplicationService;
 import com.aria.auth.domain.model.user.User;
 import com.aria.auth.interfaces.assembler.UserAssembler;
-import com.aria.auth.interfaces.rest.vo.PageVO;
 import com.aria.auth.interfaces.rest.vo.UserVO;
 import com.aria.common.core.page.PageResult;
 import com.aria.common.web.response.R;
@@ -58,17 +57,10 @@ public class UserController {
     }
 
     @GetMapping
-    public R<PageVO<UserVO>> list(
-            @RequestParam(required = false) String keyword,
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int pageSize) {
-        UserPageQuery query = new UserPageQuery();
-        query.setKeyword(keyword);
-        query.setPage(page);
-        query.setSize(pageSize);
+    public R<PageResult<UserVO>> list(UserPageQuery query) {
         PageResult<User> result = userAppService.search(query);
         List<UserVO> items = result.items().stream().map(UserAssembler::toVO).toList();
-        return R.ok(new PageVO<>(items, result.total()));
+        return R.ok(PageResult.of(result.total(), result.page(), result.size(), items));
     }
 
     @PostMapping

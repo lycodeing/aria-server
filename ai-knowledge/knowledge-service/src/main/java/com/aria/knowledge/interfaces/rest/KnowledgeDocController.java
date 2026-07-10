@@ -6,7 +6,6 @@ import com.aria.knowledge.application.query.DocPageQuery;
 import com.aria.knowledge.application.service.DocIngestAppService;
 import com.aria.knowledge.application.service.KnowledgeDocQueryAppService;
 import com.aria.knowledge.application.service.KnowledgeSearchAppService;
-import com.aria.knowledge.domain.model.DocStatus;
 import com.aria.knowledge.domain.model.KnowledgeChunk;
 import com.aria.knowledge.domain.model.KnowledgeDoc;
 import com.aria.knowledge.interfaces.rest.vo.DocListVO;
@@ -52,27 +51,9 @@ public class KnowledgeDocController {
 
     @Operation(summary = "分页查询文档列表")
     @GetMapping
-    public R<PageResult<DocListVO>> list(
-            @RequestParam(name = "keyword", required = false) String keyword,
-            @RequestParam(name = "kbId",    required = false) String kbId,
-            @RequestParam(name = "status",  required = false) String status,
-            @RequestParam(name = "page",    defaultValue = "0")  int page,
-            @RequestParam(name = "size",    defaultValue = "20") int size) {
-        // Interface 层负责 String → 枚举的转换和校验，不把脏字符串透传到 Application 层
-        DocStatus docStatus = null;
-        if (status != null && !status.isBlank()) {
-            try {
-                docStatus = DocStatus.valueOf(status.toUpperCase());
-            } catch (IllegalArgumentException e) {
-                return R.fail(400, "无效的文档状态值：" + status);
-            }
-        }
-        DocPageQuery query = new DocPageQuery();
-        query.setKeyword(keyword);
-        query.setKbId(kbId);
-        query.setStatus(docStatus);
-        query.setPage(page);
-        query.setSize(size);
+    public R<PageResult<DocListVO>> list(DocPageQuery query) {
+        // keyword/kbId/status/page/size 全部由 Spring MVC 自动绑定
+        // status 枚举值非法时抛 BindException，由 GlobalExceptionHandler 统一返回 400
         PageResult<KnowledgeDoc> result = ingestAppService.listDocs(query);
         List<DocListVO> items = result.items().stream().map(this::toListVO).toList();
         return R.ok(PageResult.of(result.total(), result.page(), result.size(), items));

@@ -7,8 +7,9 @@ import com.aria.auth.application.service.AiModelConfigService;
 import com.aria.auth.infrastructure.persistence.ai.AiModelConfigDO;
 import com.aria.auth.interfaces.dto.AiModelRequest;
 import com.aria.auth.interfaces.rest.vo.AiModelVO;
+import com.aria.common.core.page.PageQuery;
+import com.aria.common.core.page.PageResult;
 import com.aria.common.web.response.R;
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
@@ -43,19 +44,17 @@ public class AdminAiModelController {
     /**
      * 分页列表。
      * modelType 可选，为空时返回全部类型；前端 TAB 切换时传 "CHAT" 或 "EMBEDDING"。
+     * page 为 0-based，size 默认 20。
      */
     @GetMapping
-    public R<Page<AiModelVO>> list(
-            @RequestParam(defaultValue = "1") int pageNum,
-            @RequestParam(defaultValue = "20") int pageSize,
+    public R<PageResult<AiModelVO>> list(
+            PageQuery pageQuery,
             @RequestParam(required = false) String modelType) {
-        Page<AiModelConfigDO> doPage = service.page(pageNum, pageSize, modelType);
-        List<AiModelVO> vos = doPage.getRecords().stream()
+        PageResult<AiModelConfigDO> doResult = service.page(pageQuery, modelType);
+        List<AiModelVO> vos = doResult.items().stream()
                 .map(this::toVO)
                 .toList();
-        Page<AiModelVO> voPage = new Page<>(doPage.getCurrent(), doPage.getSize(), doPage.getTotal());
-        voPage.setRecords(vos);
-        return R.ok(voPage);
+        return R.ok(PageResult.of(doResult.total(), doResult.page(), doResult.size(), vos));
     }
 
     @PostMapping

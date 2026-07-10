@@ -5,6 +5,9 @@ import com.aria.auth.infrastructure.persistence.ai.AiModelConfigDO;
 import com.aria.auth.infrastructure.persistence.ai.AiModelConfigMapper;
 import com.aria.auth.interfaces.dto.AiModelRequest;
 import com.aria.common.core.exception.BusinessException;
+import com.aria.common.core.page.PageQuery;
+import com.aria.common.core.page.PageResult;
+import com.aria.common.core.page.PageUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
@@ -44,9 +47,8 @@ public class AiModelConfigService {
     /**
      * 分页查询（api_key_enc 原样返回，Controller 层负责脱敏）
      */
-    public Page<AiModelConfigDO> page(int pageNum, int pageSize, String modelType) {
-        Page<AiModelConfigDO> page = new Page<>(pageNum, pageSize);
-        com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<AiModelConfigDO> wrapper =
+    public PageResult<AiModelConfigDO> page(PageQuery pageQuery, String modelType) {
+        LambdaQueryWrapper<AiModelConfigDO> wrapper =
                 new LambdaQueryWrapper<AiModelConfigDO>()
                         .isNull(AiModelConfigDO::getDeletedAt)
                         .orderByDesc(AiModelConfigDO::getCreatedAt);
@@ -54,7 +56,8 @@ public class AiModelConfigService {
         if (modelType != null && !modelType.isBlank()) {
             wrapper.eq(AiModelConfigDO::getModelType, modelType);
         }
-        return mapper.selectPage(page, wrapper);
+        Page<AiModelConfigDO> result = mapper.selectPage(PageUtil.toMpPage(pageQuery), wrapper);
+        return PageUtil.toPageResult(result, pageQuery);
     }
 
     /**

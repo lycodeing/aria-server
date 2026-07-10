@@ -10,6 +10,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.validation.BindException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
@@ -49,6 +50,18 @@ public class GlobalExceptionHandler {
                 .collect(Collectors.joining(", "));
         log.warn("参数校验失败: {}", detail);
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(R.fail(400, "参数校验失败: " + detail));
+    }
+
+    /**
+     * @ModelAttribute 对象绑定失败（如枚举值非法、数字格式错误），返回 400。
+     */
+    @ExceptionHandler(BindException.class)
+    public ResponseEntity<R<Void>> handleBindException(BindException e) {
+        String detail = e.getBindingResult().getFieldErrors().stream()
+                .map(fe -> fe.getField() + ": " + fe.getDefaultMessage())
+                .collect(Collectors.joining(", "));
+        log.warn("请求参数绑定失败: {}", detail);
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(R.fail(400, "请求参数错误: " + detail));
     }
 
     @ExceptionHandler(ConstraintViolationException.class)

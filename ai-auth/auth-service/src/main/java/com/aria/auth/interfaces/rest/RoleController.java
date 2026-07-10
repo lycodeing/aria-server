@@ -36,17 +36,10 @@ public class RoleController {
     private final MenuApplicationService menuService;
 
     @GetMapping
-    public R<PageVO<RoleVO>> list(
-            @RequestParam(required = false) String keyword,
-            @RequestParam(defaultValue = "0") int page,
-            @RequestParam(defaultValue = "20") int pageSize) {
-        RolePageQuery query = new RolePageQuery();
-        query.setKeyword(keyword);
-        query.setPage(page);
-        query.setSize(pageSize);
+    public R<PageResult<RoleVO>> list(RolePageQuery query) {
         PageResult<Role> result = roleAppService.list(query);
         List<RoleVO> vos = result.items().stream().map(RoleAssembler::toVO).toList();
-        return R.ok(new PageVO<>(vos, result.total()));
+        return R.ok(PageResult.of(result.total(), result.page(), result.size(), vos));
     }
 
     @GetMapping("/{id}")
