@@ -1,6 +1,10 @@
 spring:
   application:
     name: aria-knowledge
+  autoconfigure:
+    exclude:
+      # knowledge-service 本身不需要通过 SDK 调用自己，排除客户端自动装配
+      - com.aria.sdk.knowledge.KnowledgeClientAutoConfig
   datasource:
     url: jdbc:postgresql://localhost:5432/ai_knowledge
     username: ${DB_USERNAME:postgres}
