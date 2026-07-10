@@ -16,11 +16,9 @@ import java.util.Set;
  * <p>根据 {@link WsPresenceRegistry} 中的 presence 信息决定本地直推还是通过
  * {@code ws.delivery} RabbitMQ Direct Exchange 跨 Pod 投递。
  *
- * <p>本地路径调用 {@link VisitorNotifier#notifyVisitor}（ChatWebSocketHandler 的本地 socket 写入），
- * 不经过路由层，不存在 notifyVisitor → sendToVisitor 无限递归问题。
- *
- * <p>注入 {@link VisitorNotifier} 接口（而非 ChatWebSocketHandler 实现类），
- * 避免与 ChatWebSocketHandler 注入 WsMessageRouter 形成 Spring 构造器循环依赖。
+ * <p>本地路径直接注入 {@link VisitorNotifier}（由 {@code VisitorSessionRegistry} 实现），
+ * 不再通过 ApplicationContext 运行时查找。VisitorSessionRegistry 独立于
+ * ChatWebSocketHandler，因此本类与 ChatWebSocketHandler 之间不再存在循环依赖。
  */
 @Slf4j
 @Component
@@ -55,8 +53,10 @@ public class WsMessageRouter {
 
     /**
      * 向访客推送消息。本 Pod 直接推；跨 Pod 发 MQ。
-     * ⚠️ 本地路径调用 visitorNotifier.notifyVisitor()（本地 socket 写入），
+     * ⚠️ 本地路径通过 ApplicationContext 运行时查找 VisitorNotifier（本地 socket 写入），
      * 不是 router.sendToVisitor()，防止无限递归。
+     * ApplicationContext.getBean() 在方法调用时执行，不在 Bean 初始化阶段，
+     * 彻底规避 ChatWebSocketHandler ↔ WsMessageRouter 的构造器循环依赖。
      */
     public void sendToVisitor(String sessionId, Object payload) {
         String pod = presenceRegistry.getVisitorPod(sessionId);
