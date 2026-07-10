@@ -54,6 +54,15 @@ public class VisitorSessionRegistry implements VisitorNotifier {
             Executors.newScheduledThreadPool(2);
 
     /**
+     * 返回当前 Pod 的唯一标识，用于 CONNECTED 信令中的 podId 字段，便于多 Pod 调试。
+     *
+     * @return podId 字符串
+     */
+    public String getPodId() {
+        return podIdentity.get();
+    }
+
+    /**
      * 访客连接建立：注册 session、写 Redis presence、启动 30s 心跳。
      * 若已存在旧连接（重连场景），关闭旧连接并清理旧 sendLock/heartbeat。
      *

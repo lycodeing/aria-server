@@ -96,7 +96,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         if (PATH_SEGMENT_CHAT.equals(role)) {
             visitorSessionRegistry.register(sessionId, session);
             log.info("[WS] visitor connected sessionId={}", sessionId);
-            visitorSessionRegistry.notifyVisitor(sessionId, WsConnectedMessage.forVisitor(sessionId));
+            visitorSessionRegistry.notifyVisitor(sessionId, WsConnectedMessage.forVisitor(sessionId, visitorSessionRegistry.getPodId()));
         }
     }
 

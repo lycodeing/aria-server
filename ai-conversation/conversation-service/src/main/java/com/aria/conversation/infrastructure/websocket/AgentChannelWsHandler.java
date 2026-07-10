@@ -111,7 +111,7 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
         }
 
         // 通知新端连接成功，通过 Registry 锁发送，避免与并发广播产生帧竞态
-        registry.sendToSession(session, WsConnectedMessage.forAgent());
+        registry.sendToSession(session, WsConnectedMessage.forAgent(podIdentity.get()));
         log.info("[AgentWS] 座席连接建立 agentId={} wsId={} mode={}", agentId, session.getId(), multiLoginMode);
     }
 
