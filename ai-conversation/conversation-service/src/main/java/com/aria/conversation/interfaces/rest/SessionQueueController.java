@@ -59,8 +59,8 @@ public class SessionQueueController {
 
     private final SessionQueueService  queueService;
     private final SessionEventSubscriber eventSubscriber;
-    /** WS Handler，close 时主动以 NORMAL 状态关闭访客 WS（触发前端 code=1000 流程） */
-    private final com.aria.conversation.infrastructure.websocket.ChatWebSocketHandler chatWebSocketHandler;
+    /** 访客 WS 推送接口，close 时主动以 NORMAL 状态关闭访客 WS（触发前端 code=1000 流程） */
+    private final com.aria.conversation.infrastructure.websocket.VisitorNotifier visitorNotifier;
     private final AiSummaryService             aiSummaryService;
     private final ReplySuggestionService       replySuggestionService;
     private final VisitorHistoryService        visitorHistoryService;
@@ -140,7 +140,7 @@ public class SessionQueueController {
             @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "sessionId 格式非法")
             String sessionId) {
         queueService.close(sessionId);
-        chatWebSocketHandler.closeVisitorSessionNormal(sessionId);
+        visitorNotifier.closeVisitorSessionNormal(sessionId);
         return R.ok();
     }
 

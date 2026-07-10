@@ -42,7 +42,7 @@ import java.util.regex.Pattern;
 @Slf4j
 @Component
 @RequiredArgsConstructor
-public class ChatWebSocketHandler extends TextWebSocketHandler implements VisitorNotifier {
+public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     // ---- 路径常量 ----
     private static final String PATH_SEGMENT_CHAT = "chat";
@@ -208,24 +208,6 @@ public class ChatWebSocketHandler extends TextWebSocketHandler implements Visito
         if (PATH_SEGMENT_CHAT.equals(role)) {
             visitorSessionRegistry.unregister(sessionId, session);
         }
-    }
-
-    /**
-     * 通知访客，委托给 {@link VisitorSessionRegistry}。
-     */
-    @Override
-    public void notifyVisitor(String sessionId, Object payload) {
-        visitorSessionRegistry.notifyVisitor(sessionId, payload);
-    }
-
-    /**
-     * 主动以正常状态（code=1000 NORMAL）关闭访客端 WS，委托给 {@link VisitorSessionRegistry}。
-     * <p>用途：座席端点击「结束会话」时由 SessionQueueService.close 调用，
-     * 前端 chat-widget 监听到 code=1000 会显示"会话已结束"提示并清理 transferred 状态。
-     */
-    @Override
-    public void closeVisitorSessionNormal(String sessionId) {
-        visitorSessionRegistry.closeVisitorSessionNormal(sessionId);
     }
 
     /**
