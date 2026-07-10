@@ -53,10 +53,10 @@ public class WsMessageRouter {
 
     /**
      * 向访客推送消息。本 Pod 直接推；跨 Pod 发 MQ。
-     * ⚠️ 本地路径通过 ApplicationContext 运行时查找 VisitorNotifier（本地 socket 写入），
+     *
+     * <p>本地路径直接调用 {@code visitorNotifier.notifyVisitor()}（即 {@link VisitorSessionRegistry} 的本地推送），
      * 不是 router.sendToVisitor()，防止无限递归。
-     * ApplicationContext.getBean() 在方法调用时执行，不在 Bean 初始化阶段，
-     * 彻底规避 ChatWebSocketHandler ↔ WsMessageRouter 的构造器循环依赖。
+     * 循环依赖已通过提取 {@link VisitorSessionRegistry} 从根源消除，无需 ApplicationContext 运行时查找。
      */
     public void sendToVisitor(String sessionId, Object payload) {
         String pod = presenceRegistry.getVisitorPod(sessionId);
