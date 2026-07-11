@@ -57,6 +57,8 @@ public class ConversationPersistRepository {
         entity.setTag(tag != null && !tag.isBlank() ? tag : "咨询");
         entity.setStatus(SessionStatus.WAITING);
         entity.setStartedAt(startedAt);
+        entity.setCreatedAt(startedAt);
+        entity.setUpdatedAt(startedAt);
 
         try {
             conversationMapper.insert(entity);
@@ -132,6 +134,8 @@ public class ConversationPersistRepository {
         entity.setTag("AI 对话");
         entity.setStatus(SessionStatus.AI_CHAT);
         entity.setStartedAt(startedAt);
+        entity.setCreatedAt(startedAt);
+        entity.setUpdatedAt(startedAt);
         try {
             conversationMapper.insert(entity);
             log.debug("[Persist] AI_CHAT 会话初始化 sessionId={}", sessionId);

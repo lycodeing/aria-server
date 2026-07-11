@@ -68,14 +68,16 @@ public interface DashboardStatsMapper {
 
     /**
      * 会话趋势（按月聚合，区分人工/AI）。
-     * 有 agent_id 的为人工会话，无 agent_id 的为 AI 会话。
+     * tag != 'AI 对话' 为人工会话（含 WAITING/ACTIVE/CLOSED 转人工），
+     * tag = 'AI 对话' 为纯 AI 会话；比 agent_id 判断更准确，
+     * 避免将 agent_id=NULL 的 WAITING 会话误算为 AI 会话。
      * 返回最近 12 个月的数据。
      */
     @Select("""
             SELECT
                 TO_CHAR(DATE_TRUNC('month', started_at), 'YYYY-MM')        AS month,
-                COUNT(*) FILTER (WHERE agent_id IS NOT NULL)               AS "humanCount",
-                COUNT(*) FILTER (WHERE agent_id IS NULL)                   AS "aiCount"
+                COUNT(*) FILTER (WHERE tag != 'AI 对话')                   AS "humanCount",
+                COUNT(*) FILTER (WHERE tag = 'AI 对话')                    AS "aiCount"
             FROM cs_conversation.cs_conversation
             WHERE started_at >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '11 months')
             GROUP BY DATE_TRUNC('month', started_at)
@@ -218,12 +220,13 @@ public interface DashboardStatsMapper {
     /**
      * 会话趋势（按天聚合，支持时间范围）。
      * 返回 [startDate, endDate] 区间内每天的人工/AI 会话量。
+     * 以 tag='AI 对话' 区分纯 AI 会话，其余均视为人工会话（含 WAITING 状态）。
      */
     @Select("""
             SELECT
                 TO_CHAR(DATE_TRUNC('day', started_at), 'YYYY-MM-DD')       AS month,
-                COUNT(*) FILTER (WHERE agent_id IS NOT NULL)                AS "humanCount",
-                COUNT(*) FILTER (WHERE agent_id IS NULL)                    AS "aiCount"
+                COUNT(*) FILTER (WHERE tag != 'AI 对话')                    AS "humanCount",
+                COUNT(*) FILTER (WHERE tag = 'AI 对话')                     AS "aiCount"
             FROM cs_conversation.cs_conversation
             WHERE started_at >= #{startDate}::date
               AND started_at < #{endDate}::date + INTERVAL '1 day'

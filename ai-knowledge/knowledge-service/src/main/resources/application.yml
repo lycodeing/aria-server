@@ -56,7 +56,7 @@ mybatis-plus:
       logic-not-delete-value: "NULL"
 
 server:
-  port: 8084
+  port: 8081
 
 # Sa-Token（与 auth-service 共享 JWT 密钥，用于验证管理员 token）
 sa-token:
