@@ -2,6 +2,7 @@ package com.aria.conversation.infrastructure.persistence.mapper;
 
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
+import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
 import com.aria.conversation.interfaces.rest.vo.StatusDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.TagDistributionItemVO;
@@ -9,6 +10,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -208,4 +210,68 @@ public interface DashboardStatsMapper {
               AND first_reply_at IS NOT NULL
             """)
     long avgFirstReplySeconds();
+
+    // ============================================================
+    // 按时间范围聚合（按天，支持时间范围筛选）
+    // ============================================================
+
+    /**
+     * 会话趋势（按天聚合，支持时间范围）。
+     * 返回 [startDate, endDate] 区间内每天的人工/AI 会话量。
+     */
+    @Select("""
+            SELECT
+                TO_CHAR(DATE_TRUNC('day', started_at), 'YYYY-MM-DD')       AS month,
+                COUNT(*) FILTER (WHERE agent_id IS NOT NULL)                AS "humanCount",
+                COUNT(*) FILTER (WHERE agent_id IS NULL)                    AS "aiCount"
+            FROM cs_conversation.cs_conversation
+            WHERE started_at >= #{startDate}::date
+              AND started_at < #{endDate}::date + INTERVAL '1 day'
+            GROUP BY DATE_TRUNC('day', started_at)
+            ORDER BY month
+            """)
+    List<ConversationTrendItemVO> getConversationTrendsByRange(
+            @Param("startDate") LocalDate startDate,
+            @Param("endDate")   LocalDate endDate);
+
+    /**
+     * 消息量趋势（按天聚合，支持时间范围）。
+     * 区分 agent（人工）和 assistant（AI）两类角色。
+     */
+    @Select("""
+            SELECT
+                TO_CHAR(DATE_TRUNC('day', created_at), 'YYYY-MM-DD')  AS month,
+                COUNT(*) FILTER (WHERE role = 'agent')                 AS "humanCount",
+                COUNT(*) FILTER (WHERE role = 'assistant')             AS "aiCount"
+            FROM cs_conversation.cs_conversation_message
+            WHERE created_at >= #{startDate}::date
+              AND created_at < #{endDate}::date + INTERVAL '1 day'
+            GROUP BY DATE_TRUNC('day', created_at)
+            ORDER BY month
+            """)
+    List<ConversationTrendItemVO> getMessageTrendsByRange(
+            @Param("startDate") LocalDate startDate,
+            @Param("endDate")   LocalDate endDate);
+
+    /**
+     * 效率趋势（按天聚合，支持时间范围）。
+     * 返回每天的平均等待/处理/首次回复时长（秒）。
+     * 仅统计 accepted_at IS NOT NULL 的会话。
+     */
+    @Select("""
+            SELECT
+                TO_CHAR(DATE_TRUNC('day', accepted_at), 'YYYY-MM-DD')                                       AS date,
+                COALESCE(EXTRACT(EPOCH FROM AVG(accepted_at - started_at))::bigint,     0) AS "avgWaitSeconds",
+                COALESCE(EXTRACT(EPOCH FROM AVG(ended_at - accepted_at))::bigint,       0) AS "avgHandleSeconds",
+                COALESCE(EXTRACT(EPOCH FROM AVG(first_reply_at - accepted_at))::bigint, 0) AS "avgFirstReplySeconds"
+            FROM cs_conversation.cs_conversation
+            WHERE accepted_at IS NOT NULL
+              AND accepted_at >= #{startDate}::date
+              AND accepted_at < #{endDate}::date + INTERVAL '1 day'
+            GROUP BY DATE_TRUNC('day', accepted_at)
+            ORDER BY date
+            """)
+    List<EfficiencyTrendItemVO> getEfficiencyTrends(
+            @Param("startDate") LocalDate startDate,
+            @Param("endDate")   LocalDate endDate);
 }
