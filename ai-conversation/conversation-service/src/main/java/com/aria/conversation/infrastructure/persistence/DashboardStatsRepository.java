@@ -3,12 +3,14 @@ package com.aria.conversation.infrastructure.persistence;
 import com.aria.conversation.infrastructure.persistence.mapper.DashboardStatsMapper;
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
+import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
 import com.aria.conversation.interfaces.rest.vo.StatusDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.TagDistributionItemVO;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDate;
 import java.util.List;
 
 /**
@@ -122,5 +124,38 @@ public class DashboardStatsRepository {
     /** 座席工作量统计 */
     public List<AgentWorkloadItemVO> getAgentWorkload() {
         return statsMapper.getAgentWorkload();
+    }
+
+    // ---- 按时间范围聚合（按天） ----
+
+    /**
+     * 会话趋势（按天聚合，支持时间范围）。
+     *
+     * @param startDate 开始日期（含）
+     * @param endDate   结束日期（含）
+     */
+    public List<ConversationTrendItemVO> getConversationTrendsByRange(LocalDate startDate, LocalDate endDate) {
+        return statsMapper.getConversationTrendsByRange(startDate, endDate);
+    }
+
+    /**
+     * 消息量趋势（按天聚合，支持时间范围）。
+     *
+     * @param startDate 开始日期（含）
+     * @param endDate   结束日期（含）
+     */
+    public List<ConversationTrendItemVO> getMessageTrendsByRange(LocalDate startDate, LocalDate endDate) {
+        return statsMapper.getMessageTrendsByRange(startDate, endDate);
+    }
+
+    /**
+     * 效率趋势（按天聚合，支持时间范围）。
+     * 返回每天的平均等待/处理/首次回复时长（秒）。
+     *
+     * @param startDate 开始日期（含）
+     * @param endDate   结束日期（含）
+     */
+    public List<EfficiencyTrendItemVO> getEfficiencyTrends(LocalDate startDate, LocalDate endDate) {
+        return statsMapper.getEfficiencyTrends(startDate, endDate);
     }
 }

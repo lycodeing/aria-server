@@ -4,6 +4,7 @@ import com.aria.conversation.infrastructure.persistence.DashboardStatsRepository
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.DashboardOverviewVO;
+import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
 import com.aria.conversation.interfaces.rest.vo.StatusDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.TagDistributionItemVO;
@@ -11,6 +12,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.time.DayOfWeek;
+import java.time.LocalDate;
+import java.time.temporal.TemporalAdjusters;
 import java.util.List;
 import java.util.function.LongSupplier;
 
@@ -61,7 +65,19 @@ public class DashboardAppService {
      * @return 按月聚合的趋势数据列表
      */
     public List<ConversationTrendItemVO> getConversationTrends() {
-        return statsRepository.getMonthlyTrends();
+        return getConversationTrends("month", null);
+    }
+
+    /**
+     * 会话趋势（支持时间范围，按天聚合）。
+     *
+     * @param rangeType 时间范围类型：month / week / custom
+     * @param days      仅 rangeType=custom 时生效，往前推 N 天
+     * @return 按天聚合的趋势数据列表
+     */
+    public List<ConversationTrendItemVO> getConversationTrends(String rangeType, Integer days) {
+        LocalDate[] range = resolveRange(rangeType, days);
+        return statsRepository.getConversationTrendsByRange(range[0], range[1]);
     }
 
     /**
@@ -70,7 +86,31 @@ public class DashboardAppService {
      * @return 按月聚合的消息量数据列表
      */
     public List<ConversationTrendItemVO> getMessageTrends() {
-        return statsRepository.getMonthlyMessageTrends();
+        return getMessageTrends("month", null);
+    }
+
+    /**
+     * 消息量趋势（支持时间范围，按天聚合）。
+     *
+     * @param rangeType 时间范围类型：month / week / custom
+     * @param days      仅 rangeType=custom 时生效，往前推 N 天
+     * @return 按天聚合的消息量数据列表
+     */
+    public List<ConversationTrendItemVO> getMessageTrends(String rangeType, Integer days) {
+        LocalDate[] range = resolveRange(rangeType, days);
+        return statsRepository.getMessageTrendsByRange(range[0], range[1]);
+    }
+
+    /**
+     * 效率趋势（支持时间范围，按天聚合）。
+     *
+     * @param rangeType 时间范围类型：month / week / custom
+     * @param days      仅 rangeType=custom 时生效，往前推 N 天
+     * @return 按天聚合的效率趋势数据列表
+     */
+    public List<EfficiencyTrendItemVO> getEfficiencyTrends(String rangeType, Integer days) {
+        LocalDate[] range = resolveRange(rangeType, days);
+        return statsRepository.getEfficiencyTrends(range[0], range[1]);
     }
 
     /**
@@ -127,5 +167,23 @@ public class DashboardAppService {
             log.warn("Dashboard 统计查询失败，返回 0: {}", e.getMessage());
             return 0L;
         }
+    }
+
+    /**
+     * 将 rangeType/days 参数解析为 [startDate, endDate]（含两端）。
+     * <ul>
+     *   <li>month  → 本月第一天 ~ 今天</li>
+     *   <li>week   → 本周一 ~ 今天</li>
+     *   <li>custom → 今天 - days + 1 ~ 今天（days 默认 7）</li>
+     * </ul>
+     */
+    private LocalDate[] resolveRange(String rangeType, Integer days) {
+        LocalDate today = LocalDate.now();
+        LocalDate start = switch (rangeType == null ? "month" : rangeType) {
+            case "week"   -> today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY));
+            case "custom" -> today.minusDays(Math.max(1, days == null ? 7 : days) - 1);
+            default       -> today.withDayOfMonth(1); // month
+        };
+        return new LocalDate[]{start, today};
     }
 }
