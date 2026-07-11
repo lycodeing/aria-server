@@ -5,6 +5,7 @@ import com.aria.conversation.application.service.DashboardAppService;
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.DashboardOverviewVO;
+import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
 import com.aria.conversation.interfaces.rest.vo.StatusDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.TagDistributionItemVO;
@@ -24,9 +25,10 @@ import java.util.List;
  * 的聚合统计数据。所有接口均为只读 GET 请求，不修改任何业务数据。
  *
  * <pre>
- * GET /api/v1/dashboard/overview              → 概览指标（今日会话量/总会话量/用户数/消息数）
- * GET /api/v1/dashboard/conversation-trends   → 会话趋势（按月，区分人工/AI）
- * GET /api/v1/dashboard/message-trends        → 消息量趋势（按月）
+ * GET /api/v1/dashboard/overview              → 概览指标（今日会话量/总会话量/用户数/消息数/效率均值）
+ * GET /api/v1/dashboard/conversation-trends   → 会话趋势（按天，支持 rangeType/days 参数）
+ * GET /api/v1/dashboard/message-trends        → 消息量趋势（按天，支持 rangeType/days 参数）
+ * GET /api/v1/dashboard/efficiency-trends     → 效率趋势（按天，平均等待/处理/首次回复时长）
  * GET /api/v1/dashboard/status-distribution   → 会话状态分布
  * GET /api/v1/dashboard/tag-distribution      → 问题标签分布
  * GET /api/v1/dashboard/recent-sessions       → 最近会话列表
@@ -49,16 +51,28 @@ public class DashboardController {
         return R.ok(dashboardAppService.getOverview());
     }
 
-    /** 会话趋势（analytics 页面折线图） */
+    /** 会话趋势（analytics 页面折线图，支持时间范围） */
     @GetMapping("/conversation-trends")
-    public R<List<ConversationTrendItemVO>> getConversationTrends() {
-        return R.ok(dashboardAppService.getConversationTrends());
+    public R<List<ConversationTrendItemVO>> getConversationTrends(
+            @RequestParam(name = "rangeType", defaultValue = "month") String rangeType,
+            @RequestParam(name = "days",      required = false)        Integer days) {
+        return R.ok(dashboardAppService.getConversationTrends(rangeType, days));
     }
 
-    /** 消息量趋势（analytics 页面柱状图） */
+    /** 消息量趋势（analytics 页面柱状图，支持时间范围） */
     @GetMapping("/message-trends")
-    public R<List<ConversationTrendItemVO>> getMessageTrends() {
-        return R.ok(dashboardAppService.getMessageTrends());
+    public R<List<ConversationTrendItemVO>> getMessageTrends(
+            @RequestParam(name = "rangeType", defaultValue = "month") String rangeType,
+            @RequestParam(name = "days",      required = false)        Integer days) {
+        return R.ok(dashboardAppService.getMessageTrends(rangeType, days));
+    }
+
+    /** 效率趋势（analytics 页面折线图，按天聚合三项时效均值） */
+    @GetMapping("/efficiency-trends")
+    public R<List<EfficiencyTrendItemVO>> getEfficiencyTrends(
+            @RequestParam(name = "rangeType", defaultValue = "month") String rangeType,
+            @RequestParam(name = "days",      required = false)        Integer days) {
+        return R.ok(dashboardAppService.getEfficiencyTrends(rangeType, days));
     }
 
     /** 会话状态分布（analytics 页面饼图） */
