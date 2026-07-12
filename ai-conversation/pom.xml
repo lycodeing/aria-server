@@ -10,8 +10,8 @@
     </parent>
     <artifactId>ai-conversation</artifactId>
     <packaging>pom</packaging>
-    <name>AI Conversation</name>
-    <description>智能客服对话服务父模块</description>
+    <name>ARIA Conversation - 对话服务模块</name>
+    <description>ARIA 智能客服对话服务父模块</description>
 
     <modules>
         <module>conversation-service</module>

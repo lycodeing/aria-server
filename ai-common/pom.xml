@@ -12,8 +12,8 @@
     <groupId>com.aria</groupId>
     <artifactId>ai-common</artifactId>
     <packaging>pom</packaging>
-    <name>AI Customerservice Common</name>
-    <description>客服系统公共基础模块，独立于 ai-dev-platform</description>
+    <name>ARIA Common</name>
+    <description>ARIA 公共基础模块</description>
 
     <modules>
         <module>common-core</module>

@@ -9,7 +9,7 @@
         <version>1.0.0-SNAPSHOT</version>
     </parent>
     <artifactId>aria-common-core</artifactId>
-    <name>CS Common Core</name>
+    <name>ARIA Common Core</name>
     <description>零框架依赖的公共基础设施（领域层基类、异常、工具）</description>
 
     <dependencies>

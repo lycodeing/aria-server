@@ -10,8 +10,8 @@
     </parent>
     <artifactId>ai-auth</artifactId>
     <packaging>pom</packaging>
-    <name>AI Auth - 客服认证授权模块</name>
-    <description>客服系统独立认证服务：用户/角色/菜单/数据权限，不依赖 ai-dev-platform</description>
+    <name>ARIA Auth - 认证授权模块</name>
+    <description>ARIA 认证服务：用户 / 角色 / 菜单 / 数据权限</description>
 
     <modules>
         <module>auth-client</module>

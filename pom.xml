@@ -8,8 +8,8 @@
     <artifactId>aria-server</artifactId>
     <version>1.0.0-SNAPSHOT</version>
     <packaging>pom</packaging>
-    <name>AI CustomerService Backend</name>
-    <description>智能客服系统后端：知识库 + 对话 + 认证授权</description>
+    <name>ARIA - AI Realtime Intelligent Agent</name>
+    <description>ARIA 智能客服系统后端：知识库 + 对话 + 认证授权</description>
 
     <properties>
         <java.version>17</java.version>

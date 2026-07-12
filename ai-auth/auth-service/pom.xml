@@ -9,8 +9,8 @@
         <version>1.0.0-SNAPSHOT</version>
     </parent>
     <artifactId>aria-auth</artifactId>
-    <name>CS Auth Service - 客服认证服务</name>
-    <description>端口 8083，独立认证授权：用户/角色/菜单/数据权限，schema cs_auth</description>
+    <name>ARIA Auth Service - 认证服务</name>
+    <description>端口 8083，认证授权：用户 / 角色 / 菜单 / 数据权限</description>
 
     <dependencies>
         <!--

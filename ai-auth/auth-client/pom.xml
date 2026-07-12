@@ -9,8 +9,8 @@
         <version>1.0.0-SNAPSHOT</version>
     </parent>
     <artifactId>auth-client</artifactId>
-    <name>AI Auth Client SDK</name>
-    <description>auth-service 内网接口 SDK：AI 模型配置拉取、Token 校验等，X-Internal-Secret 鉴权</description>
+    <name>ARIA Auth Client SDK</name>
+    <description>auth-service 内网接口 SDK：AI 模型配置拉取、Token 校验，X-Internal-Secret 鉴权</description>
 
     <dependencies>
         <dependency>

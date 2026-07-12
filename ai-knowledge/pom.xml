@@ -10,7 +10,7 @@
     </parent>
     <artifactId>ai-knowledge</artifactId>
     <packaging>pom</packaging>
-    <name>AI Knowledge - 知识库模块</name>
+    <name>ARIA Knowledge - 知识库模块</name>
     <modules>
         <module>knowledge-service</module>
         <module>knowledge-client</module>

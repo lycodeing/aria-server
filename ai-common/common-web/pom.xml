@@ -9,7 +9,7 @@
         <version>1.0.0-SNAPSHOT</version>
     </parent>
     <artifactId>aria-common-web</artifactId>
-    <name>CS Common Web</name>
+    <name>ARIA Common Web</name>
     <description>Spring Web 层基础设施（统一响应、全局异常、Sa-Token、Swagger）</description>
 
     <dependencies>

@@ -9,7 +9,7 @@
         <version>1.0.0-SNAPSHOT</version>
     </parent>
     <artifactId>aria-knowledge</artifactId>
-    <name>Knowledge Service - 知识库服务</name>
+    <name>ARIA Knowledge Service - 知识库服务</name>
     <description>文档摄取、向量化、混合检索、知识库管理 REST API，端口 8081</description>
 
     <dependencies>
