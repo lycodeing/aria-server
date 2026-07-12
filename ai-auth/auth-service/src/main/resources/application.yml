@@ -61,7 +61,7 @@ cs:
 # InternalSecretVerifier.validateOnStartup() 会阻止服务启动。
 aria:
   internal:
-    secret: ${ARIA_INTERNAL_SECRET:aria-internal-lycodeing-2024}
+    secret: aria-internal-lycodeing-2024
   # auth-service 自身不需要通过 auth-client SDK 调用自己，
   # 关闭 auth-client 自动装配以避免自调自己与循环依赖。
   # LocalAiModelConfigProvider 会以 @Primary 提供本地实现直查数据库。

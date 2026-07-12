@@ -77,9 +77,8 @@ springdoc:
 # 生产环境请通过环境变量 APP_CORS_ALLOWED_ORIGINS 设置实际前端域名，禁止通配符
 app:
   cors:
-    # 开发环境默认允许本地前端，生产必须替换
-    # 开发期 web-antd 端口可能为 5666/5667/5668/5669/5670，全部放行；aria-web 开发端口 5173；生产必须替换为实际域名
-    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:https://chat.lycodeing.cn,http://localhost:5670,http://localhost:5671}
+    # 本地开发默认允许本地前端，生产由 application-prod.yml 覆盖为实际域名
+    allowed-origins: http://localhost:5173,http://localhost:5670,http://localhost:5671
 
 # -------- 访客身份验证配置 --------
 visitor:
@@ -95,28 +94,28 @@ visitor:
 aria:
   auth:
     client:
-      # base-url 兼容旧变量 ARIA_AUTH_INTERNAL_URL
-      base-url: ${ARIA_AUTH_URL:http://localhost:8083}
+      # base-url 本地开发默认值，生产由 application-prod.yml 覆盖
+      base-url: http://localhost:8083
       # shared-secret 必填，未配置 SDK 启动即失败（fail-fast）
-      shared-secret: ${ARIA_INTERNAL_SECRET:aria-internal-lycodeing-2024}
+      shared-secret: aria-internal-lycodeing-2024
       connect-timeout-ms: 3000
       read-timeout-ms: 5000
       max-retries: 2
   # 兼容 conversation-service 内部其它调用（如 KnowledgeClient）继续读取此密钥
-  # 【安全】生产环境必须通过环境变量 INTERNAL_SECRET 注入，不允许使用默认值
+  # 【安全】生产环境值由 application-prod.yml 覆盖
   internal:
-    secret: ${ARIA_INTERNAL_SECRET:aria-internal-lycodeing-2024}
+    secret: aria-internal-lycodeing-2024
 
 # -------- 知识库检索配置（RAG） --------
 knowledge:
   client:
-    sharedSecret: ${ARIA_INTERNAL_SECRET:aria-internal-lycodeing-2024}
+    sharedSecret: aria-internal-lycodeing-2024
   service:
-    # knowledge-service 地址，生产通过环境变量 KNOWLEDGE_SERVICE_BASE_URL 覆盖
-    base-url: http://localhost:8084
+    # knowledge-service 地址，生产通过 application-prod.yml 覆盖
+    base-url: http://localhost:8081
   search:
-    # 默认知识库 ID，生产通过 KNOWLEDGE_DEFAULT_KB_ID 覆盖
-    default-kb-id: ${KNOWLEDGE_DEFAULT_KB_ID:default}
+    # 默认知识库 ID，生产通过 application-prod.yml 覆盖
+    default-kb-id: default
     # 每次检索返回 top-K 条，注入 prompt
     top-k: 5
     # 检索超时（秒），超时后降级为纯 AI 回复
@@ -152,7 +151,7 @@ sa-token:
   token-prefix: "Bearer"
   is-read-header: true
   is-read-cookie: false
-  jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}
+  jwt-secret-key: cs-auth-dev-secret-key-change-in-production
 
 # -------- 座席端 WebSocket 配置 --------
 agent:

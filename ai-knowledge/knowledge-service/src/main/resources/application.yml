@@ -65,30 +65,30 @@ sa-token:
   token-prefix: "Bearer"
   is-read-header: true
   is-read-cookie: false
-  jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}
+  jwt-secret-key: cs-auth-dev-secret-key-change-in-production
 
 # auth-client SDK 配置（拉取 EMBEDDING 模型），共享密钥必须与 auth-service 一致
 aria:
   auth:
     client:
-      # base-url 兼容旧变量 ARIA_AUTH_INTERNAL_URL
-      base-url: ${ARIA_AUTH_URL:http://localhost:8083}
+      # base-url 本地开发默认值，生产由 application-prod.yml 覆盖
+      base-url: http://localhost:8083
       # shared-secret 必填，未配置 SDK 启动即失败（fail-fast）
-      shared-secret: ${ARIA_INTERNAL_SECRET:aria-internal-lycodeing-2024}
+      shared-secret: aria-internal-lycodeing-2024
       connect-timeout-ms: 3000
       read-timeout-ms: 5000
       max-retries: 2
   # 兼容 knowledge-service 内部其它调用继续读取此密钥
   internal:
-    secret: ${ARIA_INTERNAL_SECRET:aria-internal-lycodeing-2024}
+    secret: aria-internal-lycodeing-2024
 
 knowledge:
   search:
     # PostgreSQL 全文检索分词配置：
     #   simple — 内置，无需扩展，中文效果差（本地开发默认）
     #   jieba  — 需安装 pg_jieba 扩展，中文分词效果好（生产推荐）
-    # 生产环境通过环境变量 PG_FTS_CONFIG=jieba 覆盖
-    fts-config: ${PG_FTS_CONFIG:simple}
+    # 生产环境通过 application-prod.yml 覆盖为 jieba
+    fts-config: simple
   # 文档摄取 MQ 配置（RabbitMQ，替换原 Redis Streams 摄取队列）
   ingest:
     exchange: knowledge.doc.ingest
@@ -105,21 +105,21 @@ knowledge:
   embedding:
     # model / base-url / api-key 统一在 auth-service 后台管理（AI 模型配置 → EMBEDDING 类型）
     # 以下为运维调优参数，与模型配置无关
-    batch-size: ${EMBEDDING_BATCH_SIZE:32}
-    timeout-seconds: ${EMBEDDING_TIMEOUT:30}
+    batch-size: 32
+    timeout-seconds: 30
   reranker:
-    # 默认关闭，启用需设置 RERANKER_ENABLED=true 及对应服务地址
-    enabled: ${RERANKER_ENABLED:false}
-    base-url: ${RERANKER_BASE_URL:http://localhost:8001}
-    model-name: ${RERANKER_MODEL:bge-reranker-v2-m3}
+    # 默认关闭，启用需在 application-prod.yml 中设置 enabled: true 及对应服务地址
+    enabled: false
+    base-url: http://localhost:8001
+    model-name: bge-reranker-v2-m3
     timeout-seconds: 10
 
 # -------- MinIO 对象存储配置 --------
 minio:
-  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
-  access-key: ${MINIO_ACCESS_KEY:minioadmin}
-  secret-key: ${MINIO_SECRET_KEY:minioadmin}
-  bucket: ${MINIO_BUCKET:ai-knowledge}
+  endpoint: http://localhost:9000
+  access-key: minioadmin
+  secret-key: minioadmin
+  bucket: ai-knowledge
 
 springdoc:
   api-docs:
@@ -138,6 +138,6 @@ logging:
 # -------- 天翼云 AI 配置（用于翻译等管理功能）--------
 ctyun:
   ai:
-    base-url: ${CTYUN_AI_BASE_URL:https://wishub-x6.ctyun.cn/v1}
-    api-key: ${AI_CTYUN_API_KEY:}
+    base-url: https://wishub-x6.ctyun.cn/v1
+    api-key: ""
     model: DeepSeek-V4-Flash

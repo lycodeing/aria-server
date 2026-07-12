@@ -1,0 +1,31 @@
+# ============================================================
+# conversation-service 生产环境配置（Docker 容器内）
+# 通过 SPRING_PROFILES_ACTIVE=prod 激活
+# 仅覆盖与本地开发不同的值，其余继承 application.yml
+# ============================================================
+
+spring:
+  datasource:
+    url: jdbc:postgresql://ai-cs-postgres:5432/ai_customerservice
+
+# Sa-Token JWT 密钥与 auth-service 保持一致
+sa-token:
+  jwt-secret-key: cs-auth-lycodeing-secret-key-2024
+
+aria:
+  auth:
+    client:
+      base-url: http://ai-cs-auth:8083
+      shared-secret: aria-internal-lycodeing-2024
+  internal:
+    secret: aria-internal-lycodeing-2024
+
+knowledge:
+  client:
+    sharedSecret: aria-internal-lycodeing-2024
+  service:
+    base-url: http://ai-cs-knowledge:8081
+
+app:
+  cors:
+    allowed-origins: https://chat.lycodeing.cn

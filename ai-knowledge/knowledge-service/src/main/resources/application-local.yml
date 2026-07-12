@@ -1,0 +1,21 @@
+# ============================================================
+# knowledge-service 本地开发配置
+# 通过 SPRING_PROFILES_ACTIVE=local 或 mvn spring-boot:run
+#   -Dspring-boot.run.profiles=local 激活
+# ============================================================
+
+spring:
+  datasource:
+    url: jdbc:postgresql://localhost:5432/ai_knowledge
+    username: aidev
+    password: aidev123
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password: ""
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest

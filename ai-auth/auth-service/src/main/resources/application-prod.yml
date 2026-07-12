@@ -1,0 +1,13 @@
+# ============================================================
+# auth-service 生产环境配置（Docker 容器内）
+# 通过 SPRING_PROFILES_ACTIVE=prod 激活
+# 仅覆盖与本地开发不同的值，其余继承 application.yml
+# ============================================================
+
+spring:
+  datasource:
+    url: jdbc:postgresql://ai-cs-postgres:5432/ai_customerservice
+
+aria:
+  internal:
+    secret: aria-internal-lycodeing-2024

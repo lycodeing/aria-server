@@ -1,0 +1,37 @@
+# ============================================================
+# knowledge-service 生产环境配置（Docker 容器内）
+# 通过 SPRING_PROFILES_ACTIVE=prod 激活
+# 仅覆盖与本地开发不同的值，其余继承 application.yml
+# ============================================================
+
+spring:
+  datasource:
+    url: jdbc:postgresql://ai-cs-postgres:5432/ai_knowledge
+
+# Sa-Token JWT 密钥与 auth-service 保持一致
+sa-token:
+  jwt-secret-key: cs-auth-lycodeing-secret-key-2024
+
+aria:
+  auth:
+    client:
+      base-url: http://ai-cs-auth:8083
+      shared-secret: aria-internal-lycodeing-2024
+  internal:
+    secret: aria-internal-lycodeing-2024
+
+# MinIO 使用容器名访问，secret-key 使用生产密码
+minio:
+  endpoint: http://ai-cs-minio:9000
+  access-key: minioadmin
+  secret-key: Lycodeing@2024
+  bucket: ai-knowledge
+
+knowledge:
+  search:
+    # 生产环境使用 pg_jieba 中文分词
+    fts-config: jieba
+
+ctyun:
+  ai:
+    api-key: ""
