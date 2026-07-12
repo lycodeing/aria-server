@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict oN1VZ9h4Kvh5w9cLsHTEirsYmaVGxQf5pBMQ5cLm26lVTm3pDE9TbCkHsg7d1RD
+\restrict 28irL5ajR9fdsOwlv076IPwUd3l8i3APgt07l6QyWjwjzQFGJzMjiNIhghM2Lvl
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg12+1)
@@ -371,5 +371,5 @@ ALTER TABLE ONLY public.knowledge_doc
 -- PostgreSQL database dump complete
 --
 
-\unrestrict oN1VZ9h4Kvh5w9cLsHTEirsYmaVGxQf5pBMQ5cLm26lVTm3pDE9TbCkHsg7d1RD
+\unrestrict 28irL5ajR9fdsOwlv076IPwUd3l8i3APgt07l6QyWjwjzQFGJzMjiNIhghM2Lvl
 

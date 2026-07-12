@@ -2,7 +2,7 @@
 -- PostgreSQL database dump
 --
 
-\restrict 4DMtGH62pJahsgh8Ui6BdQ1VN25At6lLZyN2ux89cXvmOTklnqxnlpiCkP1CHV2
+\restrict xoP6aph7iSG4G4cCE6LqpHsItza5StrUHvoj7IFM82VHbhsZ7ZFHZBde9TE44u9
 
 -- Dumped from database version 16.14 (Debian 16.14-1.pgdg12+1)
 -- Dumped by pg_dump version 16.14 (Debian 16.14-1.pgdg12+1)
@@ -50,5 +50,5 @@ INSERT INTO public.knowledge_kb (id, name, description, owner_id, status, create
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 4DMtGH62pJahsgh8Ui6BdQ1VN25At6lLZyN2ux89cXvmOTklnqxnlpiCkP1CHV2
+\unrestrict xoP6aph7iSG4G4cCE6LqpHsItza5StrUHvoj7IFM82VHbhsZ7ZFHZBde9TE44u9
 
