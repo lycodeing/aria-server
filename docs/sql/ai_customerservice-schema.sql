@@ -1726,6 +1726,188 @@ ALTER TABLE ONLY cs_conversation.cs_intent_tool
     ADD CONSTRAINT cs_intent_tool_tool_id_fkey FOREIGN KEY (tool_id) REFERENCES cs_conversation.cs_tool(id);
 
 
+-- ============================================================
+-- system_config: 建表、索引、触发器
+-- ============================================================
+
+CREATE TABLE cs_auth.system_config (
+    id              bigserial                       PRIMARY KEY,
+    config_key      character varying(100)          NOT NULL,
+    config_value    text                            NOT NULL,
+    config_type     character varying(50)           NOT NULL DEFAULT 'SYSTEM',
+    description     character varying(255)          NOT NULL DEFAULT '',
+    is_enabled      boolean                         NOT NULL DEFAULT true,
+    created_at      timestamp without time zone     NOT NULL DEFAULT now(),
+    updated_at      timestamp without time zone     NOT NULL DEFAULT now(),
+    deleted_at      timestamp without time zone
+);
+
+-- config_key 唯一约束（软删除安全）
+CREATE UNIQUE INDEX uq_system_config_key
+    ON cs_auth.system_config (config_key)
+    WHERE deleted_at IS NULL;
+
+-- 按类型批量加载索引
+CREATE INDEX idx_system_config_type
+    ON cs_auth.system_config (config_type)
+    WHERE deleted_at IS NULL;
+
+-- 自动维护 updated_at
+CREATE TRIGGER trg_system_config_updated
+    BEFORE UPDATE ON cs_auth.system_config
+    FOR EACH ROW EXECUTE FUNCTION cs_auth.set_updated_at();
+
+COMMENT ON TABLE  cs_auth.system_config              IS '系统配置表';
+COMMENT ON COLUMN cs_auth.system_config.config_key   IS '配置键，全局唯一（未删除）';
+COMMENT ON COLUMN cs_auth.system_config.config_value IS '配置值，统一字符串存储';
+COMMENT ON COLUMN cs_auth.system_config.config_type  IS '配置类型：SYSTEM | CUSTOMER_SERVICE';
+COMMENT ON COLUMN cs_auth.system_config.is_enabled   IS '是否启用，禁用时业务层回退硬编码默认值';
+COMMENT ON COLUMN cs_auth.system_config.deleted_at   IS '软删除时间，NULL 表示未删除';
+
+
+-- ============================================================
+-- system_config: 种子数据（10 条初始配置）
+-- ============================================================
+
+INSERT INTO cs_auth.system_config (config_key, config_value, config_type, description, is_enabled)
+VALUES
+    -- 座席配置
+    ('agent.maxConcurrent',
+     '5',
+     'CUSTOMER_SERVICE',
+     '单个座席同时接待的最大会话数。超出时系统拒绝新分配。取值范围：1–50',
+     true),
+    ('agent.welcomeMessage',
+     '您好，感谢联系我们，请问有什么可以帮助您？',
+     'CUSTOMER_SERVICE',
+     '会话建立时后端自动插入的欢迎消息内容',
+     true),
+    -- 知识库配置
+    ('knowledge.searchTopK',
+     '5',
+     'CUSTOMER_SERVICE',
+     'RAG 检索时返回的最大相关片段数（TopK）。取值范围：1–20',
+     true),
+    ('knowledge.uploadMaxFileSizeMb',
+     '20',
+     'CUSTOMER_SERVICE',
+     '知识库文件上传的单文件大小上限（单位：MB）。取值范围：1–200',
+     true),
+    -- Prompt 模板
+    ('prompt.agent.suggestion',
+     '你是一名专业客服，请根据以下对话历史和知识库内容，为座席生成 3 条简洁的回复建议。' || E'\n\n' ||
+     '对话历史：' || E'\n' || '{history}' || E'\n\n' ||
+     '知识库参考：' || E'\n' || '{context}',
+     'CUSTOMER_SERVICE',
+     '座席建议回复的 prompt 模板。占位符：{history}、{context}',
+     true),
+    ('prompt.kb.qa',
+     '你是一名专业客服助手，请根据以下知识库内容回答用户问题。如果知识库中没有相关信息，请如实告知。' || E'\n\n' ||
+     '知识库内容：' || E'\n' || '{context}' || E'\n\n' ||
+     '用户问题：{question}',
+     'CUSTOMER_SERVICE',
+     '知识库问答的 prompt 模板。占位符：{context}、{question}',
+     true),
+    ('prompt.visitor.autoReply',
+     '你是一名智能客服，请根据以下对话历史和知识库内容，自动回复访客的最新消息。回复要简洁、友好、专业。' || E'\n\n' ||
+     '知识库内容：' || E'\n' || '{context}' || E'\n\n' ||
+     '对话历史：' || E'\n' || '{history}',
+     'CUSTOMER_SERVICE',
+     '访客自动回复的 prompt 模板。占位符：{context}、{history}',
+     true),
+    ('prompt.session.summary',
+     '请根据以下客服对话记录，生成一份简洁的会话摘要，包含：用户主要问题、解决方案、是否已解决。' || E'\n\n' ||
+     '对话记录：' || E'\n' || '{history}',
+     'CUSTOMER_SERVICE',
+     '会话结束后生成摘要的 prompt 模板。占位符：{history}',
+     true),
+    ('prompt.intent.classify',
+     '请分析用户消息的意图，从以下类别中选择最匹配的一个：{intents}。' || E'\n\n' ||
+     '用户消息：{message}' || E'\n\n' ||
+     '只需返回类别名称，不需要解释。',
+     'CUSTOMER_SERVICE',
+     '意图识别分类的 prompt 模板。占位符：{intents}、{message}',
+     true),
+    -- 仪表盘配置
+    ('dashboard.recentLimit',
+     '10',
+     'SYSTEM',
+     '仪表盘"最近记录"查询的 SQL LIMIT 值。取值范围：5–100',
+     true),
+    -- 会话复杂度分桶阈值
+    ('complexity.simpleMaxMessages',
+     '5',
+     'CUSTOMER_SERVICE',
+     '会话复杂度分桶：消息数 ≤ 此值为「简单」。取值范围：1–20',
+     true),
+    ('complexity.mediumMaxMessages',
+     '15',
+     'CUSTOMER_SERVICE',
+     '会话复杂度分桶：消息数 ≤ 此值为「中等」，超出则为「复杂」。取值范围：6–100',
+     true);
+
+
+-- ============================================================
+-- 权限码（system:config:*）
+-- id 由序列自动分配，避免硬编码冲突
+-- ============================================================
+
+INSERT INTO cs_auth.sys_permission (permission_key, permission_name, module, description)
+VALUES
+    ('system:config:list',   '系统配置-查询', 'system_config', '查看系统配置列表及详情'),
+    ('system:config:create', '系统配置-新增', 'system_config', '新增系统配置项'),
+    ('system:config:update', '系统配置-编辑', 'system_config', '修改配置值及启用状态'),
+    ('system:config:delete', '系统配置-删除', 'system_config', '软删除系统配置项');
+
+
+-- ============================================================
+-- 菜单（系统参数配置 + 客服参数配置）
+-- parent_id=10 → 系统管理目录；parent_id=11 → 客服管理目录
+-- 执行前请通过 SELECT id, menu_name FROM cs_auth.sys_menu WHERE id IN (10, 11)
+-- 确认父级菜单存在，如不符请调整 parent_id
+-- ============================================================
+
+INSERT INTO cs_auth.sys_menu
+    (parent_id, menu_type, menu_name, menu_key, path, component, sort_order, is_visible, icon)
+VALUES
+    (200, 'MENU', '系统参数配置', 'system:config',
+     '/system/config', 'system/config/index', 90, true, 'lucide:sliders'),
+    (100, 'MENU', '客服参数配置', 'customerservice:config',
+     '/customerservice/config', 'system/config/index', 90, true, 'lucide:sliders-horizontal');
+
+
+-- ============================================================
+-- 角色-权限关联（用子查询，避免硬编码权限 id）
+-- role_id=10 → 超级管理员；role_id=11 → 客服管理员
+-- ============================================================
+
+INSERT INTO cs_auth.sys_role_permission (role_id, permission_id)
+SELECT 10, id FROM cs_auth.sys_permission
+WHERE permission_key IN (
+    'system:config:list', 'system:config:create',
+    'system:config:update', 'system:config:delete'
+)
+UNION ALL
+SELECT 11, id FROM cs_auth.sys_permission
+WHERE permission_key IN (
+    'system:config:list', 'system:config:create',
+    'system:config:update', 'system:config:delete'
+);
+
+
+-- ============================================================
+-- 角色-菜单关联
+-- 超级管理员可见两个菜单；客服管理员只可见客服参数配置
+-- ============================================================
+
+INSERT INTO cs_auth.sys_role_menu (role_id, menu_id)
+SELECT 10, id FROM cs_auth.sys_menu
+WHERE menu_key IN ('system:config', 'customerservice:config')
+UNION ALL
+SELECT 11, id FROM cs_auth.sys_menu
+WHERE menu_key = 'customerservice:config';
+
+
 --
 -- PostgreSQL database dump complete
 --
