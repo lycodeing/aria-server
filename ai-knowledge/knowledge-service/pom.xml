@@ -101,14 +101,12 @@
         <dependency>
             <groupId>org.redisson</groupId>
             <artifactId>redisson-spring-boot-starter</artifactId>
-            <version>3.27.2</version>
         </dependency>
 
         <!-- 文档存储（MinIO S3 兼容对象存储） -->
         <dependency>
             <groupId>io.minio</groupId>
             <artifactId>minio</artifactId>
-            <version>8.5.11</version>
         </dependency>
 
         <!-- 工具 -->
@@ -134,13 +132,6 @@
                         <goals><goal>repackage</goal></goals>
                     </execution>
                 </executions>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <configuration>
-                    <parameters>true</parameters>
-                </configuration>
             </plugin>
         </plugins>
     </build>

@@ -70,7 +70,6 @@
         <dependency>
             <groupId>org.redisson</groupId>
             <artifactId>redisson-spring-boot-starter</artifactId>
-            <version>3.27.2</version>
         </dependency>
 
         <!-- @EnableRetry 需要 AOP 支持 -->
