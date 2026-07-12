@@ -6,21 +6,21 @@
 
 | 文件 | 数据库 | 内容 |
 |------|--------|------|
-| `ai_customerservice-schema.sql` | `ai_customerservice` | 表结构（含 `cs_auth`、`cs_conversation` 两个 schema、序列、索引、外键） |
-| `ai_customerservice-data.sql` | `ai_customerservice` | 业务基础数据（详见下方"数据范围"） |
-| `ai_knowledge-schema.sql` | `ai_knowledge` | 表结构（`public` schema：`knowledge_kb / knowledge_doc / knowledge_chunk`） |
-| `ai_knowledge-data.sql` | `ai_knowledge` | 知识库数据（`knowledge_kb` 3 条种子数据，其他表为空） |
+| `aria_cs-schema.sql` | `aria_cs` | 表结构（含 `cs_auth`、`cs_conversation` 两个 schema、序列、索引、外键） |
+| `aria_cs-data.sql` | `aria_cs` | 业务基础数据（详见下方"数据范围"） |
+| `aria_knowledge-schema.sql` | `aria_knowledge` | 表结构（`public` schema：`knowledge_kb / knowledge_doc / knowledge_chunk`） |
+| `aria_knowledge-data.sql` | `aria_knowledge` | 知识库数据（`knowledge_kb` 3 条种子数据，其他表为空） |
 
 ## 数据范围
 
 ### 已导出（业务基础数据）
 
-`ai_customerservice`：
+`aria_cs`：
 - **cs_auth**：`sys_user / sys_role / sys_menu / sys_permission / sys_dept / *_role_*` 关联表 + `ai_model_config`
 - **cs_conversation**：`cs_domain`（4）、`cs_intent`（17）、`cs_intent_slot`（11）、`cs_intent_tool`（10）、`cs_tool`（9）
 - 各 schema 的 `flyway_schema_history`（保证 Flyway 认为迁移已应用）
 
-`ai_knowledge`：`knowledge_kb`（3）+ `flyway_schema_history`
+`aria_knowledge`：`knowledge_kb`（3）+ `flyway_schema_history`
 
 ### 未导出（运行时会话数据，仅结构不含数据）
 
@@ -32,20 +32,28 @@
 
 ## 还原步骤
 
-前置：postgres 已运行，`cs-postgres` 容器名（docker-compose 默认）或直接连本地 5432。
+前置：postgres 已运行，容器名 `ai-cs-postgres`（docker-compose 默认）或直接连本地 5432。
 
 ```bash
 # 1. 创建数据库（若首次）
-docker exec cs-postgres psql -U postgres -c "CREATE DATABASE ai_customerservice"
-docker exec cs-postgres psql -U postgres -c "CREATE DATABASE ai_knowledge"
+docker exec ai-cs-postgres psql -U postgres -c "CREATE DATABASE aria_cs"
+docker exec ai-cs-postgres psql -U postgres -c "CREATE DATABASE aria_knowledge"
 
 # 2. 导入表结构
-docker exec -i cs-postgres psql -U postgres -d ai_customerservice < docs/sql/ai_customerservice-schema.sql
-docker exec -i cs-postgres psql -U postgres -d ai_knowledge      < docs/sql/ai_knowledge-schema.sql
+docker exec -i ai-cs-postgres psql -U postgres -d aria_cs       < docs/sql/aria_cs-schema.sql
+docker exec -i ai-cs-postgres psql -U postgres -d aria_knowledge < docs/sql/aria_knowledge-schema.sql
 
 # 3. 导入业务基础数据
-docker exec -i cs-postgres psql -U postgres -d ai_customerservice < docs/sql/ai_customerservice-data.sql
-docker exec -i cs-postgres psql -U postgres -d ai_knowledge      < docs/sql/ai_knowledge-data.sql
+docker exec -i ai-cs-postgres psql -U postgres -d aria_cs       < docs/sql/aria_cs-data.sql
+docker exec -i ai-cs-postgres psql -U postgres -d aria_knowledge < docs/sql/aria_knowledge-data.sql
+```
+
+## 现有数据库重命名（已有旧库时执行）
+
+```bash
+docker exec ai-cs-postgres psql -U postgres \
+  -c "ALTER DATABASE ai_customerservice RENAME TO aria_cs;" \
+  -c "ALTER DATABASE ai_knowledge RENAME TO aria_knowledge;"
 ```
 
 ## 重新导出（生成新快照）
@@ -56,22 +64,22 @@ docker exec -i cs-postgres psql -U postgres -d ai_knowledge      < docs/sql/ai_k
 cd docs/sql
 
 # schema
-docker exec cs-postgres pg_dump -U postgres -d ai_customerservice \
+docker exec ai-cs-postgres pg_dump -U postgres -d aria_cs \
   --schema-only --no-owner --no-privileges \
-  > ai_customerservice-schema.sql
-docker exec cs-postgres pg_dump -U postgres -d ai_knowledge \
+  > aria_cs-schema.sql
+docker exec ai-cs-postgres pg_dump -U postgres -d aria_knowledge \
   --schema-only --no-owner --no-privileges \
-  > ai_knowledge-schema.sql
+  > aria_knowledge-schema.sql
 
 # data（排除 cs_conversation 运行时会话表）
-docker exec cs-postgres pg_dump -U postgres -d ai_customerservice \
+docker exec ai-cs-postgres pg_dump -U postgres -d aria_cs \
   --data-only --no-owner --no-privileges --column-inserts \
   --exclude-table=cs_conversation.cs_conversation \
   --exclude-table=cs_conversation.cs_conversation_message \
   --exclude-table=cs_conversation.cs_pending_slot \
   --exclude-table=cs_conversation.cs_tool_call_log \
-  > ai_customerservice-data.sql
-docker exec cs-postgres pg_dump -U postgres -d ai_knowledge \
+  > aria_cs-data.sql
+docker exec ai-cs-postgres pg_dump -U postgres -d aria_knowledge \
   --data-only --no-owner --no-privileges --column-inserts \
-  > ai_knowledge-data.sql
+  > aria_knowledge-data.sql
 ```
