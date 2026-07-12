@@ -3,7 +3,7 @@
 # 用法：./start-local.sh [auth|knowledge|conversation|all]
 # 连接配置统一在各服务的 application-local.yml 中维护，无需 export 环境变量
 
-BACKEND=/Users/lycodeing/IdeaProjects/ai-customerservice-backend
+BACKEND=/Users/lycodeing/IdeaProjects/aria-server
 MVN=/Users/lycodeing/apache-maven-3.9.12/bin/mvn
 
 start_auth() {
