@@ -2,6 +2,7 @@ package com.aria.conversation.application.service;
 
 import com.aria.conversation.infrastructure.persistence.DashboardStatsRepository;
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
+import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.DashboardOverviewVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
@@ -149,6 +150,16 @@ public class DashboardAppService {
      */
     public List<AgentWorkloadItemVO> getAgentWorkload() {
         return statsRepository.getAgentWorkload();
+    }
+
+    /**
+     * 会话复杂度分布（analytics 页面环形图）。
+     * 以每条会话的消息数分桶：≤5=SIMPLE，6–15=MEDIUM，&gt;15=COMPLEX。
+     *
+     * @return 复杂度分布列表
+     */
+    public List<ComplexityDistributionItemVO> getComplexityDistribution() {
+        return statsRepository.getComplexityDistribution();
     }
 
     // ============================================================

@@ -3,6 +3,7 @@ package com.aria.conversation.interfaces.rest;
 import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.DashboardAppService;
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
+import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.DashboardOverviewVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
@@ -98,5 +99,11 @@ public class DashboardController {
     @GetMapping("/agent-workload")
     public R<List<AgentWorkloadItemVO>> getAgentWorkload() {
         return R.ok(dashboardAppService.getAgentWorkload());
+    }
+
+    /** 会话复杂度分布（analytics 页面环形图） */
+    @GetMapping("/complexity-distribution")
+    public R<List<ComplexityDistributionItemVO>> getComplexityDistribution() {
+        return R.ok(dashboardAppService.getComplexityDistribution());
     }
 }

@@ -2,6 +2,7 @@ package com.aria.conversation.infrastructure.persistence;
 
 import com.aria.conversation.infrastructure.persistence.mapper.DashboardStatsMapper;
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
+import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
@@ -124,6 +125,18 @@ public class DashboardStatsRepository {
     /** 座席工作量统计 */
     public List<AgentWorkloadItemVO> getAgentWorkload() {
         return statsMapper.getAgentWorkload();
+    }
+
+    /**
+     * 会话复杂度分布（SIMPLE / MEDIUM / COMPLEX）。
+     * 阈值从 cs_auth.system_config 动态读取，兜底默认值：simpleMax=5，mediumMax=15。
+     */
+    public List<ComplexityDistributionItemVO> getComplexityDistribution() {
+        int simpleMax = Integer.parseInt(
+                statsMapper.getConfigValue("complexity.simpleMaxMessages", "5"));
+        int mediumMax = Integer.parseInt(
+                statsMapper.getConfigValue("complexity.mediumMaxMessages", "15"));
+        return statsMapper.getComplexityDistribution(simpleMax, mediumMax);
     }
 
     // ---- 按时间范围聚合（按天） ----

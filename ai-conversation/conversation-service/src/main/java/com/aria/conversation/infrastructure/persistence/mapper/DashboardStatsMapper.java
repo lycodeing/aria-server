@@ -1,6 +1,7 @@
 package com.aria.conversation.infrastructure.persistence.mapper;
 
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
+import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
@@ -277,4 +278,48 @@ public interface DashboardStatsMapper {
     List<EfficiencyTrendItemVO> getEfficiencyTrends(
             @Param("startDate") LocalDate startDate,
             @Param("endDate")   LocalDate endDate);
+
+    /**
+     * 从 cs_auth.system_config 读取单个配置值。
+     * 跨 schema 查询，与本服务在同一 PostgreSQL 实例中。
+     * 找不到或已禁用时返回 {@code defaultValue}。
+     */
+    @Select("SELECT COALESCE(MAX(config_value), #{defaultValue}) " +
+            "FROM cs_auth.system_config " +
+            "WHERE config_key = #{key} AND is_enabled = true AND deleted_at IS NULL")
+    String getConfigValue(@Param("key") String key, @Param("defaultValue") String defaultValue);
+
+    /**
+     * 会话复杂度分布。
+     * 以每条会话的消息数作为复杂度度量，分三档：
+     * <ul>
+     *   <li>SIMPLE  — 消息数 ≤ simpleMax</li>
+     *   <li>MEDIUM  — 消息数 simpleMax+1 ~ mediumMax</li>
+     *   <li>COMPLEX — 消息数 &gt; mediumMax</li>
+     * </ul>
+     * 阈值由调用方从 system_config 动态读取，避免硬编码。
+     */
+    @Select("""
+            SELECT
+                CASE
+                    WHEN msg_count <= #{simpleMax}  THEN 'SIMPLE'
+                    WHEN msg_count <= #{mediumMax}  THEN 'MEDIUM'
+                    ELSE                                 'COMPLEX'
+                END                AS complexity,
+                COUNT(*)::int      AS count
+            FROM (
+                SELECT
+                    c.session_id,
+                    COUNT(m.id) AS msg_count
+                FROM cs_conversation.cs_conversation c
+                LEFT JOIN cs_conversation.cs_conversation_message m
+                       ON m.session_id = c.session_id
+                GROUP BY c.session_id
+            ) sub
+            GROUP BY complexity
+            ORDER BY complexity
+            """)
+    List<ComplexityDistributionItemVO> getComplexityDistribution(
+            @Param("simpleMax") int simpleMax,
+            @Param("mediumMax") int mediumMax);
 }
