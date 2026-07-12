@@ -117,6 +117,67 @@ public class SessionQueueService {
     }
 
     /**
+     * 统一查询所有状态的会话，供座席工作台一次性加载四个 Tab 数据。
+     *
+     * <p>数据来源：
+     * <ul>
+     *   <li>AI_CHAT — DB（ended_at IS NULL 的活跃 AI 对话）</li>
+     *   <li>WAITING  — Redis（等待人工接入的队列）</li>
+     *   <li>ACTIVE   — DB（已被座席接入的进行中会话）</li>
+     *   <li>CLOSED   — DB（最近 closedLimit 条已结束会话，按 updated_at 倒序）</li>
+     * </ul>
+     *
+     * @param closedLimit CLOSED 状态返回条数上限，建议不超过 200
+     * @return 四种状态会话的合并列表，顺序：AI_CHAT → WAITING → ACTIVE → CLOSED
+     */
+    public List<SessionQueueItem> getAllSessions(int closedLimit) {
+        List<SessionQueueItem> result = new java.util.ArrayList<>();
+
+        // AI_CHAT：DB 中 ended_at 为 null 的活跃 AI 对话
+        persistRepository.getAiChatConversations().stream()
+                .map(e -> new SessionQueueItem(
+                        e.getSessionId(),
+                        e.getVisitorName(),
+                        e.getTransferReason(),
+                        e.getTag(),
+                        e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
+                        SessionStatus.AI_CHAT,
+                        e.getAgentId()))
+                .forEach(result::add);
+
+        // WAITING：Redis 队列
+        result.addAll(queueRepository.findByStatus(SessionStatus.WAITING));
+
+        // ACTIVE：DB（刷新恢复 source of truth）
+        persistRepository.getActiveConversations().stream()
+                .map(e -> new SessionQueueItem(
+                        e.getSessionId(),
+                        e.getVisitorName(),
+                        e.getTransferReason(),
+                        e.getTag(),
+                        e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
+                        SessionStatus.ACTIVE,
+                        e.getAgentId()))
+                .forEach(result::add);
+
+        // CLOSED：DB 最近 closedLimit 条
+        int safeLimit = Math.min(Math.max(closedLimit, 1), 200);
+        persistRepository.getClosedConversations(safeLimit).stream()
+                .map(e -> new SessionQueueItem(
+                        e.getSessionId(),
+                        e.getVisitorName(),
+                        e.getTransferReason(),
+                        e.getTag(),
+                        e.getUpdatedAt() != null ? e.getUpdatedAt().toEpochSecond()
+                                : e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
+                        e.getStatus(),
+                        e.getAgentId()))
+                .forEach(result::add);
+
+        return result;
+    }
+
+    /**
      * 幂等初始化 AI_CHAT 会话记录（ChatAppService 在首条消息时调用）。
      * 若记录已存在，静默跳过；若已是 WAITING/ACTIVE，同样跳过（转人工流程已覆盖）。
      *

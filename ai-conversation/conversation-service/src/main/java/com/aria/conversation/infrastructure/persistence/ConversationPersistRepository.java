@@ -156,6 +156,16 @@ public class ConversationPersistRepository {
     }
 
     /**
+     * 查询当前活跃的 AI 对话会话（status=AI_CHAT 且 ended_at 为 null），
+     * 供 {@link #getAllConversations(int)} 聚合使用。
+     *
+     * @return AI_CHAT 进行中会话列表，按 started_at 升序
+     */
+    public List<ConversationEntity> getAiChatConversations() {
+        return conversationMapper.selectAiChatConversations();
+    }
+
+    /**
      * 查询最近已关闭的会话列表（按 ended_at 倒序，最多返回 limit 条）。
      * 供座席工作台「已结束」Tab 展示历史会话（仅转人工后有 cs_conversation 记录的会话）。
      *

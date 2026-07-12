@@ -36,8 +36,7 @@ import java.util.concurrent.*;
  * 座席会话队列接口。
  *
  * <pre>
- * GET  /api/v1/sessions/queue              → 获取等待队列列表
- * GET  /api/v1/sessions/active             → 获取进行中的会话列表
+ * GET  /api/v1/sessions                    → 获取所有状态的会话列表（AI_CHAT / WAITING / ACTIVE / CLOSED）
  * POST /api/v1/sessions/{id}/accept        → 接入会话（Sa-Token 鉴权，从 token 解析座席 ID）
  * POST /api/v1/sessions/{id}/close         → 结束会话
  * POST /api/v1/sessions/{id}/transfer      → 转交会话给指定座席
@@ -92,29 +91,17 @@ public class SessionQueueController {
         heartbeatScheduler.shutdown();
     }
 
-    /** 获取等待队列 */
-    @GetMapping("/queue")
-    public R<List<SessionQueueItem>> getQueue() {
-        return R.ok(queueService.getQueue());
-    }
-
-    /** 获取进行中的会话（刷新恢复用） */
-    @GetMapping("/active")
-    public R<List<SessionQueueItem>> getActive() {
-        return R.ok(queueService.getActiveSessions());
-    }
-
     /**
-     * 获取最近已关闭的会话，供座席工作台「已结束」Tab 查看历史会话记录。
-     * 包含 CLOSED（转人工已结束）和 AI_CHAT（纯 AI 对话）两类，按 updated_at 倒序。
+     * 统一查询所有状态的会话列表，供座席工作台一次性加载四个 Tab 数据。
      *
-     * @param limit 返回条数上限，默认 50，最大 200
+     * <p>返回 AI_CHAT / WAITING / ACTIVE / CLOSED 四种状态，CLOSED 最多 50 条按 updated_at 倒序。
+     *
+     * @param closedLimit CLOSED 状态返回条数上限，默认 50，最大 200
      */
-    @GetMapping("/closed")
-    public R<List<SessionQueueItem>> getClosed(
-            @RequestParam(defaultValue = "50") int limit) {
-        int safeLimit = Math.min(Math.max(limit, 1), 200);
-        return R.ok(queueService.getClosedSessions(safeLimit));
+    @GetMapping
+    public R<List<SessionQueueItem>> getAllSessions(
+            @RequestParam(defaultValue = "50") int closedLimit) {
+        return R.ok(queueService.getAllSessions(closedLimit));
     }
 
     /**

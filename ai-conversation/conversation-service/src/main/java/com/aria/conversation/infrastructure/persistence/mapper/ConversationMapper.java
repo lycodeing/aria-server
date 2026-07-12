@@ -130,6 +130,20 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     }
 
     /**
+     * 查询当前活跃的 AI 对话会话（status=AI_CHAT 且 ended_at 为 null），
+     * 供座席工作台「AI 对话」Tab 实时展示正在进行中的 AI 会话。
+     *
+     * @return AI_CHAT 会话列表，按 started_at 升序
+     */
+    default List<ConversationEntity> selectAiChatConversations() {
+        return selectList(Wrappers.lambdaQuery(ConversationEntity.class)
+                .eq(ConversationEntity::getStatus, SessionStatus.AI_CHAT.getValue())
+                .isNull(ConversationEntity::getEndedAt)
+                .orderByAsc(ConversationEntity::getStartedAt)
+        );
+    }
+
+    /**
      * 查询指定访客的历史会话列表，排除当前进行中的会话。
      *
      * <p>按 started_at 倒序返回最近 limit 条，用于座席工作台「历史工单」抽屉展示。
