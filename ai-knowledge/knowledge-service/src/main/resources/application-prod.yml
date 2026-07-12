@@ -6,7 +6,7 @@
 
 spring:
   datasource:
-    url: jdbc:postgresql://ai-cs-postgres:5432/ai_knowledge
+    url: jdbc:postgresql://ai-cs-postgres:5432/aria_knowledge
 
 # Sa-Token JWT 密钥与 auth-service 保持一致
 sa-token:

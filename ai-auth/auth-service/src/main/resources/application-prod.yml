@@ -6,7 +6,7 @@
 
 spring:
   datasource:
-    url: jdbc:postgresql://ai-cs-postgres:5432/ai_customerservice
+    url: jdbc:postgresql://ai-cs-postgres:5432/aria_cs
 
 aria:
   internal:

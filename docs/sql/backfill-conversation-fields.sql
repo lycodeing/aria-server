@@ -6,7 +6,7 @@
 --       之前也未写入。本脚本对存量数据做最优近似补全。
 --
 -- 执行前提：已完成 schema 变更（accepted_at / first_reply_at / closed_by 列存在）
--- 执行方式：psql -U postgres -d ai_customerservice -f backfill-conversation-fields.sql
+-- 执行方式：psql -U postgres -d aria_cs -f backfill-conversation-fields.sql
 -- 幂等性：所有 UPDATE 均加 IS NULL 条件，重复执行安全
 -- =====================================================================
 

@@ -9,7 +9,7 @@ spring:
     # 排除自动装配避免因缺少 AK/SK 导致启动失败
     exclude: com.aria.sdk.knowledge.KnowledgeClientAutoConfig
   datasource:
-    url: jdbc:postgresql://localhost:5432/ai_customerservice
+    url: jdbc:postgresql://localhost:5432/aria_cs
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:postgres}
     driver-class-name: org.postgresql.Driver

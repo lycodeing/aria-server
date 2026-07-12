@@ -19,7 +19,7 @@ services:
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: Lycodeing@2024
-      POSTGRES_DB: ai_customerservice
+      POSTGRES_DB: aria_cs
     volumes:
       - /root/ai-cs/data/postgres:/var/lib/postgresql/data
       - /root/ai-cs/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro

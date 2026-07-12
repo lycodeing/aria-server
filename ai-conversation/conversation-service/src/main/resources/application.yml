@@ -8,7 +8,7 @@ spring:
 
   # -------- 数据库（对话历史持久化） --------
   datasource:
-    url: jdbc:postgresql://localhost:5432/ai_customerservice
+    url: jdbc:postgresql://localhost:5432/aria_cs
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:postgres}
     driver-class-name: org.postgresql.Driver

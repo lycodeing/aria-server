@@ -6,7 +6,7 @@
 
 spring:
   datasource:
-    url: jdbc:postgresql://localhost:5432/ai_customerservice
+    url: jdbc:postgresql://localhost:5432/aria_cs
     username: aidev
     password: aidev123
   data:
