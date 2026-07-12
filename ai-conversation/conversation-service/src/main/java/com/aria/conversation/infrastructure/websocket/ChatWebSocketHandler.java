@@ -113,6 +113,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
         WsInboundMessage body = parseBody(message.getPayload(), sessionId);
 
+        // PING 心跳信令：ephemeral，静默忽略，不写历史、不转发
+        if (body.isType(WsMessageType.PING)) {
+            log.debug("[WS] PING received sessionId={}", sessionId);
+            return;
+        }
+
         // TYPING 信号：仅访客的 typing 信号需要转发给座席，不写历史
         if (body.isType(WsMessageType.TYPING)) {
             if (PATH_SEGMENT_CHAT.equals(role)) {

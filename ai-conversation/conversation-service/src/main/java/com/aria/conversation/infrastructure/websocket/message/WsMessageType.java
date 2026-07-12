@@ -25,5 +25,9 @@ public enum WsMessageType {
     /**
      * 错误信令
      */
-    ERROR
+    ERROR,
+    /**
+     * 客户端心跳信令（ephemeral，静默忽略，不写历史、不转发）
+     */
+    PING
 }
