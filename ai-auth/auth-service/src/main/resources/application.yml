@@ -69,6 +69,19 @@ aria:
     client:
       enabled: false
 
+# =========================================================================
+# Actuator 监控 — 仅暴露 /actuator/health 心跳接口，屏蔽其他端点
+# =========================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: never
+
 logging:
   level:
     com.aria.customerservice.auth: DEBUG
