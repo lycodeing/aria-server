@@ -137,6 +137,19 @@ knowledge:
 mcp:
   servers: []
 
+# =========================================================================
+# Actuator 监控 — 仅暴露 /actuator/health 心跳接口，屏蔽其他端点
+# =========================================================================
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: never
+
 logging:
   level:
     # 生产环境通过环境变量 LOGGING_LEVEL_COM_AIDEVPLATFORM_CONVERSATION=DEBUG 开启详细日志

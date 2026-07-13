@@ -92,7 +92,7 @@ services:
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ""
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 8083 || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/actuator/health || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 5
@@ -125,15 +125,20 @@ services:
       RABBITMQ_USERNAME: guest
       RABBITMQ_PASSWORD: guest
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 8081 || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 5
       start_period: 60s
 
-  conversation-service:
+  # =========================================================================
+  # 对话服务 — 多实例部署
+  # 如需扩展到 3+ 台，复制 conversation-service-2 并修改 container_name、
+  # 同时更新 deploy/chat.conf 中 upstream aria_conversation 的 server 列表即可。
+  # =========================================================================
+  conversation-service-1:
     image: eclipse-temurin:17-jre-alpine
-    container_name: ai-cs-conversation
+    container_name: ai-cs-conversation-1
     restart: unless-stopped
     networks: [ai-stack-net]
     depends_on:
@@ -160,7 +165,42 @@ services:
       RABBITMQ_USERNAME: guest
       RABBITMQ_PASSWORD: guest
     healthcheck:
-      test: ["CMD-SHELL", "nc -z localhost 8082 || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/actuator/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  conversation-service-2:
+    image: eclipse-temurin:17-jre-alpine
+    container_name: ai-cs-conversation-2
+    restart: unless-stopped
+    networks: [ai-stack-net]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      auth-service:
+        condition: service_healthy
+    volumes:
+      - /root/ai-cs/jars/aria-conversation-1.0.0-SNAPSHOT.jar:/app/app.jar:ro
+    command: ["java", "-XX:+UseContainerSupport", "-XX:MaxRAMPercentage=70.0", "-Djava.security.egd=file:/dev/./urandom", "-jar", "/app/app.jar"]
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_USERNAME: postgres
+      DB_PASSWORD: Lycodeing@2024
+      REDIS_HOST: ai-cs-redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      RABBITMQ_HOST: ai-cs-rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USERNAME: guest
+      RABBITMQ_PASSWORD: guest
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/actuator/health || exit 1"]
       interval: 20s
       timeout: 10s
       retries: 5
