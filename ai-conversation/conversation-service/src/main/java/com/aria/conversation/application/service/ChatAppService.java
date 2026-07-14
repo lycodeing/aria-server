@@ -117,12 +117,24 @@ public class ChatAppService {
 
         // 有 domainCode → 域路由 + DomainAgentService
         if (StringUtils.isNotBlank(domainCode)) {
-            // 将阻塞操作（Redis 读写、小模型推理）放到 boundedElastic 线程池执行，
+            // 将阻塞操作（Redis 读写、小模型推理、意图分类）放到 boundedElastic 线程池执行，
             // 避免阻塞 Netty event-loop；解析完成后切换为流式 AI 回复
-            return Mono.fromCallable(() -> resolveActiveDomain(sessionId, message, domainCode))
+            return Mono.fromCallable(() -> {
+                        String activeDomain = resolveActiveDomain(sessionId, message, domainCode);
+                        // 意图规则层：在进入 DomainAgentService 前先做快速拦截
+                        // TRANSFER_REQUEST / COMPLAINT 直接转人工，不消耗 function-calling token
+                        IntentResult intent = intentClassifier.classify(message);
+                        return new DomainRouteData(activeDomain, intent);
+                    })
                     .subscribeOn(Schedulers.boundedElastic())
-                    .flatMapMany(activeDomain ->
-                            domainAgentService.streamChat(sessionId, activeDomain, message));
+                    .flatMapMany(route -> {
+                        if (route.intent().requiresTransfer()) {
+                            log.info("[Chat] domain 路径意图拦截 sessionId={} intent={}",
+                                    sessionId, route.intent().intent());
+                            return handleTransferIntent(sessionId, route.intent());
+                        }
+                        return domainAgentService.streamChat(sessionId, route.activeDomain(), message);
+                    });
         }
 
         // 通用 FAQ 流程：RAG + 意图路由 + LLM，含 sources event
@@ -304,24 +316,7 @@ public class ChatAppService {
 
         // 路由：需要转人工
         if (intent.requiresTransfer()) {
-            try {
-                sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
-                log.info("[Chat] 自动转人工 sessionId={} intent={}", sessionId, intent.intent());
-            } catch (Exception e) {
-                log.warn("[Chat] 自动转人工失败 sessionId={}", sessionId, e);
-            }
-            String reply = intent.intent() == IntentType.COMPLAINT
-                    ? "非常抱歉给您带来了不好的体验，我已为您转接人工客服，请稍候。"
-                    : "好的，我已为您转接人工客服，请稍候。";
-            historyRepository.append(sessionId, ROLE_ASSISTANT, reply);
-            try {
-                String transferJson = objectMapper.writeValueAsString(
-                        new TransferPayload(FAQ_TRANSFER_INTENT_CODE, reply));
-                return Flux.just(ChatEvent.transfer(transferJson));
-            } catch (JsonProcessingException e) {
-                log.warn("[Chat] FAQ transfer payload 序列化失败 sessionId={}", sessionId, e);
-                return Flux.just(ChatEvent.token(reply, objectMapper));
-            }
+            return handleTransferIntent(sessionId, intent);
         }
 
         // 路由：超出业务范围
@@ -372,6 +367,34 @@ public class ChatAppService {
 
     /** FAQ 路由阶段的中间结果，携带 hits 和意图分类结果。 */
     private record FaqRouteData(List<KnowledgeSearchResult.Hit> hits, IntentResult intent) {}
+
+    /** domain 路径路由中间结果，携带活跃域和意图分类结果。 */
+    private record DomainRouteData(String activeDomain, IntentResult intent) {}
+
+    /**
+     * 处理转人工意图（FAQ 路径和 domain 路径共用）。
+     * 入队并发出 TRANSFER 语义事件；入队失败不影响事件发射。
+     */
+    private Flux<ChatEvent> handleTransferIntent(String sessionId, IntentResult intent) {
+        try {
+            sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
+            log.info("[Chat] 自动转人工 sessionId={} intent={}", sessionId, intent.intent());
+        } catch (Exception e) {
+            log.warn("[Chat] 自动转人工失败 sessionId={}", sessionId, e);
+        }
+        String reply = intent.intent() == IntentType.COMPLAINT
+                ? "非常抱歉给您带来了不好的体验，我已为您转接人工客服，请稍候。"
+                : "好的，我已为您转接人工客服，请稍候。";
+        historyRepository.append(sessionId, ROLE_ASSISTANT, reply);
+        try {
+            String transferJson = objectMapper.writeValueAsString(
+                    new TransferPayload(FAQ_TRANSFER_INTENT_CODE, reply));
+            return Flux.just(ChatEvent.transfer(transferJson));
+        } catch (JsonProcessingException e) {
+            log.warn("[Chat] transfer payload 序列化失败 sessionId={}", sessionId, e);
+            return Flux.just(ChatEvent.token(reply, objectMapper));
+        }
+    }
 
     /**
      * 将 hits 序列化为 JSON 数组，格式：[{"docId":"...","label":"..."}]。
