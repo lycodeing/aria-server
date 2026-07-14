@@ -13,6 +13,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import cn.dev33.satoken.stp.StpUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,7 +31,11 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class SystemConfigService {
 
+    /** Pub/Sub 频道：与 RoutingConfigProvider.PUBSUB_TOPIC 保持一致 */
+    private static final String ROUTING_PUBSUB_TOPIC = "aria:config:routing-changed";
+
     private final SystemConfigMapper systemConfigMapper;
+    private final StringRedisTemplate stringRedisTemplate;
 
     // ── 查询 ─────────────────────────────────────────────────────────────────
 
@@ -152,6 +157,7 @@ public class SystemConfigService {
 
         systemConfigMapper.updateById(config);
         log.info("系统配置已更新: id={}, key={}", id, config.getConfigKey());
+        publishIfRoutingConfig(config.getConfigKey());
         return toVO(config);
     }
 
@@ -166,6 +172,7 @@ public class SystemConfigService {
         config.setDeletedAt(LocalDateTime.now());
         systemConfigMapper.updateById(config);
         log.info("系统配置已软删除: id={}, key={}", id, config.getConfigKey());
+        publishIfRoutingConfig(config.getConfigKey());
     }
 
     /**
@@ -179,6 +186,7 @@ public class SystemConfigService {
         config.setIsEnabled(enabled);
         systemConfigMapper.updateById(config);
         log.info("系统配置状态变更: id={}, key={}, enabled={}", id, config.getConfigKey(), enabled);
+        publishIfRoutingConfig(config.getConfigKey());
     }
 
     // ── 私有工具 ──────────────────────────────────────────────────────────────
@@ -201,6 +209,17 @@ public class SystemConfigService {
         if ("SYSTEM".equals(configType) && !StpUtil.hasRole("super_admin")) {
             throw new BusinessException(HttpStatus.FORBIDDEN.value(),
                     "SYSTEM 类型配置仅超级管理员可操作");
+        }
+    }
+
+    /**
+     * 若变更的配置 key 以 "routing." 开头，则通过 Redis Pub/Sub 广播路由配置失效通知，
+     * conversation-service 的 RoutingConfigProvider 订阅该频道后会主动清除本地缓存。
+     */
+    private void publishIfRoutingConfig(String configKey) {
+        if (configKey != null && configKey.startsWith("routing.")) {
+            stringRedisTemplate.convertAndSend(ROUTING_PUBSUB_TOPIC, configKey);
+            log.info("[SystemConfig] 路由配置变更，已发布失效通知 key={}", configKey);
         }
     }
 

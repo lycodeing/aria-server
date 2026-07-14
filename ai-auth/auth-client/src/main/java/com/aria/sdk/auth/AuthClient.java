@@ -71,6 +71,30 @@ public class AuthClient extends BaseClient {
         return unwrap(resp, "拉取激活模型配置失败, scope=" + scope);
     }
 
+    // ---- 系统配置 ----
+
+    /**
+     * 读取单个系统配置值（启用且未删除）。
+     * 调用 auth-service GET /internal/system-config/value?key={configKey}
+     *
+     * @param configKey 配置键，如 "routing.config"
+     * @return 配置值字符串；key 不存在、已禁用或服务异常时返回 null
+     */
+    public String getSystemConfigValue(String configKey) {
+        if (configKey == null || configKey.isBlank()) {
+            throw new IllegalArgumentException("configKey 不能为空");
+        }
+        try {
+            ApiResponse<String> resp = doGet(
+                    "/internal/system-config/value?key=" + configKey,
+                    new TypeRef<ApiResponse<String>>() {},
+                    "读取系统配置失败 key=" + configKey);
+            return resp != null && resp.isSuccess() ? resp.data() : null;
+        } catch (AuthClientException e) {
+            return null;
+        }
+    }
+
     // ---- Token 校验 ----
 
     /**
