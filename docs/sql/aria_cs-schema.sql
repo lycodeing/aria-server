@@ -762,6 +762,8 @@ CREATE TABLE cs_conversation.cs_domain (
     description text,
     system_prompt_addon text,
     knowledge_base_id bigint,
+    keywords jsonb DEFAULT '[]'::jsonb NOT NULL,
+    patterns jsonb DEFAULT '[]'::jsonb NOT NULL,
     enabled boolean DEFAULT true NOT NULL,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     updated_at timestamp without time zone DEFAULT now() NOT NULL
@@ -823,7 +825,9 @@ CREATE TABLE cs_conversation.cs_intent (
     skip_rag boolean DEFAULT false NOT NULL,
     fallback_reply text,
     enabled boolean DEFAULT true NOT NULL,
-    sort_order integer DEFAULT 0 NOT NULL
+    sort_order integer DEFAULT 0 NOT NULL,
+    keywords jsonb DEFAULT '[]'::jsonb NOT NULL,
+    patterns jsonb DEFAULT '[]'::jsonb NOT NULL
 );
 
 

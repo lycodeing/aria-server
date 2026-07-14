@@ -320,6 +320,17 @@ INSERT INTO cs_auth.system_config (id, config_key, config_value, config_type, de
 INSERT INTO cs_auth.system_config (id, config_key, config_value, config_type, description, is_enabled, created_at, updated_at, deleted_at) VALUES (10, 'dashboard.recentLimit', '10', 'SYSTEM', '仪表盘"最近记录"查询的 SQL LIMIT 值。取值范围：5–100', true, '2026-07-12 04:31:30.280237', '2026-07-12 04:31:30.280237', NULL);
 INSERT INTO cs_auth.system_config (id, config_key, config_value, config_type, description, is_enabled, created_at, updated_at, deleted_at) VALUES (11, 'complexity.simpleMaxMessages', '5', 'CUSTOMER_SERVICE', '会话复杂度分桶：消息数 ≤ 此值为「简单」，取值范围 1–20', true, '2026-07-12 05:12:53.167476', '2026-07-12 05:12:53.167476', NULL);
 INSERT INTO cs_auth.system_config (id, config_key, config_value, config_type, description, is_enabled, created_at, updated_at, deleted_at) VALUES (12, 'complexity.mediumMaxMessages', '15', 'CUSTOMER_SERVICE', '会话复杂度分桶：消息数 ≤ 此值为「中等」，超出则为「复杂」，取值范围 6–100', true, '2026-07-12 05:12:53.167476', '2026-07-12 05:12:53.167476', NULL);
+INSERT INTO cs_auth.system_config (id, config_key, config_value, config_type, description, is_enabled, created_at, updated_at, deleted_at) VALUES (13, 'routing.config', '{
+  "intent": {
+    "embeddingEnabled": false,
+    "embeddingThreshold": 0.75,
+    "minLlmConfidence": 0.0,
+    "maxExamplesToInject": 5
+  },
+  "domain": {
+    "ruleEnabled": true
+  }
+}', 'CUSTOMER_SERVICE', '意图路由级联配置（JSON）', true, '2026-07-14 00:00:00.000000', '2026-07-14 00:00:00.000000', NULL);
 
 
 --
@@ -470,7 +481,7 @@ SELECT pg_catalog.setval('cs_auth.sys_user_id_seq', 1003, true);
 -- Name: system_config_id_seq; Type: SEQUENCE SET; Schema: cs_auth; Owner: -
 --
 
-SELECT pg_catalog.setval('cs_auth.system_config_id_seq', 12, true);
+SELECT pg_catalog.setval('cs_auth.system_config_id_seq', 13, true);
 
 
 --
