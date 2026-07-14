@@ -30,7 +30,8 @@ class LangChain4jIntentServiceTest {
     private LangChain4jIntentService service;
 
     private static IntentConfig intentConfig(String code, String desc) {
-        return new IntentConfig(code, code, desc, null, false, false, null, List.of(), List.of());
+        return new IntentConfig(code, code, desc, List.of(), false, false, null,
+                List.of(), List.of(), List.of(), List.of(), 0);
     }
 
     @BeforeEach

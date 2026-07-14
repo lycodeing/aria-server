@@ -20,8 +20,9 @@ class DomainConfigTest {
 
     private static IntentConfig makeIntent(String code, boolean autoTransfer, boolean skipRag,
                                            List<IntentToolBinding> bindings) {
-        return new IntentConfig(code, code + "_name", "desc", "[]",
-                autoTransfer, skipRag, null, List.of(), bindings);
+        return new IntentConfig(code, code + "_name", "desc", List.of(),
+                autoTransfer, skipRag, null, List.of(), bindings,
+                List.of(), List.of(), 0);
     }
 
     // ---- DomainConfig ----

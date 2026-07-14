@@ -36,4 +36,12 @@ public class IntentDO {
 
     private Boolean enabled;
     private Integer sortOrder;
+
+    /** 关键词列表，JSON 数组，大小写不敏感包含匹配 */
+    @TableField(typeHandler = JsonbTypeHandler.class)
+    private String keywords;
+
+    /** 正则表达式列表，JSON 数组，Java Pattern 语法 */
+    @TableField(typeHandler = JsonbTypeHandler.class)
+    private String patterns;
 }

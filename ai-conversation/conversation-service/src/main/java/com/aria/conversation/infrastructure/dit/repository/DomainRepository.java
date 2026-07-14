@@ -141,12 +141,15 @@ public class DomainRepository {
                     intentDO.getCode(),
                     intentDO.getName(),
                     intentDO.getDescription(),
-                    intentDO.getExampleQueries(),
+                    parseJsonArray(intentDO.getExampleQueries()),
                     Boolean.TRUE.equals(intentDO.getAutoTransfer()),
                     Boolean.TRUE.equals(intentDO.getSkipRag()),
                     intentDO.getFallbackReply(),
                     slots,
-                    bindings
+                    bindings,
+                    parseJsonArray(intentDO.getKeywords()),
+                    parseJsonArray(intentDO.getPatterns()),
+                    intentDO.getSortOrder() != null ? intentDO.getSortOrder() : 0
             ));
         }
 

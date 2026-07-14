@@ -27,6 +27,12 @@ public class DomainDO {
     /** 领域专属知识库 ID，null 时使用全局知识库 */
     private Long knowledgeBaseId;
 
+    @com.baomidou.mybatisplus.annotation.TableField(typeHandler = com.aria.conversation.infrastructure.persistence.typehandler.JsonbTypeHandler.class)
+    private String keywords;
+
+    @com.baomidou.mybatisplus.annotation.TableField(typeHandler = com.aria.conversation.infrastructure.persistence.typehandler.JsonbTypeHandler.class)
+    private String patterns;
+
     private Boolean enabled;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

@@ -94,7 +94,7 @@ public class LangChain4jIntentService implements IntentService {
                 log.warn("[Intent] 未知意图值: {}, 降级为 UNKNOWN", intentStr);
                 intent = IntentType.UNKNOWN;
             }
-            return new IntentResult(intent, confidence);
+            return new IntentResult(intent, intentStr.toLowerCase(), confidence);
         } catch (Exception e) {
             log.warn("[Intent] JSON 解析失败: {}", json, e);
             return IntentResult.UNKNOWN;

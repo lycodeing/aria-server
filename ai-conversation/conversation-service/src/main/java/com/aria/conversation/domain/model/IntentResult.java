@@ -3,13 +3,15 @@ package com.aria.conversation.domain.model;
 /**
  * 意图分类结果。
  *
- * @param intent     识别到的意图
- * @param confidence 置信度 0.0~1.0，LLM 返回字段缺失时默认 1.0
+ * @param intent     管道分叉枚举（驱动转人工/拒答/RAG 分支）
+ * @param intentCode 原始业务意图 code（如 "query_order"），供下游业务 dispatch 使用
+ * @param confidence 置信度 0.0~1.0
  */
-public record IntentResult(IntentType intent, double confidence) {
+public record IntentResult(IntentType intent, String intentCode, double confidence) {
 
-    /** 兜底结果，分类失败时使用 */
-    public static final IntentResult UNKNOWN = new IntentResult(IntentType.UNKNOWN, 1.0);
+    /** 兜底结果，分类失败时使用。confidence=0.0 表示完全不确定。 */
+    public static final IntentResult UNKNOWN =
+            new IntentResult(IntentType.UNKNOWN, "UNKNOWN", 0.0);
 
     /** 判断是否需要自动转人工（TRANSFER_REQUEST 或 COMPLAINT） */
     public boolean requiresTransfer() {

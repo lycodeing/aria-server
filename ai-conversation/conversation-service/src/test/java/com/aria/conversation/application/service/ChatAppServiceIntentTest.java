@@ -71,7 +71,7 @@ class ChatAppServiceIntentTest {
     @DisplayName("FAQ_QUERY: 返回 JSON 信封的 token 事件流，调用 LLM")
     void faqQuery_returnsDataEvents() {
         when(intentClassifier.classify(anyString()))
-                .thenReturn(new IntentResult(IntentType.FAQ_QUERY, 0.9));
+                .thenReturn(new IntentResult(IntentType.FAQ_QUERY, "faq_query", 0.9));
         when(aiClient.streamChat(anyList(), anyString()))
                 .thenReturn(Flux.just("这是", "回答"));
 
@@ -115,7 +115,7 @@ class ChatAppServiceIntentTest {
     @DisplayName("TRANSFER_REQUEST: 发出 transfer 语义事件，不调 LLM")
     void transferRequest_emitsTransferEvent() throws Exception {
         when(intentClassifier.classify(anyString()))
-                .thenReturn(new IntentResult(IntentType.TRANSFER_REQUEST, 0.95));
+                .thenReturn(new IntentResult(IntentType.TRANSFER_REQUEST, "transfer_request", 0.95));
 
         Flux<ChatEvent> result = service.stream("s2", "我要找真人客服", null);
 
@@ -141,7 +141,7 @@ class ChatAppServiceIntentTest {
     @DisplayName("COMPLAINT: transfer 事件的 message 包含道歉语")
     void complaint_transferEventContainsApology() throws Exception {
         when(intentClassifier.classify(anyString()))
-                .thenReturn(new IntentResult(IntentType.COMPLAINT, 0.93));
+                .thenReturn(new IntentResult(IntentType.COMPLAINT, "complaint", 0.93));
 
         Flux<ChatEvent> result = service.stream("s3", "你们服务太差了，我要投诉", null);
 
@@ -168,7 +168,7 @@ class ChatAppServiceIntentTest {
     @DisplayName("OUT_OF_SCOPE: 返回拒答 token 事件（JSON 信封），不调 LLM")
     void outOfScope_returnsDataWithTemplate() {
         when(intentClassifier.classify(anyString()))
-                .thenReturn(new IntentResult(IntentType.OUT_OF_SCOPE, 0.88));
+                .thenReturn(new IntentResult(IntentType.OUT_OF_SCOPE, "out_of_scope", 0.88));
 
         Flux<ChatEvent> result = service.stream("s4", "帮我解一道微积分题", null);
 
@@ -189,7 +189,7 @@ class ChatAppServiceIntentTest {
     @DisplayName("CHITCHAT: 跳过 RAG，调用 LLM，systemPrompt 不含参考资料")
     void chitchat_skipsRag() {
         when(intentClassifier.classify(anyString()))
-                .thenReturn(new IntentResult(IntentType.CHITCHAT, 0.9));
+                .thenReturn(new IntentResult(IntentType.CHITCHAT, "chitchat", 0.9));
         when(aiClient.streamChat(anyList(), anyString()))
                 .thenReturn(Flux.just("你好！"));
         // 模拟 knowledgeClient 返回命中，但 CHITCHAT 路径应跳过 RAG
@@ -233,7 +233,7 @@ class ChatAppServiceIntentTest {
     @DisplayName("token 事件的 data 是合法 JSON，且 content 精确保留前导空格与换行")
     void tokenEvent_preservesWhitespaceViaJsonEnvelope() {
         when(intentClassifier.classify(anyString()))
-                .thenReturn(new IntentResult(IntentType.FAQ_QUERY, 0.9));
+                .thenReturn(new IntentResult(IntentType.FAQ_QUERY, "faq_query", 0.9));
         // 模拟 LLM 分词器输出：token 天然带前导空格 + 换行
         when(aiClient.streamChat(anyList(), anyString()))
                 .thenReturn(Flux.just("### ", " 🔴 ", "实时天气", "\n\n"));
@@ -256,7 +256,7 @@ class ChatAppServiceIntentTest {
     @DisplayName("LLM 异常：走 event:error 事件（JSON 信封），data 为 {\"message\":\"...\"}")
     void llmError_emitsErrorEventWithJsonEnvelope() {
         when(intentClassifier.classify(anyString()))
-                .thenReturn(new IntentResult(IntentType.FAQ_QUERY, 0.9));
+                .thenReturn(new IntentResult(IntentType.FAQ_QUERY, "faq_query", 0.9));
         when(aiClient.streamChat(anyList(), anyString()))
                 .thenReturn(Flux.error(new RuntimeException("上游超时")));
 
@@ -278,7 +278,7 @@ class ChatAppServiceIntentTest {
     @DisplayName("enqueue 抛异常时，转人工失败不影响 transfer 事件推送")
     void transferRequest_enqueueFails_stillEmitsTransferEvent() {
         when(intentClassifier.classify(anyString()))
-                .thenReturn(new IntentResult(IntentType.TRANSFER_REQUEST, 0.9));
+                .thenReturn(new IntentResult(IntentType.TRANSFER_REQUEST, "transfer_request", 0.9));
         doThrow(new RuntimeException("Redis 不可用"))
                 .when(sessionQueueService).enqueue(any(), any(), any(), any());
 
@@ -298,7 +298,7 @@ class ChatAppServiceIntentTest {
     @SuppressWarnings("deprecation")
     void deprecatedStreamChat_transferDegradesToText() {
         when(intentClassifier.classify(anyString()))
-                .thenReturn(new IntentResult(IntentType.TRANSFER_REQUEST, 0.9));
+                .thenReturn(new IntentResult(IntentType.TRANSFER_REQUEST, "transfer_request", 0.9));
 
         Flux<String> result = service.streamChat("s8", "转人工");
 
