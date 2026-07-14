@@ -31,11 +31,17 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class RoutingConfigProvider {
 
-    /** auth-service SDK 客户端，用于拉取 system_config 表中的配置值 */
-    private final AuthClient        authClient;
-    /** JSON 反序列化工具，将 routing.config 字符串转换为 {@link RoutingConfig} 对象 */
-    private final ObjectMapper      objectMapper;
-    /** YAML 绑定的默认配置，auth-service 不可用时作为降级兜底，永远不为 null */
+    /**
+     * auth-service SDK 客户端，用于拉取 system_config 表中的配置值
+     */
+    private final AuthClient authClient;
+    /**
+     * JSON 反序列化工具，将 routing.config 字符串转换为 {@link RoutingConfig} 对象
+     */
+    private final ObjectMapper objectMapper;
+    /**
+     * YAML 绑定的默认配置，auth-service 不可用时作为降级兜底，永远不为 null
+     */
     private final RoutingProperties defaults;
 
     /**
@@ -49,27 +55,26 @@ public class RoutingConfigProvider {
 
     /**
      * 获取当前路由配置。缓存命中直接返回，未命中时从 auth-service 拉取并缓存。
+     * auth-service 不可用时返回 YAML 默认值，但不写入缓存，下次请求重新尝试拉取。
      *
      * @return {@link RoutingConfig}，auth-service 不可用时返回 YAML 默认值
      */
     public RoutingConfig getConfig() {
-        return localCache.get(CustomerServiceCacheConstant.ROUTING_CONFIG, k -> load());
-    }
-
-    /**
-     * 从 auth-service 拉取配置并反序列化，失败时降级为 YAML 默认值。
-     * 降级时不写缓存，下次请求重新尝试拉取。
-     */
-    private RoutingConfig load() {
+        RoutingConfig cached = localCache.getIfPresent(CustomerServiceCacheConstant.ROUTING_CONFIG);
+        if (cached != null) {
+            return cached;
+        }
         try {
-            String json = authClient.getSystemConfigValue(
-                    CustomerServiceCacheConstant.ROUTING_CONFIG);
+            String json = authClient.getSystemConfigValue(CustomerServiceCacheConstant.ROUTING_CONFIG);
             if (json != null && !json.isBlank()) {
-                return objectMapper.readValue(json, RoutingConfig.class);
+                RoutingConfig config = objectMapper.readValue(json, RoutingConfig.class);
+                localCache.put(CustomerServiceCacheConstant.ROUTING_CONFIG, config);
+                return config;
             }
         } catch (Exception e) {
             log.warn("[RoutingConfig] 拉取配置失败，降级使用 YAML 默认值", e);
         }
+        // 降级兜底：不写入缓存，下次请求重新尝试拉取
         return RoutingConfig.fromProperties(defaults);
     }
 }
