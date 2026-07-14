@@ -41,7 +41,6 @@ class KeywordRegexDomainMatcherTest {
     void matchDomain_keywordHit() {
         when(domainRepository.findAllEnabledSummary()).thenReturn(List.of(
                 domain("finance", "[\"基金\",\"理财\"]", "[]")));
-        matcher.reload();
 
         assertThat(matcher.matchDomain("我想买基金")).contains("finance");
     }
@@ -51,7 +50,6 @@ class KeywordRegexDomainMatcherTest {
     void matchDomain_patternHit() {
         when(domainRepository.findAllEnabledSummary()).thenReturn(List.of(
                 domain("ecommerce", "[]", "[\".*退款.*\"]")));
-        matcher.reload();
 
         assertThat(matcher.matchDomain("我要申请退款")).contains("ecommerce");
     }
@@ -61,7 +59,6 @@ class KeywordRegexDomainMatcherTest {
     void matchDomain_noHit_empty() {
         when(domainRepository.findAllEnabledSummary()).thenReturn(List.of(
                 domain("finance", "[\"基金\"]", "[]")));
-        matcher.reload();
 
         assertThat(matcher.matchDomain("随便说一句话")).isEmpty();
     }

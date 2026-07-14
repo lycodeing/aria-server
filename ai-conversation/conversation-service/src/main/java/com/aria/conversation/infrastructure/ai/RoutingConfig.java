@@ -24,29 +24,7 @@ import lombok.Setter;
 public class RoutingConfig {
 
     private Intent intent = new Intent();
-    private Domain domain  = new Domain();
-
-    @Getter
-    @Setter
-    @NoArgsConstructor
-    public static class Intent {
-        /** 是否启用向量相似度匹配层（Tier 2），默认关闭；第二阶段开启 */
-        private boolean embeddingEnabled    = false;
-        /** 向量相似度命中阈值，低于此值继续走 LLM，范围 0.0~1.0，推荐 0.75 */
-        private double  embeddingThreshold  = 0.75;
-        /** LLM 意图分类置信度下限，低于此值降级为 UNKNOWN；0.0 表示关闭阈值检查 */
-        private double  minLlmConfidence    = 0.0;
-        /** few-shot prompt 中每个意图最多注入的示例句子条数，过多会增加 token 消耗 */
-        private int     maxExamplesToInject = 5;
-    }
-
-    @Getter
-    @Setter
-    @NoArgsConstructor
-    public static class Domain {
-        /** 是否启用域路由关键词/正则规则层（Tier 1），false=跳过规则直接走 LLM 小模型 */
-        private boolean ruleEnabled = true;
-    }
+    private Domain domain = new Domain();
 
     /**
      * 从 {@link RoutingProperties} YAML 默认值构造，auth-service 不可用时降级使用。
@@ -62,5 +40,37 @@ public class RoutingConfig {
         c.getIntent().setMaxExamplesToInject(p.getIntent().getMaxExamplesToInject());
         c.getDomain().setRuleEnabled(p.getDomain().isRuleEnabled());
         return c;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    public static class Intent {
+        /**
+         * 是否启用向量相似度匹配层（Tier 2），默认关闭；第二阶段开启
+         */
+        private boolean embeddingEnabled = false;
+        /**
+         * 向量相似度命中阈值，低于此值继续走 LLM，范围 0.0~1.0，推荐 0.75
+         */
+        private double embeddingThreshold = 0.75;
+        /**
+         * LLM 意图分类置信度下限，低于此值降级为 UNKNOWN；0.0 表示关闭阈值检查
+         */
+        private double minLlmConfidence = 0.0;
+        /**
+         * few-shot prompt 中每个意图最多注入的示例句子条数，过多会增加 token 消耗
+         */
+        private int maxExamplesToInject = 5;
+    }
+
+    @Getter
+    @Setter
+    @NoArgsConstructor
+    public static class Domain {
+        /**
+         * 是否启用域路由关键词/正则规则层（Tier 1），false=跳过规则直接走 LLM 小模型
+         */
+        private boolean ruleEnabled = true;
     }
 }
