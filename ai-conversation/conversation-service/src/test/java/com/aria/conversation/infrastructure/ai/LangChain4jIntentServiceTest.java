@@ -86,25 +86,29 @@ class LangChain4jIntentServiceTest {
     }
 
     @Test
-    @DisplayName("buildPrompt: exampleQueries 注入 few-shot 示例")
+    @DisplayName("buildPrompt: exampleQueries 作为 few-shot 示例注入 prompt")
     void buildPrompt_injectsExamples() {
-        when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN)).thenReturn(Optional.empty());
-
-        // 直接测试 buildPrompt 中文字包含示例
-        IntentConfig intent = new IntentConfig("FAQ_QUERY", "FAQ_QUERY", "知识问答",
-                List.of("退款政策", "查物流"), false, false, null,
+        IntentConfig intentWithExamples = new IntentConfig(
+                "FAQ_QUERY", "FAQ_QUERY", "知识问答",
+                List.of("退款政策是什么", "查物流", "商品质量问题"),
+                false, false, null,
                 List.of(), List.of(), List.of(), List.of(), 0);
-        // 通过 spy 调用 buildPrompt（包级访问权限），验证 prompt 包含示例
-        // 此测试通过 classify() 流程间接验证
-        ChatModel mock = ChatModelMock.thatAlwaysResponds("{\"intent\":\"FAQ_QUERY\",\"confidence\":0.9}");
-        when(modelFactory.getChatModel()).thenReturn(mock);
-        DomainConfig domain = new DomainConfig(DomainCodes.SYSTEM_DOMAIN, "系统域", null, null, null,
-                List.of(intent));
-        when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN)).thenReturn(Optional.of(domain));
+        IntentConfig intentNoExamples = new IntentConfig(
+                "UNKNOWN", "UNKNOWN", "无法判断",
+                List.of(),
+                false, false, null,
+                List.of(), List.of(), List.of(), List.of(), 0);
 
-        IntentResult result = service.classify("退款");
-        assertThat(result.intent()).isEqualTo(IntentType.FAQ_QUERY);
-        assertThat(result.intentCode()).isEqualTo("faq_query");
+        // buildPrompt is package-private — accessible from the same package
+        String prompt = service.buildPrompt(List.of(intentWithExamples, intentNoExamples));
+
+        assertThat(prompt).contains("退款政策是什么");
+        assertThat(prompt).contains("查物流");
+        assertThat(prompt).contains("商品质量问题");
+        // Default maxExamplesToInject=5, all 3 examples should appear
+        assertThat(prompt).contains("FAQ_QUERY");
+        // Intent with no examples should NOT have （示例：） appended
+        assertThat(prompt).doesNotContain("（示例：）");
     }
 
     @Test
