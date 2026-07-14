@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.context.ApplicationEventPublisher;
 
 import java.util.List;
 import java.util.Optional;
@@ -33,13 +34,14 @@ class DomainRepositoryTest {
     @Mock private IntentSlotMapper slotMapper;
     @Mock private IntentToolMapper intentToolMapper;
     @Mock private ToolMapper toolMapper;
+    @Mock private ApplicationEventPublisher eventPublisher;
 
     private DomainRepository repo;
 
     @BeforeEach
     void setUp() {
         repo = new DomainRepository(cache, new ObjectMapper(),
-                domainMapper, intentMapper, slotMapper, intentToolMapper, toolMapper);
+                domainMapper, intentMapper, slotMapper, intentToolMapper, toolMapper, eventPublisher);
     }
 
     @Test
