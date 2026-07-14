@@ -61,7 +61,7 @@ public class LangChain4jIntentService implements IntentService {
         StringBuilder sb = new StringBuilder("""
                 你是一个用户意图分类器。分析用户的输入，返回以下 JSON 格式，不要输出任何其他内容：
                 {"intent": "<意图>", "confidence": <0.0到1.0的小数>}
-
+                
                 意图取值说明：
                 """);
         int maxExamples = routingConfigProvider.getConfig().getIntent().getMaxExamplesToInject();
