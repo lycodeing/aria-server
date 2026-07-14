@@ -13,6 +13,8 @@ import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 /**
  * 系统配置管理接口
  * <p>基础路径：/api/v1/admin/system-config</p>
@@ -38,6 +40,18 @@ public class AdminSystemConfigController {
             @RequestParam(required = false) String keyword,
             PageQuery pageQuery) {
         return R.ok(systemConfigService.page(configType, keyword, pageQuery));
+    }
+
+    /**
+     * 按配置类型批量加载 key→value 映射，仅返回启用且未删除的配置。
+     * 前端登录后预加载，供业务模块读取配置。
+     *
+     * @param configType 配置类型（SYSTEM | CUSTOMER_SERVICE）
+     */
+    @GetMapping("/map")
+    @SaCheckPermission("system:config:list")
+    public R<Map<String, String>> mapByType(@RequestParam String configType) {
+        return R.ok(systemConfigService.mapByType(configType));
     }
 
     /**
