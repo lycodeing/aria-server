@@ -17,7 +17,7 @@ services:
   # 基础设施
   # =========================================================================
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:pg16
     container_name: ai-cs-postgres
     restart: unless-stopped
     networks: [ai-stack-net]
