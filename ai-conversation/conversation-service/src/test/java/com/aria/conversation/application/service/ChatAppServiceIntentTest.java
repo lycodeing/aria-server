@@ -306,4 +306,24 @@ class ChatAppServiceIntentTest {
                 .assertNext(msg -> assertThat(msg).contains("人工客服"))
                 .verifyComplete();
     }
+
+    // -------------------------------------------------------
+    // 级联路由：规则层命中，LLM 不被调用
+    // -------------------------------------------------------
+
+    @Test
+    @DisplayName("规则层命中 TRANSFER_REQUEST：触发转人工，LLM 不被调用")
+    void ruleTier_transferHit_noLlmCall() {
+        // HybridIntentService 在测试中被 mock 的 intentClassifier 替代，
+        // 此处直接模拟规则层已命中的结果（confidence=1.0）
+        when(intentClassifier.classify(anyString()))
+                .thenReturn(new IntentResult(IntentType.TRANSFER_REQUEST, "TRANSFER_REQUEST", 1.0));
+
+        Flux<ChatEvent> result = service.stream("s-rule", "我要转人工", null);
+
+        StepVerifier.create(result)
+                .assertNext(e -> assertThat(e.eventType()).isEqualTo(ChatEvent.EventType.TRANSFER))
+                .verifyComplete();
+        verify(aiClient, never()).streamChat(anyList(), anyString());
+    }
 }
