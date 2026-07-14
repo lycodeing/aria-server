@@ -7,10 +7,20 @@ import com.aria.conversation.infrastructure.dit.domain.DomainSwitchRecord;
 import com.aria.conversation.infrastructure.dit.domain.SwitchType;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainRepository;
 import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRepository;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonStringSchema;
+import dev.langchain4j.service.tool.ToolExecutor;
 import lombok.extern.slf4j.Slf4j;
+
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * 内置 LangChain4j 工具：{@code switch_domain} 和 {@code transfer_to_agent}。
@@ -136,5 +146,70 @@ public class BuiltinTools {
             log.error("[BuiltinTool] transfer SSE 序列化失败 sessionId={}", ctx.sessionId(), e);
         }
         return "已为您转接人工客服，请稍候。";
+    }
+
+    /**
+     * 将内置工具方法手动构建为 {@link ToolSpecification} + {@link ToolExecutor} 映射，
+     * 供 {@link DomainToolProviderFactory} 统一注册到 ToolProvider。
+     *
+     * <p>手动构建而非依赖 {@code .tools(BuiltinTools.class)} 反射注册，是为了避免
+     * LangChain4j 1.1.0 中 {@code .tools()} + {@code .toolProvider()} 混合使用时
+     * executor 合并缺失导致 NPE。
+     *
+     * @return 内置工具的 spec-executor 映射（switch_domain + transfer_to_agent）
+     */
+    public Map<ToolSpecification, ToolExecutor> buildToolSpecs() {
+        Map<ToolSpecification, ToolExecutor> map = new LinkedHashMap<>();
+
+        // ---- switch_domain ----
+        ToolSpecification switchDomainSpec = ToolSpecification.builder()
+                .name("switch_domain")
+                .description("""
+                        当用户问题与当前服务域无关、需要切换到其他服务域时调用。
+                        【重要规则】：
+                        1. 每次对话只调用一次，调用后立即停止所有其他工具调用；
+                        2. 调用成功后不要再调用任何工具（包括天气、订单等查询工具）；
+                        3. 切换后只需告知用户已切换域，并请用户在新对话中重新提问；
+                        4. 如果工具返回了切换成功信号，说明切换已完成，不要重复调用。
+                        可用域列表见系统提示。""")
+                .parameters(JsonObjectSchema.builder()
+                        .addProperty("targetDomainCode", JsonStringSchema.builder()
+                                .description("目标域 code").build())
+                        .addProperty("reason", JsonStringSchema.builder()
+                                .description("切换原因（可选）").build())
+                        .required(List.of("targetDomainCode"))
+                        .build())
+                .build();
+        map.put(switchDomainSpec, (ToolExecutionRequest req, Object memId) -> {
+            Map<String, Object> args = parseArgs(req.arguments());
+            String target = stringArg(args, "targetDomainCode");
+            String reason = stringArg(args, "reason");
+            return switchDomain(target, reason);
+        });
+
+        // ---- transfer_to_agent ----
+        ToolSpecification transferSpec = ToolSpecification.builder()
+                .name("transfer_to_agent")
+                .description("当用户明确要求转接人工客服时调用")
+                .parameters(JsonObjectSchema.builder().build())
+                .build();
+        map.put(transferSpec, (ToolExecutionRequest req, Object memId) -> transferToAgent());
+
+        return map;
+    }
+
+    private Map<String, Object> parseArgs(String arguments) {
+        if (arguments == null || arguments.isBlank()) return Map.of();
+        try {
+            return objectMapper.readValue(arguments, new TypeReference<>() {});
+        } catch (Exception e) {
+            log.warn("[BuiltinTools] 工具参数解析失败: {}", arguments, e);
+            return Map.of();
+        }
+    }
+
+    private String stringArg(Map<String, Object> args, String key) {
+        Object val = args.get(key);
+        return val instanceof String s ? s : null;
     }
 }
