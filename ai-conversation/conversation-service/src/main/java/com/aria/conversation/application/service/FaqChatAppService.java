@@ -112,8 +112,11 @@ public class FaqChatAppService {
                 : "好的，我已为您转接人工客服，请稍候。";
         historyRepository.append(sessionId, MessageRole.ASSISTANT.getValue(), reply);
         try {
+            // 使用意图原始 code，Domain 路径（如 transfer_request / complaint）能正确传给前端
+            String intentCode = intent.intentCode() != null && !intent.intentCode().isBlank()
+                    ? intent.intentCode() : FAQ_TRANSFER_INTENT_CODE;
             String json = objectMapper.writeValueAsString(
-                    new TransferPayload(FAQ_TRANSFER_INTENT_CODE, reply));
+                    new TransferPayload(intentCode, reply));
             return Flux.just(ChatEvent.transfer(json));
         } catch (JsonProcessingException e) {
             log.warn("[FAQ] transfer payload 序列化失败 sessionId={}", sessionId, e);
