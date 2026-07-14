@@ -189,6 +189,53 @@ public class FaqChatAppService {
         }
     }
 
+    /**
+     * 非流式对话，返回完整回复文本（供 ChatAppService 代理 Controller 的非流式端点使用）。
+     *
+     * @param sessionId   会话 ID
+     * @param userMessage 用户消息
+     * @return AI 回复文本
+     */
+    public String chat(String sessionId, String userMessage) {
+        historyRepository.append(sessionId, MessageRole.USER.getValue(), userMessage);
+        List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(userMessage);
+        String systemPrompt = SystemPromptBuilder.build(hits);
+        String reply = aiClient.chat(toAiPrompt(historyRepository.findAll(sessionId)), systemPrompt);
+        historyRepository.append(sessionId, MessageRole.ASSISTANT.getValue(), reply);
+        return reply;
+    }
+
+    /**
+     * 获取全量历史消息（最近 N 轮），用于前端加载上下文。
+     *
+     * @param sessionId 会话 ID
+     * @return 历史消息列表
+     */
+    public List<com.aria.conversation.domain.ConversationMessage> getHistory(String sessionId) {
+        return historyRepository.findAll(sessionId);
+    }
+
+    /**
+     * 增量获取历史消息（seq &gt; sinceSeq），用于断线重连后补齐空窗。
+     *
+     * @param sessionId 会话 ID
+     * @param sinceSeq  客户端已知的最后一条消息 seq
+     * @return seq 大于 sinceSeq 的消息列表
+     */
+    public List<com.aria.conversation.domain.ConversationMessage> getHistorySince(
+            String sessionId, long sinceSeq) {
+        return historyRepository.findSince(sessionId, sinceSeq);
+    }
+
+    /**
+     * 清除会话历史。
+     *
+     * @param sessionId 会话 ID
+     */
+    public void clearHistory(String sessionId) {
+        historyRepository.delete(sessionId);
+    }
+
     private List<ChatMessage> toAiPrompt(List<com.aria.conversation.domain.ConversationMessage> history) {
         return history.stream()
                 .map(m -> new ChatMessage(m.role(), m.content()))
