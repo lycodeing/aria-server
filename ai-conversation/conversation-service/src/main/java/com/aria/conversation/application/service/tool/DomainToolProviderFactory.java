@@ -14,6 +14,7 @@ import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.service.tool.ToolExecutor;
 import dev.langchain4j.service.tool.ToolProvider;
+import dev.langchain4j.service.tool.ToolProviderRequest;
 import dev.langchain4j.service.tool.ToolProviderResult;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -67,7 +68,7 @@ public class DomainToolProviderFactory {
                               BuiltinTools builtinTools) {
         return request -> {
             Map<ToolSpecification, ToolExecutor> toolMap = new LinkedHashMap<>();
-            loadMcpTools(toolMap, eventSink);
+            loadMcpTools(toolMap, eventSink, request);
             loadDomainTools(toolMap, domainTools, eventSink);
             toolMap.putAll(builtinTools.buildToolSpecs());
             log.debug("[ToolFactory] 工具总数={}", toolMap.size());
@@ -79,9 +80,10 @@ public class DomainToolProviderFactory {
      * 加载 MCP 工具并用 SSE 事件包装器包裹，加载失败时跳过不影响域工具和内置工具。
      */
     private void loadMcpTools(Map<ToolSpecification, ToolExecutor> toolMap,
-                               Sinks.Many<ChatEvent> eventSink) {
+                               Sinks.Many<ChatEvent> eventSink,
+                               ToolProviderRequest request) {
         try {
-            ToolProviderResult mcp = mcpClientRegistry.getToolProvider().provideTools(null);
+            ToolProviderResult mcp = mcpClientRegistry.getToolProvider().provideTools(request);
             if (mcp != null && mcp.tools() != null) {
                 mcp.tools().forEach((spec, exec) ->
                         toolMap.put(spec, wrapWithSseEvents(spec.name(), exec, eventSink)));
