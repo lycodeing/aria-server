@@ -2,6 +2,7 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.service.DomainRoutingService.RouteResult;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -23,7 +24,13 @@ class HybridDomainRoutingServiceTest {
 
     @Mock private KeywordRegexDomainMatcher ruleMatcher;
     @Mock private LangChain4jDomainRoutingService llmRouter;
+    @Mock private RoutingConfigProvider routingConfigProvider;
     @InjectMocks private HybridDomainRoutingService service;
+
+    @BeforeEach
+    void setUp() {
+        when(routingConfigProvider.isDomainRuleEnabled()).thenReturn(true);
+    }
 
     @Test
     @DisplayName("Tier1 命中：返回规则结果，不调用 LLM")

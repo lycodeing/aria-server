@@ -51,7 +51,7 @@ class KeywordRegexIntentMatcherTest {
 
         assertThat(result).isPresent();
         assertThat(result.get().intent()).isEqualTo(IntentType.TRANSFER_REQUEST);
-        assertThat(result.get().intentCode()).isEqualTo("TRANSFER_REQUEST");
+        assertThat(result.get().intentCode()).isEqualTo("transfer_request");
         assertThat(result.get().confidence()).isEqualTo(1.0);
     }
 
@@ -92,7 +92,7 @@ class KeywordRegexIntentMatcherTest {
     }
 
     @Test
-    @DisplayName("多意图冲突：按 sortOrder 取优先级最高的")
+    @DisplayName("多意图冲突：按 sortOrder 取优先级最高的（sortOrder 最小）")
     void match_multipleHits_returnLowestSortOrder() {
         when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN))
                 .thenReturn(Optional.of(systemDomain(
@@ -100,10 +100,13 @@ class KeywordRegexIntentMatcherTest {
                         intentConfig("COMPLAINT", List.of("不满意"), List.of(), 2))));
         matcher.reload();
 
-        // "不满意" 只命中 COMPLAINT(sortOrder=2)
-        Optional<IntentResult> result = matcher.match("我对服务不满意");
+        // Message contains BOTH "人工" (→ TRANSFER_REQUEST, sortOrder=1) AND "不满意" (→ COMPLAINT, sortOrder=2)
+        // Since rules list is ordered by sortOrder, TRANSFER_REQUEST (order=1) should be checked first and win
+        Optional<IntentResult> result = matcher.match("我不满意，要找人工客服");
+
         assertThat(result).isPresent();
-        assertThat(result.get().intent()).isEqualTo(IntentType.COMPLAINT);
+        assertThat(result.get().intent()).isEqualTo(IntentType.TRANSFER_REQUEST);
+        assertThat(result.get().intentCode()).isEqualTo("transfer_request");
     }
 
     @Test

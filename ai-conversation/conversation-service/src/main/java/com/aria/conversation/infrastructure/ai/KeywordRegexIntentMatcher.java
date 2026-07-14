@@ -12,6 +12,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.regex.Pattern;
@@ -64,6 +65,7 @@ public class KeywordRegexIntentMatcher {
         }
         List<IntentRuleEntry> entries = system.intents().stream()
                 .filter(this::hasRules)
+                .sorted(Comparator.comparingInt(IntentConfig::sortOrder))
                 .map(this::compile)
                 .toList();
         this.compiledRules = entries;
@@ -81,13 +83,13 @@ public class KeywordRegexIntentMatcher {
             for (String kw : entry.keywords()) {
                 if (lower.contains(kw.toLowerCase())) {
                     log.debug("[RuleMatcher] 关键词命中 intent={} keyword={}", entry.intentCode(), kw);
-                    return Optional.of(new IntentResult(entry.intentType(), entry.intentCode(), 1.0));
+                    return Optional.of(new IntentResult(entry.intentType(), entry.intentCode().toLowerCase(), 1.0));
                 }
             }
             for (Pattern p : entry.compiledPatterns()) {
                 if (p.matcher(userMessage).find()) {
                     log.debug("[RuleMatcher] 正则命中 intent={} pattern={}", entry.intentCode(), p.pattern());
-                    return Optional.of(new IntentResult(entry.intentType(), entry.intentCode(), 1.0));
+                    return Optional.of(new IntentResult(entry.intentType(), entry.intentCode().toLowerCase(), 1.0));
                 }
             }
         }

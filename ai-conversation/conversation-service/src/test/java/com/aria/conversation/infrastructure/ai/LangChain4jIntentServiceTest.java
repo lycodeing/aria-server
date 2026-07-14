@@ -26,6 +26,7 @@ class LangChain4jIntentServiceTest {
 
     @Mock private DynamicModelFactory modelFactory;
     @Mock private DomainRepository domainRepository;
+    @Mock private RoutingConfigProvider routingConfigProvider;
 
     private LangChain4jIntentService service;
 
@@ -37,8 +38,9 @@ class LangChain4jIntentServiceTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        RoutingProperties props = new RoutingProperties();  // 使用默认值
-        service = new LangChain4jIntentService(modelFactory, domainRepository, new ObjectMapper(), props);
+        when(routingConfigProvider.getMaxExamplesToInject()).thenReturn(5);
+        when(routingConfigProvider.getMinLlmConfidence()).thenReturn(0.0);
+        service = new LangChain4jIntentService(modelFactory, domainRepository, new ObjectMapper(), routingConfigProvider);
     }
 
     @Test

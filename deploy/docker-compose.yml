@@ -91,7 +91,7 @@ services:
       REDIS_HOST: ai-cs-redis
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ""
-healthcheck:
+    healthcheck:
       test: ["CMD-SHELL", "curl -s -o /dev/null --connect-timeout 5 http://localhost:8083/actuator/health || exit 1"]
       interval: 20s
       timeout: 10s

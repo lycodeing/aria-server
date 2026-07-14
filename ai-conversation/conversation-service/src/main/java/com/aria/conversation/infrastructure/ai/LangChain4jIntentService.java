@@ -33,7 +33,7 @@ public class LangChain4jIntentService implements IntentService {
     private final DynamicModelFactory modelFactory;
     private final DomainRepository domainRepository;
     private final ObjectMapper objectMapper;
-    private final RoutingProperties routingProperties;
+    private final RoutingConfigProvider routingConfigProvider;
 
     @Override
     public IntentResult classify(String userMessage) {
@@ -64,7 +64,7 @@ public class LangChain4jIntentService implements IntentService {
 
                 意图取值说明：
                 """);
-        int maxExamples = routingProperties.getIntent().getMaxExamplesToInject();
+        int maxExamples = routingConfigProvider.getMaxExamplesToInject();
         for (IntentConfig intent : intents) {
             sb.append("- ").append(intent.code());
             if (intent.description() != null && !intent.description().isBlank()) {
@@ -105,7 +105,7 @@ public class LangChain4jIntentService implements IntentService {
             }
 
             // 低置信度降级（minLlmConfidence=0.0 时关闭此检查）
-            double minConfidence = routingProperties.getIntent().getMinLlmConfidence();
+            double minConfidence = routingConfigProvider.getMinLlmConfidence();
             if (minConfidence > 0.0 && confidence < minConfidence) {
                 log.debug("[Intent] LLM 置信度 {} < 阈值 {}，降级为 UNKNOWN", confidence, minConfidence);
                 return IntentResult.UNKNOWN;

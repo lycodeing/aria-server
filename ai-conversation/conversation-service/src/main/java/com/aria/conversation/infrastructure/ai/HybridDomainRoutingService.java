@@ -27,17 +27,20 @@ public class HybridDomainRoutingService implements DomainRoutingService {
 
     private final KeywordRegexDomainMatcher ruleMatcher;
     private final LangChain4jDomainRoutingService llmRouter;
+    private final RoutingConfigProvider routingConfigProvider;
 
     @Override
     public RouteResult route(String userMessage, String currentDomain,
                              List<ConversationMessage> recentHistory) {
-        Optional<String> matched = ruleMatcher.matchDomain(userMessage);
-        if (matched.isPresent()) {
-            String target = matched.get();
-            boolean shouldSwitch = !target.equalsIgnoreCase(currentDomain);
-            log.debug("[HybridDomain] Tier1 规则命中，跳过 LLM. domain={} shouldSwitch={}",
-                    target, shouldSwitch);
-            return new RouteResult(target, shouldSwitch);
+        if (routingConfigProvider.isDomainRuleEnabled()) {
+            Optional<String> matched = ruleMatcher.matchDomain(userMessage);
+            if (matched.isPresent()) {
+                String target = matched.get();
+                boolean shouldSwitch = !target.equalsIgnoreCase(currentDomain);
+                log.debug("[HybridDomain] Tier1 规则命中，跳过 LLM. domain={} shouldSwitch={}",
+                        target, shouldSwitch);
+                return new RouteResult(target, shouldSwitch);
+            }
         }
         log.debug("[HybridDomain] Tier1 未命中，降级到 LLM 路由. currentDomain={}", currentDomain);
         return llmRouter.route(userMessage, currentDomain, recentHistory);
