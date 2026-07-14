@@ -36,6 +36,7 @@ class KeywordRegexIntentMatcherTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
+        // 每个测试用新的 matcher 实例，避免 Caffeine 缓存跨测试污染
         matcher = new KeywordRegexIntentMatcher(domainRepository);
     }
 
@@ -45,7 +46,6 @@ class KeywordRegexIntentMatcherTest {
         when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN))
                 .thenReturn(Optional.of(systemDomain(
                         intentConfig("TRANSFER_REQUEST", List.of("转人工", "找真人"), List.of(), 1))));
-        matcher.reload();
 
         Optional<IntentResult> result = matcher.match("我想转人工处理一下");
 
@@ -61,7 +61,6 @@ class KeywordRegexIntentMatcherTest {
         when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN))
                 .thenReturn(Optional.of(systemDomain(
                         intentConfig("FAQ_QUERY", List.of("FAQ"), List.of(), 0))));
-        matcher.reload();
 
         assertThat(matcher.match("我有个faq问题")).isPresent();
     }
@@ -72,7 +71,6 @@ class KeywordRegexIntentMatcherTest {
         when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN))
                 .thenReturn(Optional.of(systemDomain(
                         intentConfig("COMPLAINT", List.of(), List.of("^.*投诉.*"), 0))));
-        matcher.reload();
 
         Optional<IntentResult> result = matcher.match("我要投诉你们！");
 
@@ -86,7 +84,6 @@ class KeywordRegexIntentMatcherTest {
         when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN))
                 .thenReturn(Optional.of(systemDomain(
                         intentConfig("FAQ_QUERY", List.of(), List.of(), 0))));
-        matcher.reload();
 
         assertThat(matcher.match("随便说一句话")).isEmpty();
     }
@@ -98,7 +95,6 @@ class KeywordRegexIntentMatcherTest {
                 .thenReturn(Optional.of(systemDomain(
                         intentConfig("TRANSFER_REQUEST", List.of("人工"), List.of(), 1),
                         intentConfig("COMPLAINT", List.of("不满意"), List.of(), 2))));
-        matcher.reload();
 
         // Message contains BOTH "人工" (→ TRANSFER_REQUEST, sortOrder=1) AND "不满意" (→ COMPLAINT, sortOrder=2)
         // Since rules list is ordered by sortOrder, TRANSFER_REQUEST (order=1) should be checked first and win
@@ -115,7 +111,6 @@ class KeywordRegexIntentMatcherTest {
         when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN))
                 .thenReturn(Optional.of(systemDomain(
                         intentConfig("query_order", List.of("查订单"), List.of(), 0))));
-        matcher.reload();
 
         Optional<IntentResult> result = matcher.match("帮我查订单状态");
 
@@ -125,10 +120,9 @@ class KeywordRegexIntentMatcherTest {
     }
 
     @Test
-    @DisplayName("__system__ 域不存在时 reload 不抛异常，match 返回 empty")
+    @DisplayName("__system__ 域不存在时不抛异常，match 返回 empty")
     void reload_domainNotFound_noException() {
         when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN)).thenReturn(Optional.empty());
-        matcher.reload();
 
         assertThat(matcher.match("任意消息")).isEmpty();
     }
