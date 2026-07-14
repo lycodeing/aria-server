@@ -5,6 +5,7 @@ import com.aria.conversation.application.service.DitManageAppService;
 import com.aria.conversation.infrastructure.dit.domain.IntentDO;
 import com.aria.conversation.infrastructure.dit.domain.IntentSlotDO;
 import com.aria.conversation.infrastructure.dit.domain.IntentToolDO;
+import com.aria.conversation.interfaces.rest.validation.ValidRegexPatterns;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -166,6 +167,7 @@ public class DitIntentController {
         private String keywords;
 
         /** 正则表达式列表，JSON 字符串，如 ["^我要.*转.*人工"]，Java Pattern 语法 */
+        @ValidRegexPatterns
         private String patterns;
     }
 

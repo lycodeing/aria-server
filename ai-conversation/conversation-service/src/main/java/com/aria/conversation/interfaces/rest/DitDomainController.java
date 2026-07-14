@@ -3,6 +3,7 @@ package com.aria.conversation.interfaces.rest;
 import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.DitManageAppService;
 import com.aria.conversation.infrastructure.dit.domain.DomainDO;
+import com.aria.conversation.interfaces.rest.validation.ValidRegexPatterns;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
@@ -83,6 +84,7 @@ public class DitDomainController {
         private String keywords;
 
         /** 域路由正则列表，命中则直接路由到该域，跳过 LLM */
+        @ValidRegexPatterns
         private String patterns;
     }
 }
