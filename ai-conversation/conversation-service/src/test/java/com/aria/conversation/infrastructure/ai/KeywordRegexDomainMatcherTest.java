@@ -2,6 +2,7 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.infrastructure.dit.domain.DomainDO;
 import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -18,6 +19,7 @@ import static org.mockito.Mockito.when;
 class KeywordRegexDomainMatcherTest {
 
     @Mock private DomainRepository domainRepository;
+    private final ObjectMapper objectMapper = new ObjectMapper();
     private KeywordRegexDomainMatcher matcher;
 
     private static DomainDO domain(String code, String keywords, String patterns) {
@@ -31,7 +33,7 @@ class KeywordRegexDomainMatcherTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        matcher = new KeywordRegexDomainMatcher(domainRepository);
+        matcher = new KeywordRegexDomainMatcher(domainRepository, objectMapper);
     }
 
     @Test

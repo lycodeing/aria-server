@@ -5,6 +5,7 @@ import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PostConstruct;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
@@ -19,22 +20,12 @@ import java.util.regex.Pattern;
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class KeywordRegexDomainMatcher {
 
     private final DomainRepository domainRepository;
     private final ObjectMapper objectMapper;
     private volatile List<DomainRuleEntry> compiledRules = List.of();
-
-    /** Spring 正式构造（通过 @Component 自动注入）*/
-    public KeywordRegexDomainMatcher(DomainRepository domainRepository, ObjectMapper objectMapper) {
-        this.domainRepository = domainRepository;
-        this.objectMapper = objectMapper;
-    }
-
-    /** 仅供单元测试使用，使用默认 ObjectMapper */
-    KeywordRegexDomainMatcher(DomainRepository domainRepository) {
-        this(domainRepository, new ObjectMapper());
-    }
 
     @PostConstruct
     public void init() {
