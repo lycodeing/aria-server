@@ -84,4 +84,22 @@ class ChatAppServiceIntentTest {
                 .verifyComplete();
         verify(domainAgentService, never()).streamChat(any(), any(), any());
     }
+
+    @Test
+    @DisplayName("有 domainCode 且意图非转人工：委托 domainAgentService.streamChat")
+    void stream_domainCode_normalIntent_delegatesToDomainAgent() {
+        when(sessionQueueService.isActive("s4")).thenReturn(false);
+        when(domainSessionService.resolveActiveDomain("s4", "查订单", "ecommerce"))
+                .thenReturn("ecommerce");
+        when(intentClassifier.classify("查订单"))
+                .thenReturn(new IntentResult(IntentType.FAQ_QUERY, "faq_query", 0.9));
+        when(domainAgentService.streamChat("s4", "ecommerce", "查订单"))
+                .thenReturn(Flux.just(ChatEvent.token("好的", objectMapper)));
+
+        StepVerifier.create(service.stream("s4", "查订单", "ecommerce"))
+                .assertNext(e -> assertThat(e.eventType()).isNull())
+                .verifyComplete();
+        verify(domainAgentService).streamChat("s4", "ecommerce", "查订单");
+        verify(faqChatService, never()).handleTransfer(any(), any());
+    }
 }
