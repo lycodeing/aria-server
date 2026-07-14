@@ -33,6 +33,7 @@ public class LangChain4jIntentService implements IntentService {
     private final DynamicModelFactory modelFactory;
     private final DomainRepository domainRepository;
     private final ObjectMapper objectMapper;
+    private final RoutingProperties routingProperties;
 
     @Override
     public IntentResult classify(String userMessage) {
@@ -63,10 +64,18 @@ public class LangChain4jIntentService implements IntentService {
 
                 意图取值说明：
                 """);
+        int maxExamples = routingProperties.getIntent().getMaxExamplesToInject();
         for (IntentConfig intent : intents) {
             sb.append("- ").append(intent.code());
             if (intent.description() != null && !intent.description().isBlank()) {
                 sb.append("：").append(intent.description());
+            }
+            // 注入 exampleQueries 作为 few-shot 示例（已是 List<String>，无需解析）
+            List<String> examples = intent.exampleQueries();
+            if (examples != null && !examples.isEmpty()) {
+                List<String> sample = examples.size() > maxExamples
+                        ? examples.subList(0, maxExamples) : examples;
+                sb.append("（示例：").append(String.join("、", sample)).append("）");
             }
             sb.append("\n");
         }
@@ -75,9 +84,7 @@ public class LangChain4jIntentService implements IntentService {
     }
 
     IntentResult parseResponse(String response) {
-        if (response == null || response.isBlank()) {
-            return IntentResult.UNKNOWN;
-        }
+        if (response == null || response.isBlank()) return IntentResult.UNKNOWN;
         String json = extractJson(response.trim());
         if (!json.startsWith("{")) {
             log.warn("[Intent] 响应不是有效 JSON 对象: {}", json);
@@ -87,13 +94,23 @@ public class LangChain4jIntentService implements IntentService {
             JsonNode node = objectMapper.readTree(json);
             String intentStr = node.path("intent").asText("UNKNOWN").toUpperCase();
             double confidence = node.path("confidence").asDouble(1.0);
+
             IntentType intent;
             try {
                 intent = IntentType.valueOf(intentStr);
             } catch (IllegalArgumentException ex) {
-                log.warn("[Intent] 未知意图值: {}, 降级为 UNKNOWN", intentStr);
-                intent = IntentType.UNKNOWN;
+                // 自定义业务 code 不在枚举内，按 FAQ_QUERY 分叉
+                log.warn("[Intent] 未知意图值: {}, 映射为 FAQ_QUERY", intentStr);
+                intent = IntentType.FAQ_QUERY;
             }
+
+            // 低置信度降级（minLlmConfidence=0.0 时关闭此检查）
+            double minConfidence = routingProperties.getIntent().getMinLlmConfidence();
+            if (minConfidence > 0.0 && confidence < minConfidence) {
+                log.debug("[Intent] LLM 置信度 {} < 阈值 {}，降级为 UNKNOWN", confidence, minConfidence);
+                return IntentResult.UNKNOWN;
+            }
+
             return new IntentResult(intent, intentStr.toLowerCase(), confidence);
         } catch (Exception e) {
             log.warn("[Intent] JSON 解析失败: {}", json, e);
