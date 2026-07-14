@@ -39,6 +39,8 @@ public class DitDomainController {
         domain.setDescription(req.getDescription());
         domain.setSystemPromptAddon(req.getSystemPromptAddon());
         domain.setEnabled(req.getEnabled() != null ? req.getEnabled() : true);
+        domain.setKeywords(req.getKeywords() != null ? req.getKeywords() : "[]");
+        domain.setPatterns(req.getPatterns() != null ? req.getPatterns() : "[]");
         return R.ok(manageService.createDomain(domain));
     }
 
@@ -51,6 +53,8 @@ public class DitDomainController {
         domain.setDescription(req.getDescription());
         domain.setSystemPromptAddon(req.getSystemPromptAddon());
         domain.setEnabled(req.getEnabled() != null ? req.getEnabled() : true);
+        domain.setKeywords(req.getKeywords() != null ? req.getKeywords() : "[]");
+        domain.setPatterns(req.getPatterns() != null ? req.getPatterns() : "[]");
         manageService.updateDomain(domain);
         return R.ok();
     }
@@ -74,5 +78,11 @@ public class DitDomainController {
         private String description;
         private String systemPromptAddon;
         private Boolean enabled;
+
+        /** 域路由关键词列表，命中则直接路由到该域，跳过 LLM */
+        private String keywords;
+
+        /** 域路由正则列表，命中则直接路由到该域，跳过 LLM */
+        private String patterns;
     }
 }

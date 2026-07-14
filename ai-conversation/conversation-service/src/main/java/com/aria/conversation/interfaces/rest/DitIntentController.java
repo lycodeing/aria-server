@@ -47,6 +47,8 @@ public class DitIntentController {
         intent.setFallbackReply(req.getFallbackReply());
         intent.setEnabled(true);
         intent.setSortOrder(req.getSortOrder() != null ? req.getSortOrder() : 0);
+        intent.setKeywords(req.getKeywords() != null ? req.getKeywords() : "[]");
+        intent.setPatterns(req.getPatterns() != null ? req.getPatterns() : "[]");
         return R.ok(manageService.createIntent(intent));
     }
 
@@ -62,6 +64,8 @@ public class DitIntentController {
         intent.setSkipRag(req.getSkipRag() != null && req.getSkipRag());
         intent.setFallbackReply(req.getFallbackReply());
         intent.setSortOrder(req.getSortOrder() != null ? req.getSortOrder() : 0);
+        intent.setKeywords(req.getKeywords() != null ? req.getKeywords() : "[]");
+        intent.setPatterns(req.getPatterns() != null ? req.getPatterns() : "[]");
         manageService.updateIntent(intent);
         return R.ok();
     }
@@ -157,6 +161,12 @@ public class DitIntentController {
         private Boolean skipRag;
         private String fallbackReply;
         private Integer sortOrder;
+
+        /** 关键词列表，JSON 字符串，如 ["转人工","找真人"]，大小写不敏感全文包含匹配 */
+        private String keywords;
+
+        /** 正则表达式列表，JSON 字符串，如 ["^我要.*转.*人工"]，Java Pattern 语法 */
+        private String patterns;
     }
 
     @Data
