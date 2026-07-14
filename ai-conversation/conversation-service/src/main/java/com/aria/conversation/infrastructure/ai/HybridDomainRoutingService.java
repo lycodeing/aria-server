@@ -32,7 +32,7 @@ public class HybridDomainRoutingService implements DomainRoutingService {
     @Override
     public RouteResult route(String userMessage, String currentDomain,
                              List<ConversationMessage> recentHistory) {
-        if (routingConfigProvider.isDomainRuleEnabled()) {
+        if (routingConfigProvider.getConfig().getDomain().isRuleEnabled()) {
             Optional<String> matched = ruleMatcher.matchDomain(userMessage);
             if (matched.isPresent()) {
                 String target = matched.get();

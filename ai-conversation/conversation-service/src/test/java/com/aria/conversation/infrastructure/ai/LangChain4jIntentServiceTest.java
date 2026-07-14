@@ -20,6 +20,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
+// RoutingConfig is in the same package — no import needed
 
 @DisplayName("LangChain4jIntentService")
 class LangChain4jIntentServiceTest {
@@ -38,8 +39,8 @@ class LangChain4jIntentServiceTest {
     @BeforeEach
     void setUp() {
         MockitoAnnotations.openMocks(this);
-        when(routingConfigProvider.getMaxExamplesToInject()).thenReturn(5);
-        when(routingConfigProvider.getMinLlmConfidence()).thenReturn(0.0);
+        RoutingConfig config = new RoutingConfig();
+        when(routingConfigProvider.getConfig()).thenReturn(config);
         service = new LangChain4jIntentService(modelFactory, domainRepository, new ObjectMapper(), routingConfigProvider);
     }
 

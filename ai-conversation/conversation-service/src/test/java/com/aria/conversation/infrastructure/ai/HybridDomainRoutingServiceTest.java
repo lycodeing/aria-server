@@ -29,7 +29,8 @@ class HybridDomainRoutingServiceTest {
 
     @BeforeEach
     void setUp() {
-        when(routingConfigProvider.isDomainRuleEnabled()).thenReturn(true);
+        RoutingConfig config = new RoutingConfig();
+        when(routingConfigProvider.getConfig()).thenReturn(config);
     }
 
     @Test
