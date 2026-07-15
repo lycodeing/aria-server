@@ -24,5 +24,7 @@ logs/
 .env
 .env.local
 
-# 本地 Docker 测试数据（jars/certs/db data 不入库）
-deploy/docker-data/
+# 本地 Docker 测试数据（jars/certs/db data 不入库，配置文件和初始化 SQL 跟踪）
+deploy/docker-data/jars/
+deploy/docker-data/postgres/
+deploy/docker-data/nginx/certs/
