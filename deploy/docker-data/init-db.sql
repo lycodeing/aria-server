@@ -1,3 +1,8 @@
+-- ========================================
+-- Module: auth-service (cs_auth schema)
+--          conversation-service (cs_conversation schema)
+-- ========================================
+
 --
 -- PostgreSQL database dump
 --
@@ -1924,6 +1929,11 @@ ALTER TABLE ONLY cs_conversation.cs_intent_tool
 
 \unrestrict ssj1gNQprlQEnz7daH8ob9g2E5pQJM3E1MOFlJJ0eJFKa2bsCMaxE56sgXDhF7g
 
+-- ========================================
+-- Module: auth-service (cs_auth data)
+--          conversation-service (cs_conversation data)
+-- ========================================
+
 --
 -- PostgreSQL database dump
 --
@@ -2479,6 +2489,10 @@ SELECT pg_catalog.setval('cs_conversation.cs_tool_id_seq', 11, true);
 
 \unrestrict LrTZ4YulIj3mfmuBYGXZLSfwgWCrZpLrHSfeBRQpl6T7eVly0yQuIp92RwsNLhL
 
+-- ========================================
+-- Module: knowledge-service (knowledge schema)
+-- ========================================
+
 --
 -- PostgreSQL database dump
 --
@@ -2853,6 +2867,10 @@ ALTER TABLE ONLY public.knowledge_doc
 --
 
 \unrestrict 28irL5ajR9fdsOwlv076IPwUd3l8i3APgt07l6QyWjwjzQFGJzMjiNIhghM2Lvl
+
+-- ========================================
+-- Module: knowledge-service (knowledge data)
+-- ========================================
 
 --
 -- PostgreSQL database dump
