@@ -11,7 +11,10 @@ import com.aria.sdk.auth.model.AiModelConfigDTO;
 import com.aria.sdk.auth.model.ModelScope;
 import com.aria.sdk.auth.token.TokenVerifyRequest;
 import com.aria.sdk.auth.token.TokenVerifyResult;
+import lombok.extern.slf4j.Slf4j;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 
 /**
@@ -39,6 +42,7 @@ import java.time.Duration;
  * @author lycodeing
  * @since 2026-07
  */
+@Slf4j
 public class AuthClient extends BaseClient {
 
     private AuthClient(ClientConfig config) {
@@ -85,12 +89,14 @@ public class AuthClient extends BaseClient {
             throw new IllegalArgumentException("configKey 不能为空");
         }
         try {
+            String encodedKey = URLEncoder.encode(configKey, StandardCharsets.UTF_8);
             ApiResponse<String> resp = doGet(
-                    "/internal/system-config/value?key=" + configKey,
+                    "/internal/system-config/value?key=" + encodedKey,
                     new TypeRef<ApiResponse<String>>() {},
                     "读取系统配置失败 key=" + configKey);
             return resp != null && resp.isSuccess() ? resp.data() : null;
         } catch (AuthClientException e) {
+            log.warn("[AuthClient] 读取系统配置失败 key={}: {}", configKey, e.getMessage());
             return null;
         }
     }

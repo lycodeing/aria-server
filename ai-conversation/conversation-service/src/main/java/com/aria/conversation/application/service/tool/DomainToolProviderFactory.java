@@ -106,20 +106,22 @@ public class DomainToolProviderFactory {
     }
 
     /**
-     * 构建域 HTTP 工具的执行器。执行前发射 tool_call，执行后发射 tool_done。
+     * 构建域 HTTP 工具的执行器。执行前发射 tool_call，执行后发射 tool_done（含实际耗时）。
      * 工具执行失败时返回错误描述字符串，不抛出异常，由 LLM 自行决策是否重试。
      */
     private ToolExecutor buildHttpExecutor(ToolConfig tc, Sinks.Many<ChatEvent> eventSink) {
         return (ToolExecutionRequest req, Object memId) -> {
+            long start = System.currentTimeMillis();
             emitToolCall(tc.code(), eventSink);
             try {
                 Map<String, Object> args = parseArgs(req.arguments());
                 ToolCallResult result = httpToolRunner.execute(tc, args, Map.of());
-                emitToolDone(tc.code(), result.isSuccess(), result.getErrorMsg(), eventSink);
+                emitToolDone(tc.code(), result.isSuccess(), result.getErrorMsg(),
+                        System.currentTimeMillis() - start, eventSink);
                 return result.isSuccess() ? result.getResponse() : "工具执行失败: " + result.getErrorMsg();
             } catch (Exception e) {
                 log.error("[ToolFactory] HTTP 工具执行异常 tool={}", tc.code(), e);
-                emitToolDone(tc.code(), false, e.getMessage(), eventSink);
+                emitToolDone(tc.code(), false, e.getMessage(), System.currentTimeMillis() - start, eventSink);
                 return "工具执行失败: " + e.getMessage();
             }
         };
@@ -132,13 +134,14 @@ public class DomainToolProviderFactory {
     private ToolExecutor wrapWithSseEvents(String name, ToolExecutor delegate,
                                             Sinks.Many<ChatEvent> eventSink) {
         return (req, memId) -> {
+            long start = System.currentTimeMillis();
             emitToolCall(name, eventSink);
             try {
                 String result = delegate.execute(req, memId);
-                emitToolDone(name, true, null, eventSink);
+                emitToolDone(name, true, null, System.currentTimeMillis() - start, eventSink);
                 return result;
             } catch (Exception e) {
-                emitToolDone(name, false, e.getMessage(), eventSink);
+                emitToolDone(name, false, e.getMessage(), System.currentTimeMillis() - start, eventSink);
                 throw e;
             }
         };
@@ -154,11 +157,11 @@ public class DomainToolProviderFactory {
     }
 
     private void emitToolDone(String toolCode, boolean success, String errorMsg,
-                               Sinks.Many<ChatEvent> sink) {
+                               long durationMs, Sinks.Many<ChatEvent> sink) {
         try {
             String json = success
-                    ? objectMapper.writeValueAsString(ToolDonePayload.success(toolCode, 0))
-                    : objectMapper.writeValueAsString(ToolDonePayload.error(toolCode, 0, errorMsg));
+                    ? objectMapper.writeValueAsString(ToolDonePayload.success(toolCode, durationMs))
+                    : objectMapper.writeValueAsString(ToolDonePayload.error(toolCode, durationMs, errorMsg));
             sink.tryEmitNext(ChatEvent.toolDone(json));
         } catch (Exception e) {
             log.warn("[ToolFactory] tool_done 事件发射失败 tool={}", toolCode, e);

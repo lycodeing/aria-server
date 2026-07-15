@@ -96,8 +96,18 @@ public class DomainSessionAppService {
     }
 
     /**
-     * 原子化保存域绑定关系并记录域切换审计日志。
-     * 每次域变更必须同时更新 Redis 绑定和审计记录，确保两者一致。
+     * 顺序保存域绑定关系并记录域切换审计日志（非事务性双写）。
+     *
+     * <p>先更新 Redis 激活域绑定，再写入审计日志。两步操作相互独立，
+     * 若第二步失败，Redis 已更新但审计记录缺失（最终一致，非原子）。
+     * 业务可接受此风险；如需强一致，需引入分布式事务或补偿机制。
+     *
+     * @param sessionId  会话 ID
+     * @param fromDomain 切换前的域（首次进入时为 null）
+     * @param toDomain   切换后的目标域
+     * @param switchType 切换类型，见 {@link SwitchType}
+     * @param message    触发切换的用户消息
+     * @param reason     切换原因描述，用于审计分析
      */
     private void saveDomainSwitch(String sessionId, String fromDomain, String toDomain,
                                   String switchType, String message, String reason) {

@@ -16,12 +16,10 @@ import com.aria.conversation.infrastructure.dit.mapper.IntentMapper;
 import com.aria.conversation.infrastructure.dit.mapper.IntentSlotMapper;
 import com.aria.conversation.infrastructure.dit.mapper.IntentToolMapper;
 import com.aria.conversation.infrastructure.dit.mapper.ToolMapper;
-import com.aria.conversation.infrastructure.ai.DomainCacheEvictedEvent;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Repository;
 
 import java.time.Duration;
@@ -56,7 +54,6 @@ public class DomainRepository {
     private final IntentSlotMapper slotMapper;
     private final IntentToolMapper intentToolMapper;
     private final ToolMapper toolMapper;
-    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * 按 domainCode 查找领域配置。
@@ -129,7 +126,6 @@ public class DomainRepository {
     public void evict(String domainCode) {
         cache.delete(CACHE_KEY_PREFIX + domainCode);
         log.info("[DIT] 领域配置缓存已失效 code={}", domainCode);
-        eventPublisher.publishEvent(new DomainCacheEvictedEvent(this, domainCode));
     }
 
     // ---- 私有：DB 数据组装 ----
