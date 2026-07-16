@@ -4,6 +4,7 @@ import com.aria.knowledge.infrastructure.config.RabbitMQConfig;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Component;
 import org.springframework.validation.annotation.Validated;
@@ -30,11 +31,16 @@ import org.springframework.validation.annotation.Validated;
 @RequiredArgsConstructor
 public class DocIngestConsumer {
 
+    private static final String MDC_TRACE_ID = "traceId";
+
     private final DocumentIngestPipeline pipeline;
 
     /**
      * 消费摄取队列，触发完整 pipeline。
      * 消费线程数由 {@code knowledge.ingest.consumer-concurrency} 配置控制（默认 2）。
+     *
+     * <p>从事件 {@link DocIngestEvent#getTraceId()} 恢复 MDC traceId，
+     * 保证异步消费日志与触发请求保持相同 traceId，实现全链路追踪串联。
      *
      * @param event 摄取事件 DTO（由 Jackson2JsonMessageConverter 自动反序列化）
      */
@@ -43,9 +49,21 @@ public class DocIngestConsumer {
             concurrency = "${knowledge.ingest.consumer-concurrency:2}",
             containerFactory = RabbitMQConfig.INGEST_CONTAINER_FACTORY)
     public void consume(@Valid DocIngestEvent event) {
-        log.info("[MQ:Consumer] 开始处理文档摄取 docId={} kbId={}",
-                event.getDocId(), event.getKbId());
-        pipeline.process(event);
-        log.info("[MQ:Consumer] 文档摄取完成 docId={}", event.getDocId());
+        // 从消息体恢复 traceId 到 MDC，使 pipeline 内部日志与触发请求同一 traceId
+        String traceId = event.getTraceId();
+        boolean traceRestored = traceId != null && !traceId.isBlank();
+        if (traceRestored) {
+            MDC.put(MDC_TRACE_ID, traceId);
+        }
+        try {
+            log.info("[MQ:Consumer] 开始处理文档摄取 docId={} kbId={}",
+                    event.getDocId(), event.getKbId());
+            pipeline.process(event);
+            log.info("[MQ:Consumer] 文档摄取完成 docId={}", event.getDocId());
+        } finally {
+            if (traceRestored) {
+                MDC.remove(MDC_TRACE_ID);
+            }
+        }
     }
 }

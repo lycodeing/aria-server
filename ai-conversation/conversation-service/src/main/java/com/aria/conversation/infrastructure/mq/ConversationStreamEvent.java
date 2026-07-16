@@ -76,6 +76,12 @@ public final class ConversationStreamEvent {
      */
     public static final String FIELD_CLOSED_BY = "closedBy";
 
+    /**
+     * 全链路追踪 ID，随消息体传递，消费端恢复到 MDC。
+     * 可为 null（兼容历史消息）。
+     */
+    public static final String FIELD_TRACE_ID = "traceId";
+
     // ---- closedBy 合法取值常量 ----
     /** 座席主动关闭 */
     public static final String CLOSED_BY_AGENT   = "agent";

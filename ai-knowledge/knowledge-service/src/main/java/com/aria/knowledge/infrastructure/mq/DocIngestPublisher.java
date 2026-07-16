@@ -4,6 +4,7 @@ import com.aria.knowledge.domain.model.DocStatus;
 import com.aria.knowledge.domain.repository.KnowledgeDocRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.amqp.AmqpException;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
@@ -48,8 +49,13 @@ public class DocIngestPublisher {
             maxAttempts = 3,
             backoff = @Backoff(delay = 1000, multiplier = 2))
     public void publish(DocIngestEvent event) {
+        // 发布前注入当前 traceId，使异步消费端日志与触发请求保持相同 traceId
+        String traceId = MDC.get("traceId");
+        if (traceId != null && !traceId.isBlank()) {
+            event.setTraceId(traceId);
+        }
         rabbitTemplate.convertAndSend(exchange, routingKey, event);
-        log.info("[MQ:Publisher] 文档摄取事件已发布 docId={} kbId={}", event.getDocId(), event.getKbId());
+        log.info("[MQ:Publisher] 文档摄取事件已发布 docId={} kbId={} traceId={}", event.getDocId(), event.getKbId(), traceId);
     }
 
     /**

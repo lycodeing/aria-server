@@ -7,6 +7,7 @@ import com.aria.common.sdk.exception.SdkRateLimitException;
 import com.aria.common.sdk.interceptor.AkSkSigningInterceptor;
 import com.aria.common.sdk.interceptor.RetryInterceptor;
 import com.aria.common.sdk.interceptor.SharedSecretInterceptor;
+import com.aria.common.sdk.interceptor.TraceIdPropagationInterceptor;
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
@@ -39,6 +40,8 @@ public abstract class BaseClient {
             case SHARED_SECRET -> builder.addInterceptor(new SharedSecretInterceptor(config.getSharedSecret()));
             case NONE -> { /* 无鉴权，仅测试或健康探针使用 */ }
         }
+        // traceId 透传：将 MDC 中的 traceId 写入下游请求头 X-Trace-Id，保证全链路追踪一致
+        builder.addInterceptor(new TraceIdPropagationInterceptor());
         builder.addInterceptor(new RetryInterceptor(config.getMaxRetries()));
         this.httpClient = builder.build();
     }

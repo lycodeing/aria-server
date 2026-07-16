@@ -16,6 +16,7 @@ import dev.langchain4j.service.tool.ToolExecutor;
 import dev.langchain4j.service.tool.ToolProvider;
 import dev.langchain4j.service.tool.ToolProviderRequest;
 import dev.langchain4j.service.tool.ToolProviderResult;
+import io.micrometer.tracing.Tracer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -35,8 +36,8 @@ import java.util.Map;
  *   <li>高优先级：内置工具 switch_domain / transfer_to_agent（不可被覆盖）</li>
  * </ul>
  *
- * <p>所有工具统一通过 ToolProvider 注册，避免 {@code .tools()} + {@code .toolProvider()}
- * 混合使用时 LangChain4j 1.1.0 executor 合并缺失导致 NPE。
+ * <p>每次工具调用前后各创建一个独立 Span（{@code tool.<toolCode>}），
+ * 使 Zipkin / Grafana Tempo 等后端可以看到每次 AI 工具调用的名称、耗时和成功/失败状态。
  *
  * <p><b>per-request 原则：</b>每次请求必须调用 {@link #build} 重新构建 ToolProvider，
  * 不可复用，因为 builtinTools 和 eventSink 均携带请求级上下文。
@@ -46,23 +47,20 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class DomainToolProviderFactory {
 
-    /** MCP 工具注册表，聚合所有外部 MCP 服务端提供的动态工具 */
-    private final McpClientRegistry mcpClientRegistry;
-    /** 域 HTTP 工具执行器，负责模板渲染、HTTP 调用和结果提取 */
-    private final HttpToolRunner    httpToolRunner;
-    /** 工具规格构造器，将 ToolConfig.paramSchema JSON Schema 转换为 LangChain4j ToolSpecification */
-    private final ToolSpecBuilder   toolSpecBuilder;
-    /** JSON 序列化工具，用于构造 tool_call / tool_done SSE 事件载荷 */
-    private final ObjectMapper      objectMapper;
-
+    /** MCP 工具注册表 */
+    private final McpClientRegistry  mcpClientRegistry;
+    /** 域 HTTP 工具执行器 */
+    private final HttpToolRunner      httpToolRunner;
+    /** 工具规格构造器 */
+    private final ToolSpecBuilder     toolSpecBuilder;
+    /** JSON 序列化工具 */
+    private final ObjectMapper        objectMapper;
     /**
-     * 构建当前请求独立的 ToolProvider，供 DomainAgentService 挂载到 AiServices。
-     *
-     * @param domainTools  当前域的 HTTP 工具配置列表，来自 DomainConfig
-     * @param eventSink    SSE 事件发射器，工具执行前后向前端推送 tool_call / tool_done 事件
-     * @param builtinTools 内置工具实例（per-request），含 sessionId / domainCode 等会话上下文
-     * @return 组装完成的三层 ToolProvider
+     * Micrometer Tracer，用于为每次工具调用创建独立 Span。
+     * Spring Boot Actuator 自动装配（需要 micrometer-tracing-bridge-brave 在 classpath）。
      */
+    private final Tracer              tracer;
+
     public ToolProvider build(List<ToolConfig> domainTools,
                               Sinks.Many<ChatEvent> eventSink,
                               BuiltinTools builtinTools) {
@@ -76,9 +74,6 @@ public class DomainToolProviderFactory {
         };
     }
 
-    /**
-     * 加载 MCP 工具并用 SSE 事件包装器包裹，加载失败时跳过不影响域工具和内置工具。
-     */
     private void loadMcpTools(Map<ToolSpecification, ToolExecutor> toolMap,
                                Sinks.Many<ChatEvent> eventSink,
                                ToolProviderRequest request) {
@@ -94,9 +89,6 @@ public class DomainToolProviderFactory {
         }
     }
 
-    /**
-     * 加载当前域的 HTTP 工具，覆盖同名 MCP 工具（中优先级）。
-     */
     private void loadDomainTools(Map<ToolSpecification, ToolExecutor> toolMap,
                                   List<ToolConfig> tools,
                                   Sinks.Many<ChatEvent> eventSink) {
@@ -106,43 +98,73 @@ public class DomainToolProviderFactory {
     }
 
     /**
-     * 构建域 HTTP 工具的执行器。执行前发射 tool_call，执行后发射 tool_done（含实际耗时）。
-     * 工具执行失败时返回错误描述字符串，不抛出异常，由 LLM 自行决策是否重试。
+     * 构建域 HTTP 工具执行器，包含：
+     * <ol>
+     *   <li>Micrometer Span（{@code tool.<code>}），记录工具调用耗时和成功/失败</li>
+     *   <li>SSE tool_call / tool_done 事件推送</li>
+     * </ol>
      */
     private ToolExecutor buildHttpExecutor(ToolConfig tc, Sinks.Many<ChatEvent> eventSink) {
         return (ToolExecutionRequest req, Object memId) -> {
             long start = System.currentTimeMillis();
             emitToolCall(tc.code(), eventSink);
-            try {
+            // 为本次工具调用创建独立 Span，Zipkin 可见耗时和名称
+            var span = tracer.nextSpan()
+                    .name("tool." + tc.code())
+                    .tag("tool.type", "http")
+                    .start();
+            try (var ignored = tracer.withSpan(span)) {
                 Map<String, Object> args = parseArgs(req.arguments());
                 ToolCallResult result = httpToolRunner.execute(tc, args, Map.of());
-                emitToolDone(tc.code(), result.isSuccess(), result.getErrorMsg(),
-                        System.currentTimeMillis() - start, eventSink);
-                return result.isSuccess() ? result.getResponse() : "工具执行失败: " + result.getErrorMsg();
+                long durationMs = System.currentTimeMillis() - start;
+                if (result.isSuccess()) {
+                    span.tag("tool.success", "true");
+                    emitToolDone(tc.code(), true, null, durationMs, eventSink);
+                    return result.getResponse();
+                } else {
+                    span.tag("tool.success", "false")
+                        .tag("tool.error", String.valueOf(result.getErrorMsg()))
+                        .error(new RuntimeException(result.getErrorMsg()));
+                    emitToolDone(tc.code(), false, result.getErrorMsg(), durationMs, eventSink);
+                    return "工具执行失败: " + result.getErrorMsg();
+                }
             } catch (Exception e) {
+                long durationMs = System.currentTimeMillis() - start;
                 log.error("[ToolFactory] HTTP 工具执行异常 tool={}", tc.code(), e);
-                emitToolDone(tc.code(), false, e.getMessage(), System.currentTimeMillis() - start, eventSink);
+                span.tag("tool.success", "false").error(e);
+                emitToolDone(tc.code(), false, e.getMessage(), durationMs, eventSink);
                 return "工具执行失败: " + e.getMessage();
+            } finally {
+                span.end();
             }
         };
     }
 
     /**
-     * 用 SSE 事件包装器包裹 MCP ToolExecutor。
-     * 执行失败时先发射 tool_done（失败状态）再重新抛出，确保前端不停在 loading 状态。
+     * 用 Span + SSE 事件包装 MCP ToolExecutor。
      */
     private ToolExecutor wrapWithSseEvents(String name, ToolExecutor delegate,
                                             Sinks.Many<ChatEvent> eventSink) {
         return (req, memId) -> {
             long start = System.currentTimeMillis();
             emitToolCall(name, eventSink);
-            try {
+            var span = tracer.nextSpan()
+                    .name("tool." + name)
+                    .tag("tool.type", "mcp")
+                    .start();
+            try (var ignored = tracer.withSpan(span)) {
                 String result = delegate.execute(req, memId);
-                emitToolDone(name, true, null, System.currentTimeMillis() - start, eventSink);
+                long durationMs = System.currentTimeMillis() - start;
+                span.tag("tool.success", "true");
+                emitToolDone(name, true, null, durationMs, eventSink);
                 return result;
             } catch (Exception e) {
-                emitToolDone(name, false, e.getMessage(), System.currentTimeMillis() - start, eventSink);
+                long durationMs = System.currentTimeMillis() - start;
+                span.tag("tool.success", "false").error(e);
+                emitToolDone(name, false, e.getMessage(), durationMs, eventSink);
                 throw e;
+            } finally {
+                span.end();
             }
         };
     }
