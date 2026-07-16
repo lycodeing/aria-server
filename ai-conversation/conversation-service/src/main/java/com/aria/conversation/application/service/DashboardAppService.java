@@ -4,6 +4,9 @@ import com.aria.conversation.infrastructure.persistence.DashboardStatsRepository
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
 import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatByAgentItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatDistributionItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.DashboardOverviewVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
@@ -57,6 +60,9 @@ public class DashboardAppService {
                 .avgWaitSeconds(safeCount(statsRepository::avgWaitSeconds))
                 .avgHandleSeconds(safeCount(statsRepository::avgHandleSeconds))
                 .avgFirstReplySeconds(safeCount(statsRepository::avgFirstReplySeconds))
+                .csatAvgScore(safeDouble(statsRepository::csatAvgScore))
+                .csatResponseRate(safeDouble(statsRepository::csatResponseRate))
+                .csatRatedCount(safeCount(statsRepository::csatRatedCount))
                 .build();
     }
 
@@ -178,6 +184,26 @@ public class DashboardAppService {
             log.warn("Dashboard 统计查询失败，返回 0: {}", e.getMessage());
             return 0L;
         }
+    }
+
+    private double safeDouble(java.util.function.DoubleSupplier supplier) {
+        try { return supplier.getAsDouble(); }
+        catch (Exception e) { log.warn("CSAT 统计查询失败，返回 0.0: {}", e.getMessage()); return 0.0; }
+    }
+
+    public List<CsatTrendItemVO> getCsatTrend(String rangeType, Integer days) {
+        LocalDate[] range = resolveRange(rangeType, days);
+        return statsRepository.getCsatTrend(range[0], range[1]);
+    }
+
+    public List<CsatDistributionItemVO> getCsatDistribution() {
+        return statsRepository.getCsatDistribution();
+    }
+
+    public List<CsatByAgentItemVO> getCsatByAgent(int page, int size) {
+        int safeSize = Math.min(Math.max(size, 1), 100);
+        int offset = Math.max(page - 1, 0) * safeSize;
+        return statsRepository.getCsatByAgent(safeSize, offset);
     }
 
     /**

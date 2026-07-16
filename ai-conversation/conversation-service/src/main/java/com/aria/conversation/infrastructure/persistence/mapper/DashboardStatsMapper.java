@@ -3,12 +3,17 @@ package com.aria.conversation.infrastructure.persistence.mapper;
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
 import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatByAgentItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatDistributionItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
 import com.aria.conversation.interfaces.rest.vo.StatusDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.TagDistributionItemVO;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Result;
+import org.apache.ibatis.annotations.Results;
 import org.apache.ibatis.annotations.Select;
 
 import java.time.LocalDate;
@@ -322,4 +327,85 @@ public interface DashboardStatsMapper {
     List<ComplexityDistributionItemVO> getComplexityDistribution(
             @Param("simpleMax") int simpleMax,
             @Param("mediumMax") int mediumMax);
+
+    // ============================================================
+    // CSAT 指标
+    // ============================================================
+
+    /** 近 30 天平均 CSAT 分（仅 RATED 状态） */
+    @Select("SELECT COALESCE(AVG(score::double precision), 0.0) " +
+            "FROM cs_conversation.cs_csat_rating " +
+            "WHERE status = 'RATED' AND rated_at >= NOW() - INTERVAL '30 days'")
+    double csatAvgScore();
+
+    /** 近 30 天评价响应率：RATED / (RATED + EXPIRED + SKIPPED) */
+    @Select("SELECT CASE WHEN COUNT(*) = 0 THEN 0.0 " +
+            "ELSE COUNT(*) FILTER (WHERE status='RATED')::double precision / COUNT(*) END " +
+            "FROM cs_conversation.cs_csat_rating " +
+            "WHERE status IN ('RATED','EXPIRED','SKIPPED') " +
+            "AND requested_at >= NOW() - INTERVAL '30 days'")
+    double csatResponseRate();
+
+    /** 近 30 天已评价总数 */
+    @Select("SELECT COUNT(*) FROM cs_conversation.cs_csat_rating " +
+            "WHERE status = 'RATED' AND rated_at >= NOW() - INTERVAL '30 days'")
+    long csatRatedCount();
+
+    /** 按天聚合的 CSAT 均分趋势 */
+    @Select("""
+        SELECT TO_CHAR(rated_at::date, 'YYYY-MM-DD') AS date,
+               AVG(score::double precision)            AS avg_score,
+               COUNT(*)                                AS rated_count
+        FROM cs_conversation.cs_csat_rating
+        WHERE status = 'RATED'
+          AND rated_at::date BETWEEN #{startDate} AND #{endDate}
+        GROUP BY rated_at::date
+        ORDER BY rated_at::date
+        """)
+    @Results({
+        @Result(column = "date",        property = "date"),
+        @Result(column = "avg_score",   property = "avgScore"),
+        @Result(column = "rated_count", property = "ratedCount")
+    })
+    List<CsatTrendItemVO> getCsatTrend(@Param("startDate") LocalDate startDate,
+                                        @Param("endDate")   LocalDate endDate);
+
+    /** 1–5 星分布 */
+    @Select("""
+        SELECT score,
+               COUNT(*) AS count,
+               ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS percentage
+        FROM cs_conversation.cs_csat_rating
+        WHERE status = 'RATED'
+        GROUP BY score
+        ORDER BY score
+        """)
+    @Results({
+        @Result(column = "score",      property = "score"),
+        @Result(column = "count",      property = "count"),
+        @Result(column = "percentage", property = "percentage")
+    })
+    List<CsatDistributionItemVO> getCsatDistribution();
+
+    /** 分坐席 CSAT 均分，按均分倒序 */
+    @Select("""
+        SELECT c.agent_id,
+               u.username   AS agent_name,
+               AVG(c.score::double precision) AS avg_score,
+               COUNT(*)                        AS rated_count
+        FROM cs_conversation.cs_csat_rating c
+        LEFT JOIN cs_auth.sys_user u ON u.id = c.agent_id
+        WHERE c.status = 'RATED' AND c.agent_id IS NOT NULL
+        GROUP BY c.agent_id, u.username
+        ORDER BY avg_score DESC
+        LIMIT #{limit} OFFSET #{offset}
+        """)
+    @Results({
+        @Result(column = "agent_id",    property = "agentId"),
+        @Result(column = "agent_name",  property = "agentName"),
+        @Result(column = "avg_score",   property = "avgScore"),
+        @Result(column = "rated_count", property = "ratedCount")
+    })
+    List<CsatByAgentItemVO> getCsatByAgent(@Param("limit")  int limit,
+                                            @Param("offset") int offset);
 }

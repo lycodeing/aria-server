@@ -63,4 +63,13 @@ public class DashboardOverviewVO {
      * 计算公式：AVG(first_reply_at - accepted_at)。
      */
     private long avgFirstReplySeconds;
+
+    /** 近 30 天平均 CSAT 分（0.0 表示无数据） */
+    private double csatAvgScore;
+
+    /** 近 30 天评价响应率（0.0–1.0） */
+    private double csatResponseRate;
+
+    /** 近 30 天已评价总数 */
+    private long csatRatedCount;
 }

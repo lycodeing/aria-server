@@ -4,6 +4,9 @@ import com.aria.conversation.infrastructure.persistence.mapper.DashboardStatsMap
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
 import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatByAgentItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatDistributionItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
 import com.aria.conversation.interfaces.rest.vo.StatusDistributionItemVO;
@@ -170,5 +173,23 @@ public class DashboardStatsRepository {
      */
     public List<EfficiencyTrendItemVO> getEfficiencyTrends(LocalDate startDate, LocalDate endDate) {
         return statsMapper.getEfficiencyTrends(startDate, endDate);
+    }
+
+    // ---- CSAT 指标 ----
+
+    public double csatAvgScore()      { return statsMapper.csatAvgScore(); }
+    public double csatResponseRate()  { return statsMapper.csatResponseRate(); }
+    public long   csatRatedCount()    { return statsMapper.csatRatedCount(); }
+
+    public List<CsatTrendItemVO> getCsatTrend(LocalDate s, LocalDate e) {
+        return statsMapper.getCsatTrend(s, e);
+    }
+
+    public List<CsatDistributionItemVO> getCsatDistribution() {
+        return statsMapper.getCsatDistribution();
+    }
+
+    public List<CsatByAgentItemVO> getCsatByAgent(int limit, int offset) {
+        return statsMapper.getCsatByAgent(limit, offset);
     }
 }
