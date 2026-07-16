@@ -71,12 +71,14 @@ public class CannedResponseAppService {
     // ── 公共快捷回复（管理员） ─────────────────────────────
 
     public List<CannedResponseDO> listPublic(Long groupId, int page, int size) {
+        // page 最小为 1，防止 page=0 时 OFFSET 为负数触发 PostgreSQL 异常
+        int safePage = Math.max(1, page);
         return cannedMapper.selectList(Wrappers.lambdaQuery(CannedResponseDO.class)
                 .eq(CannedResponseDO::getScope, "PUBLIC")
                 .eq(CannedResponseDO::getDeleted, false)
                 .eq(groupId != null, CannedResponseDO::getGroupId, groupId)
                 .orderByAsc(CannedResponseDO::getSortOrder)
-                .last("LIMIT " + size + " OFFSET " + (long)(page - 1) * size));
+                .last("LIMIT " + size + " OFFSET " + (long)(safePage - 1) * size));
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -92,6 +94,7 @@ public class CannedResponseAppService {
     public void updatePublic(Long id, String title, String content,
                               Long groupId, int sortOrder) {
         CannedResponseDO cr = requireCr(id);
+        requirePublicScope(cr);
         cr.setTitle(title); cr.setContent(content);
         cr.setGroupId(groupId); cr.setSortOrder(sortOrder);
         cr.setUpdatedAt(OffsetDateTime.now());
@@ -100,7 +103,7 @@ public class CannedResponseAppService {
 
     @Transactional(rollbackFor = Exception.class)
     public void deletePublic(Long id) {
-        requireCr(id);
+        requirePublicScope(requireCr(id));
         softDelete(id);
     }
 
@@ -157,8 +160,8 @@ public class CannedResponseAppService {
         return cannedMapper.searchByKeyword(q.trim(), agentId, groupId, safeLimit);
     }
 
-    /** 异步递增使用次数，不阻塞调用方 */
-    @Async
+    /** 异步递增使用次数，不阻塞调用方；使用有界线程池避免无限制线程创建 */
+    @Async("cannedResponseExecutor")
     public void recordUse(Long id) {
         cannedMapper.incrementUseCount(id);
     }
@@ -184,6 +187,13 @@ public class CannedResponseAppService {
     private void requireOwner(CannedResponseDO cr, Long agentId) {
         if (!agentId.equals(cr.getOwnerId())) {
             throw new BusinessException(FORBIDDEN, "无权限操作他人快捷回复");
+        }
+    }
+
+    /** 确保快捷回复是公共类型，防止管理员接口误操作 PRIVATE 记录 */
+    private void requirePublicScope(CannedResponseDO cr) {
+        if (!"PUBLIC".equals(cr.getScope())) {
+            throw new BusinessException(PRECONDITION_FAILED, "该快捷回复不是公共类型");
         }
     }
 
