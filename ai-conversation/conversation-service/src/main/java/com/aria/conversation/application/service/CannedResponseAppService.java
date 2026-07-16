@@ -17,8 +17,9 @@ import java.util.List;
 @RequiredArgsConstructor
 public class CannedResponseAppService {
 
-    private static final int NOT_FOUND = 40400;
-    private static final int FORBIDDEN  = 40300;
+    private static final int NOT_FOUND         = 40400;
+    private static final int FORBIDDEN          = 40300;
+    private static final int PRECONDITION_FAILED = 40001;
 
     private final CannedResponseGroupMapper groupMapper;
     private final CannedResponseMapper cannedMapper;
@@ -54,13 +55,13 @@ public class CannedResponseAppService {
                 .eq(CannedResponseGroupDO::getParentId, id)
                 .eq(CannedResponseGroupDO::getDeleted, false));
         if (childCount > 0) {
-            throw new BusinessException(40001, "该分组下存在子分组，请先删除子分组");
+            throw new BusinessException(PRECONDITION_FAILED, "该分组下存在子分组，请先删除子分组");
         }
         long crCount = cannedMapper.selectCount(Wrappers.lambdaQuery(CannedResponseDO.class)
                 .eq(CannedResponseDO::getGroupId, id)
                 .eq(CannedResponseDO::getDeleted, false));
         if (crCount > 0) {
-            throw new BusinessException(40001, "该分组下存在快捷回复，请先删除或移出");
+            throw new BusinessException(PRECONDITION_FAILED, "该分组下存在快捷回复，请先删除或移出");
         }
         groupMapper.update(Wrappers.lambdaUpdate(CannedResponseGroupDO.class)
                 .set(CannedResponseGroupDO::getDeleted, true)
