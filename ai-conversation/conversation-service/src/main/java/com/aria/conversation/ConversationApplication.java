@@ -23,7 +23,8 @@ import org.springframework.scheduling.annotation.EnableAsync;
 @MapperScan({
     "com.aria.conversation.infrastructure.persistence.mapper",
     "com.aria.conversation.infrastructure.dit.mapper",
-    "com.aria.conversation.infrastructure.canned"
+    "com.aria.conversation.infrastructure.canned",
+    "com.aria.conversation.infrastructure.csat"
 })
 public class ConversationApplication {
 
