@@ -5,6 +5,9 @@ import com.aria.conversation.application.service.DashboardAppService;
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
 import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatByAgentItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatDistributionItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.DashboardOverviewVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
@@ -105,5 +108,27 @@ public class DashboardController {
     @GetMapping("/complexity-distribution")
     public R<List<ComplexityDistributionItemVO>> getComplexityDistribution() {
         return R.ok(dashboardAppService.getComplexityDistribution());
+    }
+
+    /** CSAT 趋势（按天聚合，支持时间范围） */
+    @GetMapping("/csat-trend")
+    public R<List<CsatTrendItemVO>> getCsatTrend(
+            @RequestParam(defaultValue = "month") String rangeType,
+            @RequestParam(required = false) Integer days) {
+        return R.ok(dashboardAppService.getCsatTrend(rangeType, days));
+    }
+
+    /** CSAT 1–5 星分布 */
+    @GetMapping("/csat-distribution")
+    public R<List<CsatDistributionItemVO>> getCsatDistribution() {
+        return R.ok(dashboardAppService.getCsatDistribution());
+    }
+
+    /** 分坐席 CSAT 均分（分页） */
+    @GetMapping("/csat-by-agent")
+    public R<List<CsatByAgentItemVO>> getCsatByAgent(
+            @RequestParam(defaultValue = "1")  int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return R.ok(dashboardAppService.getCsatByAgent(page, size));
     }
 }
