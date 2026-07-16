@@ -13,7 +13,6 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -36,10 +35,8 @@ class CannedResponseControllerTest {
 
     @Test
     void recordUse_delegatesToServiceAsync() {
-        try (MockedStatic<StpUtil> ignored = mockStatic(StpUtil.class)) {
-            controller.recordUse(42L);
-            verify(service).recordUse(42L);
-        }
+        controller.recordUse(42L);
+        verify(service).recordUse(42L);
     }
 
     @Test
