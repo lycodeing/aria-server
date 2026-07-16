@@ -44,8 +44,9 @@ public class CsatService {
             do_.setAgentId(agentId);
             do_.setChannel(channel != null ? channel : "AI");
             do_.setStatus("PENDING");
-            do_.setRequestedAt(OffsetDateTime.now());
-            do_.setExpiredAt(OffsetDateTime.now().plusHours(EXPIRY_HOURS));
+            OffsetDateTime now = OffsetDateTime.now();
+            do_.setRequestedAt(now);
+            do_.setExpiredAt(now.plusHours(EXPIRY_HOURS));
             mapper.insert(do_);
             log.info("[CSAT] 评价邀请已创建 sessionId={} channel={}", sessionId, channel);
             return do_;
