@@ -18,6 +18,12 @@ public final class CustomerServiceCacheConstant {
     public static final String ROUTING_CONFIG = "routing.config";
 
     /**
+     * 客服接待配置缓存键，对应 system_config.config_key = 'cs.agent.config'。
+     * 由 {@code CsAgentConfigProvider} 使用，缓存序列化后的 {@code CsAgentConfig} 对象。
+     */
+    public static final String CS_AGENT_CONFIG = "cs.agent.config";
+
+    /**
      * 意图规则列表缓存键（Caffeine 内部 key，无对应 DB 记录）。
      * 由 {@code KeywordRegexIntentMatcher} 使用，缓存编译后的意图规则列表。
      */

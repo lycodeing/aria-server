@@ -24,5 +24,10 @@ public enum SessionEventType {
     /**
      * 会话转交给其他座席
      */
-    TRANSFER
+    TRANSFER,
+
+    /**
+     * 系统自动将排队/新入队会话分配给座席（区别于座席手动 ACCEPTED）
+     */
+    AUTO_ASSIGNED
 }
