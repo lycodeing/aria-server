@@ -5,6 +5,7 @@ import com.aria.conversation.domain.SessionAlreadyAcceptedException;
 import com.aria.conversation.domain.SessionEventType;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.SessionStatus;
+import com.aria.conversation.infrastructure.config.CsAgentConfigProvider;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import com.aria.conversation.infrastructure.mq.ConversationMessagePublisher;
 import com.aria.conversation.infrastructure.persistence.ConversationPersistRepository;
@@ -12,6 +13,8 @@ import com.aria.conversation.infrastructure.repository.AgentOnlineRegistry;
 import com.aria.conversation.infrastructure.repository.SessionQueueRepository;
 import com.aria.conversation.infrastructure.websocket.VisitorNotifier;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -24,6 +27,9 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /**
@@ -59,6 +65,8 @@ public class SessionQueueService {
     private final ConversationPersistRepository  persistRepository;
     private final CsatService                    csatService;
     private final VisitorNotifier                visitorNotifier;
+    private final CsAgentConfigProvider          csAgentConfigProvider;
+    private final RedissonClient                 redissonClient;
 
     public SessionQueueService(
             SessionQueueRepository queueRepository,
@@ -68,22 +76,26 @@ public class SessionQueueService {
             @Value("${conversation.events.exchange}") String eventsExchange,
             ConversationPersistRepository persistRepository,
             CsatService csatService,
-            VisitorNotifier visitorNotifier) {
-        this.queueRepository   = queueRepository;
-        this.agentRegistry     = agentRegistry;
-        this.publisher         = publisher;
-        this.rabbitTemplate    = rabbitTemplate;
-        this.eventsExchange    = eventsExchange;
-        this.persistRepository = persistRepository;
-        this.csatService       = csatService;
-        this.visitorNotifier   = visitorNotifier;
+            VisitorNotifier visitorNotifier,
+            CsAgentConfigProvider csAgentConfigProvider,   // 新增
+            RedissonClient redissonClient) {               // 新增
+        this.queueRepository      = queueRepository;
+        this.agentRegistry        = agentRegistry;
+        this.publisher            = publisher;
+        this.rabbitTemplate       = rabbitTemplate;
+        this.eventsExchange       = eventsExchange;
+        this.persistRepository    = persistRepository;
+        this.csatService          = csatService;
+        this.visitorNotifier      = visitorNotifier;
+        this.csAgentConfigProvider = csAgentConfigProvider;
+        this.redissonClient        = redissonClient;
     }
 
     // ---- 队列操作 ----
 
     /**
-     * 用户请求转人工，加入等待队列，广播 Fanout 事件，
-     * 并向持久化 Direct Exchange 发布 SESSION_START 事件。
+     * 用户请求转人工，优先尝试自动分配给空闲客服，无空闲客服时加入等待队列。
+     * 广播 Fanout 事件，并向持久化 Direct Exchange 发布 SESSION_START 事件。
      */
     public SessionQueueItem enqueue(String sessionId, String userName,
                                     String transferReason, String tag) {
@@ -91,6 +103,12 @@ public class SessionQueueService {
                 sessionId, userName, transferReason, tag,
                 Instant.now().getEpochSecond(), SessionStatus.WAITING, null
         );
+        // 优先尝试推送给有空余名额的在线客服，避免访客进入排队等待
+        boolean dispatched = tryAutoDispatch(sessionId, item);
+        if (dispatched) {
+            return item; // 已自动分配，不需要写 WAITING 或广播队列更新
+        }
+        // 无空闲客服：持久化 WAITING，广播通知所有在线客服
         try {
             queueRepository.save(item);
         } catch (IllegalStateException e) {
@@ -99,7 +117,7 @@ public class SessionQueueService {
         }
         publishEvent(new SessionEvent(SessionEventType.ENQUEUE, item));
         publishSessionStart(sessionId, userName, transferReason, tag, item.waitSince());
-        log.info("[SessionQueue] enqueue sessionId={} userName={}", sessionId, userName);
+        log.info("[SessionQueue] enqueue WAITING sessionId={} userName={}", sessionId, userName);
         return item;
     }
 
@@ -427,6 +445,104 @@ public class SessionQueueService {
         } catch (Exception e) {
             log.warn("[CSAT] 触发评价邀请失败 sessionId={}", sessionId, e);
         }
+    }
+
+    // ---- 自动分配：tryAutoDispatch 及辅助方法 ----
+
+    /**
+     * 尝试将会话自动分配给负载最低的空闲客服。
+     * 按 sessions 升序遍历候选，第一个通过加锁+二次校验的客服即为目标。
+     *
+     * @return true=分配成功；false=无空闲客服，调用方应写 WAITING
+     */
+    private boolean tryAutoDispatch(String sessionId, SessionQueueItem item) {
+        int max = csAgentConfigProvider.getMaxSessionsPerAgent();
+        for (OnlineAgentVO candidate : findAvailableCandidates(max)) {
+            if (tryAssignNewSession(sessionId, item, candidate.id(), max)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 从在线客服中筛选出 sessions < max 的候选列表（已按负载升序）。
+     * 此处为乐观读，仅做粗筛，真正容量校验在持锁后进行。
+     */
+    private List<OnlineAgentVO> findAvailableCandidates(int max) {
+        return getOnlineAgents().stream()
+                .filter(a -> a.sessions() < max)
+                .toList();
+    }
+
+    /**
+     * 对单个候选客服：加锁 → 二次校验 → 执行分配。
+     * 加锁失败或校验不通过均返回 false。
+     */
+    private boolean tryAssignNewSession(String sessionId, SessionQueueItem item,
+                                        String agentId, int max) {
+        return withAgentLock(agentId, () -> {
+            if (!isAgentAvailable(agentId, max)) return false;
+            doAssignNewSession(sessionId, item, agentId);
+            return true;
+        });
+    }
+
+    /**
+     * 执行新会话的完整分配动作：Redis → MQ（SESSION_START + SESSION_ACCEPT）→ SSE fanout。
+     * DB 由 MQ 消费者（ConversationMessageConsumer）异步写入，与现有 enqueue+accept 路径一致。
+     */
+    private void doAssignNewSession(String sessionId, SessionQueueItem item, String agentId) {
+        SessionQueueItem activeItem = buildActiveItem(item, agentId);
+        queueRepository.save(activeItem);
+        publishSessionStart(sessionId, item.userName(), item.transferReason(),
+                item.tag(), item.waitSince());
+        publishSessionAccept(sessionId, agentId, Instant.now().getEpochSecond());
+        publishEvent(new SessionEvent(SessionEventType.AUTO_ASSIGNED, activeItem));
+        log.info("[AutoDispatch] 会话 {} 自动分配给客服 {}", sessionId, agentId);
+    }
+
+    /**
+     * Redisson 分布式锁通用包装：tryLock(wait=0, TTL=3s) → action → unlock。
+     * 加锁失败立即返回 false，不阻塞，不抛异常。
+     */
+    private boolean withAgentLock(String agentId, Supplier<Boolean> action) {
+        RLock lock = redissonClient.getLock("lock:assign:agent:" + agentId);
+        try {
+            if (!lock.tryLock(0, 3, TimeUnit.SECONDS)) return false;
+            try {
+                return action.get();
+            } finally {
+                if (lock.isHeldByCurrentThread()) lock.unlock();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("[AgentLock] 加锁中断，agentId={}", agentId);
+            return false;
+        }
+    }
+
+    /**
+     * 持锁后二次校验：ACTIVE 会话数 < max 且客服在线。
+     */
+    private boolean isAgentAvailable(String agentId, int max) {
+        return countActiveSessions(agentId) < max && agentRegistry.isOnline(agentId);
+    }
+
+    /**
+     * 统计指定客服当前 ACTIVE 会话数（全量扫描 Redis Hash）。
+     */
+    private long countActiveSessions(String agentId) {
+        return queueRepository.findAll().stream()
+                .filter(i -> agentId.equals(i.agentId()) && i.status() == SessionStatus.ACTIVE)
+                .count();
+    }
+
+    /** 构造 ACTIVE 状态的队列项（record 不可变，返回新实例）。 */
+    private SessionQueueItem buildActiveItem(SessionQueueItem item, String agentId) {
+        return new SessionQueueItem(
+                item.sessionId(), item.userName(), item.transferReason(),
+                item.tag(), item.waitSince(), SessionStatus.ACTIVE, agentId);
     }
 
     // ---- 内部：事件广播 ----
