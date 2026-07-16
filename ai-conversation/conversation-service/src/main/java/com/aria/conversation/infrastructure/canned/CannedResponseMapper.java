@@ -20,7 +20,7 @@ public interface CannedResponseMapper extends BaseMapper<CannedResponseDO> {
         WHERE deleted = FALSE
           AND to_tsvector('simple', title || ' ' || content) @@ plainto_tsquery('simple', #{q})
           AND (scope = 'PUBLIC' OR (scope = 'PRIVATE' AND owner_id = #{agentId}))
-          AND (#{groupId} IS NULL OR group_id = #{groupId})
+          AND (#{groupId}::BIGINT IS NULL OR group_id = #{groupId}::BIGINT)
         ORDER BY use_count DESC
         LIMIT #{limit}
         """)
