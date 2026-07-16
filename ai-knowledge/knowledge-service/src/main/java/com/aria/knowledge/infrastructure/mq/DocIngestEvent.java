@@ -53,4 +53,13 @@ public class DocIngestEvent implements Serializable {
      * 仅由 {@link com.aria.knowledge.application.service.DocIngestAppService#reingest} 发布时设置。
      */
     private boolean forceReingest;
+
+    /**
+     * 全链路追踪 ID。
+     *
+     * <p>发布端从 MDC {@code traceId} 注入，消费端恢复到 MDC，
+     * 确保摄取管道的异步处理日志与触发请求保持相同 traceId。
+     * 可为 null（兼容旧消息）。
+     */
+    private String traceId;
 }

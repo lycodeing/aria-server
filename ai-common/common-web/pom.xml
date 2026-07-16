@@ -56,6 +56,13 @@
             <groupId>com.aria</groupId>
             <artifactId>aria-knowledge-client</artifactId>
         </dependency>
+        <!-- ===== 链路追踪（Micrometer Tracing + Brave Bridge）===== -->
+        <!-- 所有依赖 common-web 的服务模块自动获得此依赖，无需各服务单独声明 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-tracing-bridge-brave</artifactId>
+        </dependency>
+
         <!-- ===== 测试 ===== -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
