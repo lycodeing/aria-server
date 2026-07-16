@@ -20,6 +20,7 @@ import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.temporal.TemporalAdjusters;
 import java.util.List;
+import java.util.function.DoubleSupplier;
 import java.util.function.LongSupplier;
 
 /**
@@ -186,7 +187,7 @@ public class DashboardAppService {
         }
     }
 
-    private double safeDouble(java.util.function.DoubleSupplier supplier) {
+    private double safeDouble(DoubleSupplier supplier) {
         try { return supplier.getAsDouble(); }
         catch (Exception e) { log.warn("CSAT 统计查询失败，返回 0.0: {}", e.getMessage()); return 0.0; }
     }
