@@ -29,8 +29,8 @@ public interface CannedResponseMapper extends BaseMapper<CannedResponseDO> {
                                            @Param("groupId") Long groupId,
                                            @Param("limit") int limit);
 
-    /** 原子递增 use_count（无需分布式锁，数据库原子操作保证） */
-    @Update("UPDATE cs_conversation.cs_canned_response SET use_count = use_count + 1 WHERE id = #{id}")
+    /** 原子递增 use_count（无需分布式锁，数据库原子操作保证；仅对未软删除记录生效） */
+    @Update("UPDATE cs_conversation.cs_canned_response SET use_count = use_count + 1 WHERE id = #{id} AND deleted = FALSE")
     void incrementUseCount(@Param("id") Long id);
 
     /** 查询指定坐席的私人快捷回复列表 */
