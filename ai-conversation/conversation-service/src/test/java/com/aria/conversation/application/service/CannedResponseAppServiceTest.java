@@ -5,7 +5,6 @@ import com.aria.conversation.infrastructure.canned.CannedResponseDO;
 import com.aria.conversation.infrastructure.canned.CannedResponseGroupDO;
 import com.aria.conversation.infrastructure.canned.CannedResponseGroupMapper;
 import com.aria.conversation.infrastructure.canned.CannedResponseMapper;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
