@@ -5,6 +5,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * 对话服务启动类。
@@ -20,6 +21,7 @@ import org.springframework.scheduling.annotation.EnableAsync;
 @SpringBootApplication
 @EnableRetry
 @EnableAsync
+@EnableScheduling
 @MapperScan({
     "com.aria.conversation.infrastructure.persistence.mapper",
     "com.aria.conversation.infrastructure.dit.mapper",
