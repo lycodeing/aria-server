@@ -534,7 +534,8 @@ public class SessionQueueService {
      * 持锁后二次校验：ACTIVE 会话数 < max 且客服在线。
      */
     private boolean isAgentAvailable(String agentId, int max) {
-        return countActiveSessions(agentId) < max && agentRegistry.isOnline(agentId);
+        // isOnline 为单次 Redis hash lookup，代价低；countActiveSessions 需全量扫描，放后面短路
+        return agentRegistry.isOnline(agentId) && countActiveSessions(agentId) < max;
     }
 
     /**
@@ -597,15 +598,14 @@ public class SessionQueueService {
      */
     private void doDispatchWaitingSession(String sessionId, SessionQueueItem waitingItem,
                                           String agentId) {
-        boolean cas = queueRepository.compareAndSetStatus(
-                sessionId, buildActiveItem(waitingItem, agentId));
+        SessionQueueItem activeItem = buildActiveItem(waitingItem, agentId);
+        boolean cas = queueRepository.compareAndSetStatus(sessionId, activeItem);
         if (!cas) {
             log.debug("[QueueDrain] CAS 失败，会话 {} 已被手动接入", sessionId);
             return;
         }
         publishSessionAccept(sessionId, agentId, Instant.now().getEpochSecond());
-        publishEvent(new SessionEvent(SessionEventType.AUTO_ASSIGNED,
-                buildActiveItem(waitingItem, agentId)));
+        publishEvent(new SessionEvent(SessionEventType.AUTO_ASSIGNED, activeItem));
         log.info("[QueueDrain] 排队会话 {} 分配给客服 {}", sessionId, agentId);
     }
 
