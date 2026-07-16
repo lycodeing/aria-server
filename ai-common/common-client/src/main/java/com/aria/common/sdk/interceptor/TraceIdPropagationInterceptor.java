@@ -4,7 +4,6 @@ import okhttp3.Interceptor;
 import okhttp3.Request;
 import okhttp3.Response;
 import org.slf4j.MDC;
-import org.springframework.lang.NonNull;
 
 import java.io.IOException;
 
@@ -25,8 +24,7 @@ public class TraceIdPropagationInterceptor implements Interceptor {
     private static final String MDC_KEY = "traceId";
 
     @Override
-    @NonNull
-    public Response intercept(@NonNull Chain chain) throws IOException {
+    public Response intercept(Chain chain) throws IOException {
         Request original = chain.request();
         String traceId = MDC.get(MDC_KEY);
         if (traceId == null || traceId.isBlank()) {
