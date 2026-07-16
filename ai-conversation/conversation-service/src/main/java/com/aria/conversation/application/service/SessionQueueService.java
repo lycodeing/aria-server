@@ -5,14 +5,17 @@ import com.aria.conversation.domain.SessionAlreadyAcceptedException;
 import com.aria.conversation.domain.SessionEventType;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.SessionStatus;
+import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import com.aria.conversation.infrastructure.mq.ConversationMessagePublisher;
 import com.aria.conversation.infrastructure.persistence.ConversationPersistRepository;
 import com.aria.conversation.infrastructure.repository.AgentOnlineRegistry;
 import com.aria.conversation.infrastructure.repository.SessionQueueRepository;
+import com.aria.conversation.infrastructure.websocket.VisitorNotifier;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -54,6 +57,8 @@ public class SessionQueueService {
     private final RabbitTemplate                 rabbitTemplate;
     private final String                         eventsExchange;
     private final ConversationPersistRepository  persistRepository;
+    private final CsatService                    csatService;
+    private final VisitorNotifier                visitorNotifier;
 
     public SessionQueueService(
             SessionQueueRepository queueRepository,
@@ -61,13 +66,17 @@ public class SessionQueueService {
             ConversationMessagePublisher publisher,
             @Qualifier("eventsRabbitTemplate") RabbitTemplate rabbitTemplate,
             @Value("${conversation.events.exchange}") String eventsExchange,
-            ConversationPersistRepository persistRepository) {
-        this.queueRepository  = queueRepository;
-        this.agentRegistry    = agentRegistry;
-        this.publisher        = publisher;
-        this.rabbitTemplate   = rabbitTemplate;
-        this.eventsExchange   = eventsExchange;
+            ConversationPersistRepository persistRepository,
+            CsatService csatService,
+            VisitorNotifier visitorNotifier) {
+        this.queueRepository   = queueRepository;
+        this.agentRegistry     = agentRegistry;
+        this.publisher         = publisher;
+        this.rabbitTemplate    = rabbitTemplate;
+        this.eventsExchange    = eventsExchange;
         this.persistRepository = persistRepository;
+        this.csatService       = csatService;
+        this.visitorNotifier   = visitorNotifier;
     }
 
     // ---- 队列操作 ----
@@ -249,8 +258,10 @@ public class SessionQueueService {
      */
     public void close(String sessionId, String closedBy) {
         try {
+            String[] agentIdHolder = {null};
             queueRepository.findById(sessionId).ifPresentOrElse(
                 old -> {
+                    agentIdHolder[0] = old.agentId();
                     SessionStatus newStatus = old.status().transitionTo(SessionStatus.CLOSED);
                     SessionQueueItem closed = new SessionQueueItem(
                             old.sessionId(), old.userName(), old.transferReason(),
@@ -259,7 +270,7 @@ public class SessionQueueService {
                     publishEvent(new SessionEvent(SessionEventType.CLOSED, closed));
                 },
                 () -> {
-                    log.warn("[SessionQueue] close 时 Redis 无数据（可能已重启），仍执行 DB 关闭 sessionId={}", sessionId);
+                    log.warn("[SessionQueue] close 时 Redis 无数据（可能已重启）仍执行 DB 关闭 sessionId={}", sessionId);
                     SessionQueueItem minimal = new SessionQueueItem(
                             sessionId, "", "", "", 0L, SessionStatus.CLOSED, null);
                     publishEvent(new SessionEvent(SessionEventType.CLOSED, minimal));
@@ -267,6 +278,7 @@ public class SessionQueueService {
             );
             queueRepository.delete(sessionId); // 幂等，无数据时 no-op
             publishSessionEnd(sessionId, closedBy);
+            triggerCsatAsync(sessionId, agentIdHolder[0]);
         } catch (IllegalStateException e) {
             log.warn("[SessionQueue] close 状态机校验失败 sessionId={} msg={}", sessionId, e.getMessage());
         }
@@ -391,6 +403,30 @@ public class SessionQueueService {
                         activeCount.getOrDefault(a.agentId(), 0L)))
                 .sorted(Comparator.comparing(OnlineAgentVO::sessions))
                 .toList();
+    }
+
+    /**
+     * 异步触发 CSAT 邀请推送，不阻塞会话关闭主流程。
+     * 推送失败只记录日志，不影响关闭结果。
+     */
+    @Async
+    void triggerCsatAsync(String sessionId, String agentId) {
+        try {
+            Long agentIdLong = agentId != null && !agentId.isBlank()
+                    ? Long.parseLong(agentId) : null;
+            CsatRatingDO csat = csatService.createInvitation(
+                    sessionId, null, agentIdLong, "HUMAN");
+            visitorNotifier.notifyVisitor(sessionId, Map.of(
+                    "type",      ChatEvent.EventType.CSAT_REQUEST,
+                    "csatId",    csat.getId(),
+                    "sessionId", sessionId,
+                    "message",   "请对本次服务进行评价",
+                    "expiresAt", csat.getExpiredAt().toString()
+            ));
+            log.info("[CSAT] 人工会话关闭触发评价邀请 sessionId={} csatId={}", sessionId, csat.getId());
+        } catch (Exception e) {
+            log.warn("[CSAT] 触发评价邀请失败 sessionId={}", sessionId, e);
+        }
     }
 
     // ---- 内部：事件广播 ----
