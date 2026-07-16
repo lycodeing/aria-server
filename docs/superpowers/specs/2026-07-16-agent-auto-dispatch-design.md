@@ -242,21 +242,22 @@ private boolean tryAssignNewSession(String sessionId, SessionQueueItem item,
 }
 
 /**
- * 执行新会话的完整分配动作：Redis + DB + MQ + SSE。
+ * 执行新会话的完整分配动作：Redis → MQ → SSE。
  * 调用前已持有分布式锁且二次校验通过，无需再做容量校验。
- * 写入顺序：先 Redis（热路径），再 DB（持久化），最后发布事件（通知下游）。
+ *
+ * <p>DB 写入不在此处直接调用，而是通过 MQ 事件驱动：
+ * - SESSION_START  → ConversationMessageConsumer.handleSessionStart → startConversation
+ * - SESSION_ACCEPT → ConversationMessageConsumer.handleSessionAccept → activateConversation
+ * 与现有 enqueue() + accept() 路径保持一致，避免直接 DB 调用与 MQ 消费者产生重复写入。
  */
 private void doAssignNewSession(String sessionId, SessionQueueItem item, String agentId) {
     // 1. 写入 Redis，状态直接为 ACTIVE，跳过 WAITING 中间态
-    sessionQueueRepository.save(sessionId, buildActiveItem(item, agentId));
-    // 2. DB 记录：先 start（创建行），再 activate（填 agentId + acceptedAt）
-    conversationPersistRepository.startConversation(
-            sessionId, item.userName(), item.transferReason(), item.tag());
-    conversationPersistRepository.activateConversation(sessionId, agentId);
-    // 3. MQ：SESSION_START + SESSION_ACCEPT 两个事件，下游统计和通知依赖这两个事件
-    eventPublisher.publishSessionStart(
-            sessionId, item.userName(), item.transferReason(), item.tag());
-    // 4. 发布 MQ SESSION_ACCEPT + SSE SESSION_ASSIGNED，通知客服端
+    sessionQueueRepository.save(buildActiveItem(item, agentId));
+    // 2. MQ SESSION_START：触发消费者在 DB 创建会话行（startConversation）
+    //    第 5 个参数 waitSince 即为入队时间戳，与 enqueue() 路径一致
+    publishSessionStart(sessionId, item.userName(), item.transferReason(),
+            item.tag(), item.waitSince());
+    // 3. MQ SESSION_ACCEPT + SSE SESSION_ASSIGNED：触发 activateConversation + 通知客服端
     publishAssignedEvent(sessionId, agentId);
     log.info("[AutoDispatch] 会话 {} 自动分配给客服 {}", sessionId, agentId);
 }
@@ -302,12 +303,13 @@ private boolean isAgentAvailable(String agentId, int max) {
 }
 
 /**
- * 统计指定客服当前的 ACTIVE 会话数（从 Redis Hash 全量扫描）。
- * Redis Hash 通常规模较小（在线会话数有限），全量扫描可接受。
+ * 统计指定客服当前的 ACTIVE 会话数（从 Redis List 全量扫描）。
+ * findAll() 返回 List<SessionQueueItem>，直接流式过滤，无需 .values()。
+ * Redis 中在线会话规模有限，全量扫描可接受；若规模增大可改为 Redis counter 优化。
  * getOnlineAgents() 内部复用此方法，消除重复扫描逻辑。
  */
 private long countActiveSessions(String agentId) {
-    return sessionQueueRepository.findAll().values().stream()
+    return sessionQueueRepository.findAll().stream()
             .filter(i -> agentId.equals(i.agentId()) && i.status() == SessionStatus.ACTIVE)
             .count();
 }
@@ -376,10 +378,14 @@ WAITING 队列的自动消化由两个事件触发，无需后台调度线程：
 private void tryDispatchFromQueue(String agentId) {
     int max = csAgentConfigProvider.getMaxSessionsPerAgent();
     // 复用 withAgentLock，保证同一个 agentId 在分布式环境下串行消化，防止超额
-    withAgentLock(agentId, () -> {
+    boolean acquired = withAgentLock(agentId, () -> {
         tryAssignOldestWaiting(agentId, max);
         return true; // withAgentLock 要求返回值；消化结果由内部日志体现
     });
+    // 加锁失败说明另一实例正在处理同一 agentId 的队列消化，本次跳过（预期行为）
+    if (!acquired) {
+        log.debug("[QueueDrain] 加锁竞争，跳过本次消化 agentId={}", agentId);
+    }
 }
 
 /**
@@ -468,6 +474,17 @@ public void registerAgent(String agentId, String displayName) {
 | 客服下线后触发的异步消化（极端竞态） | 持锁后二次校验 `isOnline(agentId)`，直接 return |
 | 消化时 WAITING 队列为空 | `min()` 返回 empty，`ifPresent` 不执行，无操作 |
 | 多实例部署，两个实例同时消化同一个 agentId | Redisson 分布式锁保证只有一个实例执行 |
+| `tryDispatchFromQueue` 加锁失败（锁被另一实例持有） | `withAgentLock` 返回 false，调用方静默返回；加 `log.debug` 记录竞争事件，便于排查多实例行为 |
+
+## 5.6 Redis-DB 最终一致性说明
+
+自动分配路径的写入顺序为：**Redis（ACTIVE）→ MQ → DB（via 消费者）**。
+
+这与现有 `enqueue()` + `accept()` 路径一致，属于架构层面已知的 tradeoff：
+
+- **如果 MQ 消费者处理 `SESSION_ACCEPT` 失败**（DB 宕机、消费异常），Redis 中会话已是 ACTIVE，但 DB 缺少 `accepted_at`。此时 `isActive()` 的 DB fallback 会返回 WAITING（找不到 ACTIVE 记录），导致该会话对客服不可见，但访客侧消息仍可正常投递（Redis 热路径）。
+- **自愈机制**：MQ 消费者使用重试队列，`activateConversation` 是幂等的（`UPDATE WHERE status=WAITING`），短暂故障后会自动补偿。
+- **不需要额外补偿代码**：现有架构（MQ 重试 + DB 幂等）已覆盖此场景，与全系统其他分配路径行为一致。若需要更强的一致性保障，可引入 Saga 模式，但超出当前需求范围。
 
 # 6. 文件改动清单 & SQL Migration
 
