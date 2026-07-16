@@ -72,6 +72,12 @@ public record ChatEvent(String eventType, String data) {
          */
         public static final String DONE = "done";
 
+        /**
+         * CSAT 评价邀请事件。data 为 JSON：
+         * {"csatId":123,"sessionId":"sess_abc","message":"请对本次服务评价","expiresAt":"..."}
+         */
+        public static final String CSAT_REQUEST = "csat_request";
+
         private EventType() { /* 工具类，不允许实例化 */ }
     }
 

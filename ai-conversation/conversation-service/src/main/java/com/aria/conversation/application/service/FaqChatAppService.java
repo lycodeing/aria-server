@@ -7,6 +7,7 @@ import com.aria.conversation.domain.model.IntentType;
 import com.aria.conversation.domain.service.IntentService;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
+import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
@@ -58,6 +59,8 @@ public class FaqChatAppService {
     private final SessionQueueService            sessionQueueService;
     /** JSON 序列化工具，用于构造 TransferPayload、sources 等 SSE 载荷 */
     private final ObjectMapper                   objectMapper;
+    /** CSAT 服务，AI 对话流结束后追加评价邀请事件 */
+    private final CsatService                    csatService;
 
     /**
      * 已接入人工时的消息处理：仅追加历史记录并返回提示，不调用 AI。
@@ -159,10 +162,10 @@ public class FaqChatAppService {
                 });
 
         if (effectiveHits.isEmpty()) {
-            return tokenStream;
+            return appendCsatEvent(tokenStream, sessionId);
         }
         ChatEvent sourcesEvent = buildSourcesEvent(effectiveHits);
-        return tokenStream.switchOnFirst((signal, flux) -> {
+        Flux<ChatEvent> withSources = tokenStream.switchOnFirst((signal, flux) -> {
             if (signal.hasValue()) {
                 String type = signal.get() != null ? signal.get().eventType() : null;
                 if (ChatEvent.EventType.ERROR.equals(type)) {
@@ -171,6 +174,29 @@ public class FaqChatAppService {
             }
             return Flux.concat(Flux.just(sourcesEvent), flux);
         });
+        return appendCsatEvent(withSources, sessionId);
+    }
+
+    /**
+     * 在 AI 对话 Flux 末尾追加 CSAT 评价邀请事件。
+     * 失败时静默降级（仅记录 warn），不影响主流程。
+     */
+    private Flux<ChatEvent> appendCsatEvent(Flux<ChatEvent> flux, String sessionId) {
+        return flux.concatWith(Flux.defer(() -> {
+            try {
+                CsatRatingDO csat = csatService.createInvitation(sessionId, null, null, "AI");
+                String payload = objectMapper.writeValueAsString(Map.of(
+                        "csatId",    csat.getId(),
+                        "sessionId", sessionId,
+                        "message",   "请对本次服务进行评价",
+                        "expiresAt", csat.getExpiredAt().toString()
+                ));
+                return Flux.just(new ChatEvent(ChatEvent.EventType.CSAT_REQUEST, payload));
+            } catch (Exception e) {
+                log.warn("[CSAT] AI 流追加评价邀请失败 sessionId={}", sessionId, e);
+                return Flux.empty();
+            }
+        }));
     }
 
     /**

@@ -27,9 +27,9 @@ class SessionQueueServiceGetAgentIdTest {
     @BeforeEach
     void setUp() throws Exception {
         // 只注入 queueRepository，其余依赖传 null（getAgentId 只用 queueRepository）
-        // 构造器参数顺序：queueRepository, agentRegistry, publisher, rabbitTemplate, eventsExchange, persistRepository
+        // 构造器参数顺序：queueRepository, agentRegistry, publisher, rabbitTemplate, eventsExchange, persistRepository, csatService, visitorNotifier
         service = new SessionQueueService(
-                queueRepository, null, null, null, null, null);
+                queueRepository, null, null, null, null, null, null, null);
     }
 
     @Test
