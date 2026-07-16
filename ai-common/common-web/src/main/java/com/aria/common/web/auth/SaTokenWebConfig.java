@@ -20,6 +20,9 @@ public class SaTokenWebConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(new SaInterceptor(handler -> {
             SaRouter.match("/**")
+                    // CORS preflight（OPTIONS）不携带 token，必须在 Sa-Token 层放行，
+                    // 否则拦截器早于 Spring MVC CORS 处理器返回 401，浏览器报 CORS 错误。
+                    .notMatchMethod("OPTIONS")
                     .notMatch(
                             "/api/v1/auth/login",
                             "/api/v1/auth/refresh",
