@@ -4,6 +4,7 @@ import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.retry.annotation.EnableRetry;
+import org.springframework.scheduling.annotation.EnableAsync;
 
 /**
  * 对话服务启动类。
@@ -18,9 +19,11 @@ import org.springframework.retry.annotation.EnableRetry;
  */
 @SpringBootApplication
 @EnableRetry
+@EnableAsync
 @MapperScan({
     "com.aria.conversation.infrastructure.persistence.mapper",
-    "com.aria.conversation.infrastructure.dit.mapper"
+    "com.aria.conversation.infrastructure.dit.mapper",
+    "com.aria.conversation.infrastructure.canned"
 })
 public class ConversationApplication {
 
