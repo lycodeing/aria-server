@@ -28,3 +28,4 @@ logs/
 deploy/docker-data/jars/
 deploy/docker-data/postgres/
 deploy/docker-data/nginx/certs/
+.worktrees/
