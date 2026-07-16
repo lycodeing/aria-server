@@ -28,6 +28,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -297,6 +298,11 @@ public class SessionQueueService {
             queueRepository.delete(sessionId); // 幂等，无数据时 no-op
             publishSessionEnd(sessionId, closedBy);
             triggerCsatAsync(sessionId, agentIdHolder[0]);
+            // 腾出空位后异步消化排队队列（不阻塞关闭请求）
+            String freedAgent = agentIdHolder[0];
+            if (freedAgent != null) {
+                CompletableFuture.runAsync(() -> tryDispatchFromQueue(freedAgent));
+            }
         } catch (IllegalStateException e) {
             log.warn("[SessionQueue] close 状态机校验失败 sessionId={} msg={}", sessionId, e.getMessage());
         }
@@ -394,6 +400,8 @@ public class SessionQueueService {
     /** 注册座席上线（SSE 连接建立时调用）。 */
     public void registerAgent(String agentId, String displayName) {
         agentRegistry.register(agentId, displayName);
+        // 新客服上线，sessions=0，优先接待等待最久的访客
+        CompletableFuture.runAsync(() -> tryDispatchFromQueue(agentId));
     }
 
     /** 注销座席下线（SSE 连接断开时调用）。引用计数归零后才真正下线。 */
@@ -543,6 +551,62 @@ public class SessionQueueService {
         return new SessionQueueItem(
                 item.sessionId(), item.userName(), item.transferReason(),
                 item.tag(), item.waitSince(), SessionStatus.ACTIVE, agentId);
+    }
+
+    // ---- 排队消化：tryDispatchFromQueue 及辅助方法 ----
+
+    /**
+     * 当指定客服腾出空位时，从 WAITING 队列取出等待最久的会话并自动分配。
+     * 仅消化一条（一次空位只消化一条，避免瞬间超额）。
+     * 在异步线程中执行，不阻塞主请求。
+     */
+    private void tryDispatchFromQueue(String agentId) {
+        int max = csAgentConfigProvider.getMaxSessionsPerAgent();
+        boolean acquired = withAgentLock(agentId, () -> {
+            tryAssignOldestWaiting(agentId, max);
+            return true;
+        });
+        if (!acquired) {
+            log.debug("[QueueDrain] 加锁竞争，跳过本次消化 agentId={}", agentId);
+        }
+    }
+
+    /**
+     * 持锁后：二次校验有空位，取最早的 WAITING 会话执行分配。
+     */
+    private void tryAssignOldestWaiting(String agentId, int max) {
+        if (!isAgentAvailable(agentId, max)) return;
+        pickOldestWaiting().ifPresent(entry ->
+                doDispatchWaitingSession(entry.getKey(), entry.getValue(), agentId));
+    }
+
+    /**
+     * 从 Redis 中取出 waitSince 最小（等待最久）的 WAITING 会话。
+     */
+    private Optional<Map.Entry<String, SessionQueueItem>> pickOldestWaiting() {
+        // findAll() 返回 List，需要转为可查找 sessionId 的结构
+        return queueRepository.findAll().stream()
+                .filter(i -> i.status() == SessionStatus.WAITING)
+                .min(Comparator.comparingLong(SessionQueueItem::waitSince))
+                .map(i -> Map.entry(i.sessionId(), i));
+    }
+
+    /**
+     * CAS 激活排队会话 + 发布 SESSION_ACCEPT 事件。
+     * CAS 失败表示该会话已被手动接入，静默跳过。
+     */
+    private void doDispatchWaitingSession(String sessionId, SessionQueueItem waitingItem,
+                                          String agentId) {
+        boolean cas = queueRepository.compareAndSetStatus(
+                sessionId, buildActiveItem(waitingItem, agentId));
+        if (!cas) {
+            log.debug("[QueueDrain] CAS 失败，会话 {} 已被手动接入", sessionId);
+            return;
+        }
+        publishSessionAccept(sessionId, agentId, Instant.now().getEpochSecond());
+        publishEvent(new SessionEvent(SessionEventType.AUTO_ASSIGNED,
+                buildActiveItem(waitingItem, agentId)));
+        log.info("[QueueDrain] 排队会话 {} 分配给客服 {}", sessionId, agentId);
     }
 
     // ---- 内部：事件广播 ----
