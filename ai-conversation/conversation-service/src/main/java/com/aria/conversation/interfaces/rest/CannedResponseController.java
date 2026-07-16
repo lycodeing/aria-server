@@ -83,7 +83,7 @@ public class CannedResponseController {
 
     // ── VO & 请求 DTO ─────────────────────────────────────
 
-    /** 搜索结果 VO，屏蔽无关字段，附加 groupName 供前端显示 */
+    /** 搜索结果 VO，屏蔽内部字段（createdBy、deleted 等），仅暴露前端展示所需字段 */
     public record SearchVO(Long id, String title, String content,
                            String scope, Integer useCount) {
         static SearchVO from(CannedResponseDO cr) {
