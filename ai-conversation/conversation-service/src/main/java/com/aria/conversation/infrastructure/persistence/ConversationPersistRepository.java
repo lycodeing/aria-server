@@ -40,52 +40,6 @@ public class ConversationPersistRepository {
     private final ConversationMessageMapper messageMapper;
 
     /**
-     * 创建会话记录（SESSION_START 事件触发）。
-     * 若同一 sessionId 已存在，静默忽略（幂等，防止重复消费）。
-     *
-     * @param sessionId      会话唯一标识
-     * @param visitorName    访客名称
-     * @param transferReason 转接原因
-     * @param tag            问题分类标签
-     * @param startedAt      会话开始时间
-     */
-    public void startConversation(String sessionId, String visitorName,
-                                  String transferReason, String tag,
-                                  OffsetDateTime startedAt) {
-        ConversationEntity entity = new ConversationEntity();
-        entity.setSessionId(sessionId);
-        entity.setVisitorName(visitorName != null ? visitorName : "访客");
-        entity.setTransferReason(transferReason);
-        entity.setTag(tag != null && !tag.isBlank() ? tag : "咨询");
-        entity.setStatus(SessionStatus.WAITING);
-        entity.setStartedAt(startedAt);
-        entity.setCreatedAt(startedAt);
-        entity.setUpdatedAt(startedAt);
-
-        try {
-            conversationMapper.insert(entity);
-            log.debug("[Persist] 会话创建 sessionId={}", sessionId);
-        } catch (DuplicateKeyException e) {
-            // 可能是 AI_CHAT 记录，用户后来转人工时需要升级为 WAITING
-            int upgraded = conversationMapper.update(
-                    Wrappers.lambdaUpdate(ConversationEntity.class)
-                            .set(ConversationEntity::getStatus, SessionStatus.WAITING.getValue())
-                            .set(ConversationEntity::getVisitorName, entity.getVisitorName())
-                            .set(ConversationEntity::getTransferReason, entity.getTransferReason())
-                            .set(ConversationEntity::getTag, entity.getTag())
-                            .set(ConversationEntity::getStartedAt, entity.getStartedAt())
-                            .eq(ConversationEntity::getSessionId, sessionId)
-                            .eq(ConversationEntity::getStatus, SessionStatus.AI_CHAT.getValue())
-            );
-            if (upgraded > 0) {
-                log.debug("[Persist] AI_CHAT 会话升级为 WAITING sessionId={}", sessionId);
-            } else {
-                log.debug("[Persist] 会话已存在（非AI_CHAT），忽略重复创建 sessionId={}", sessionId);
-            }
-        }
-    }
-
-    /**
      * 激活会话（SESSION_ACCEPT 事件触发，座席接入时调用）。
      *
      * <p>WAITING → ACTIVE 状态转换由 DB 侧 CAS 保证：仅当 status=WAITING 时才更新，

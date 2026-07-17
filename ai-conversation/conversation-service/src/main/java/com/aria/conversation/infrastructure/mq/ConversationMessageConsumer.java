@@ -89,11 +89,13 @@ public class ConversationMessageConsumer {
     // -------------------------------------------------------
 
     /**
-     * 处理 SESSION_START：在 DB 创建会话记录。
-     * 幂等：同一 sessionId 重复消费时静默忽略（unique key 冲突）。
+     * 处理转人工事件：将 AI_CHAT 会话升级为 WAITING 状态。
+     *
+     * <p>新设计下转人工时会话一定已通过 /session/init 接口创建，
+     * 因此直接 UPDATE，无需 insert 兜底。upgradeToWaiting 返回 0 时会打印 warn 日志。
      */
     private void handleSessionStart(Map<String, Object> payload, String sessionId) {
-        persistRepository.startConversation(
+        persistRepository.upgradeToWaiting(
                 sessionId,
                 str(payload, ConversationStreamEvent.FIELD_VISITOR_NAME),
                 str(payload, ConversationStreamEvent.FIELD_TRANSFER_REASON),
