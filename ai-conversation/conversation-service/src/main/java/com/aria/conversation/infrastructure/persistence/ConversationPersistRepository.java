@@ -161,32 +161,6 @@ public class ConversationPersistRepository {
     }
 
     /**
-     * 幂等初始化 AI_CHAT 会话记录（首条 AI 消息时调用）。
-     * 若记录已存在（任意状态），静默跳过，不覆盖。
-     *
-     * @param sessionId 会话唯一标识
-     * @param startedAt 首条消息时间
-     */
-    public void initAiChatSession(String sessionId, OffsetDateTime startedAt) {
-        ConversationEntity entity = new ConversationEntity();
-        entity.setSessionId(sessionId);
-        entity.setVisitorName("访客");
-        entity.setTransferReason("");
-        entity.setTag("AI 对话");
-        entity.setStatus(SessionStatus.AI_CHAT);
-        entity.setStartedAt(startedAt);
-        entity.setCreatedAt(startedAt);
-        entity.setUpdatedAt(startedAt);
-        try {
-            conversationMapper.insert(entity);
-            log.debug("[Persist] AI_CHAT 会话初始化 sessionId={}", sessionId);
-        } catch (DuplicateKeyException e) {
-            // 已存在（可能已升级为 WAITING/ACTIVE），静默跳过
-            log.debug("[Persist] AI_CHAT 会话已存在，跳过 sessionId={}", sessionId);
-        }
-    }
-
-    /**
      * 查询所有 ACTIVE 状态的会话，供座席工作台刷新后恢复。
      * 从 DB 读取，不依赖 Redis，重启后仍可正确恢复。
      *

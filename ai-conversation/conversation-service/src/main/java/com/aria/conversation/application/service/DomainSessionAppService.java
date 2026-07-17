@@ -17,9 +17,8 @@ import java.util.List;
 /**
  * 域会话生命周期管理器。
  *
- * <p>封装域对话的三步初始化编排：
+ * <p>封装域对话的两步初始化编排：
  * <ol>
- *   <li>幂等初始化 AI_CHAT 会话记录</li>
  *   <li>读取或首次写入 session 激活域（Redis）</li>
  *   <li>ROUTER 小模型域路由决策，必要时切换域并写审计日志</li>
  * </ol>
@@ -32,8 +31,6 @@ import java.util.List;
 @RequiredArgsConstructor
 public class DomainSessionAppService {
 
-    /** 会话队列服务，提供幂等初始化 AI_CHAT 会话记录的能力 */
-    private final SessionQueueService            sessionQueueService;
     /** 激活域 Redis 仓储，存储 sessionId → domainCode 的映射关系 */
     private final SessionDomainRepository        sessionDomainRepo;
     /** 域切换审计仓储，记录每次域变更的原因、来源和时间 */
@@ -44,7 +41,9 @@ public class DomainSessionAppService {
     private final DomainRoutingService           domainRoutingService;
 
     /**
-     * 解析当前会话的活跃域，完整编排三步初始化流程。
+     * 解析当前会话的活跃域，编排域初始化和路由流程。
+     *
+     * <p>会话记录的创建由 {@code /session/init} 接口负责，本方法不再隐式初始化。
      *
      * <p><b>线程要求：</b>包含阻塞操作（Redis 读写、HTTP 调用），
      * 调用方必须在 {@link Schedulers#boundedElastic()} 线程上调用。
@@ -55,7 +54,6 @@ public class DomainSessionAppService {
      * @return 最终确定的活跃域编码
      */
     public String resolveActiveDomain(String sessionId, String message, String domainCode) {
-        sessionQueueService.initAiChatSession(sessionId);
         String activeDomain = resolveOrInitDomain(sessionId, message, domainCode);
         return routeDomainIfNeeded(sessionId, message, activeDomain);
     }
