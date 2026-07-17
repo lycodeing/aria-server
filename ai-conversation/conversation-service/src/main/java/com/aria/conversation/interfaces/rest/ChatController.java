@@ -27,7 +27,7 @@ import java.util.Map;
  *
  * <p>DDD 分层职责：
  * <ul>
- *   <li>Interface 层（本类）：入参格式校验、sessionId 生成、ChatEvent → SSE 格式转换</li>
+ *   <li>Interface 层（本类）：入参格式校验、sessionId 格式校验、ChatEvent → SSE 格式转换</li>
  *   <li>Application 层（ChatAppService）：所有业务路由（人工接入判断、DIT、FAQ）</li>
  * </ul>
  *
@@ -61,7 +61,7 @@ public class ChatController {
     /**
      * SSE 流式对话接口（访客公开，允许任意跨域）。
      *
-     * <p>Controller 只负责：格式校验 → sessionId 生成 → ChatEvent → SSE 转换。
+     * <p>Controller 只负责：格式校验 → sessionId 格式校验 → ChatEvent → SSE 转换。
      * 所有业务路由（人工接入/DIT Pipeline/FAQ）在 Application 层完成。
      */
     @CrossOrigin(origins = "*")
