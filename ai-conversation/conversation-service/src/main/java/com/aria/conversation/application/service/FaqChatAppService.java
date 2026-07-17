@@ -24,6 +24,7 @@ import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * FAQ 对话编排器。
@@ -85,21 +86,26 @@ public class FaqChatAppService {
      * @return ChatEvent 流，包含 token 事件，RAG 命中时首先发送 sources 事件
      */
     public Flux<ChatEvent> stream(String sessionId, String message) {
-        // 会话必须已通过 /session/init 接口创建，此处做防御性校验
-        if (!persistRepository.existsBySessionId(sessionId)) {
-            log.warn("[FAQ] 会话不存在 sessionId={}，前端可能未调用 /session/init", sessionId);
-            return Flux.just(ChatEvent.error("会话不存在，请刷新页面重试", objectMapper));
-        }
         return Mono.fromCallable(() -> {
+                    // 会话必须已通过 /session/init 接口创建，此处做防御性校验
+                    if (!persistRepository.existsBySessionId(sessionId)) {
+                        log.warn("[FAQ] 会话不存在 sessionId={}，前端可能未调用 /session/init", sessionId);
+                        return Optional.<FaqContext>empty();
+                    }
                     historyRepository.append(sessionId, MessageRole.USER.getValue(), message);
                     List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(message);
                     IntentResult intent = intentService.classify(message);
                     log.debug("[FAQ] sessionId={} intent={} confidence={}",
                             sessionId, intent.intent(), intent.confidence());
-                    return new FaqContext(hits, intent);
+                    return Optional.of(new FaqContext(hits, intent));
                 })
                 .subscribeOn(Schedulers.boundedElastic())
-                .flatMapMany(ctx -> buildEventStream(sessionId, message, ctx));
+                .flatMapMany(opt -> {
+                    if (opt.isEmpty()) {
+                        return Flux.just(ChatEvent.error("会话不存在，请刷新页面重试", objectMapper));
+                    }
+                    return buildEventStream(sessionId, message, opt.get());
+                });
     }
 
     /**
