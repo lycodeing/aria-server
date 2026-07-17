@@ -2,6 +2,7 @@ package com.aria.conversation.infrastructure.websocket;
 
 import com.aria.conversation.infrastructure.websocket.cluster.PodIdentity;
 import com.aria.conversation.infrastructure.websocket.cluster.WsPresenceRegistry;
+import com.aria.conversation.infrastructure.websocket.message.WsKickedOutMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
@@ -162,6 +163,10 @@ public class VisitorSessionRegistry implements VisitorNotifier {
 
     /**
      * 关闭已被替换的旧连接，清理其 sendLock 和心跳。
+     *
+     * <p>关闭前先推送 {@link com.aria.conversation.infrastructure.websocket.message.WsKickedOutMessage}
+     * 信令，使前端能区分"被其他标签页替换"与"网络断开"，从而在收到该信令后抑制重连逻辑，
+     * 避免多标签页场景下的无限互踢死循环。
      */
     private void closeStaleSession(String sessionId, WebSocketSession stale) {
         if (stale == null) return;
@@ -170,6 +175,8 @@ public class VisitorSessionRegistry implements VisitorNotifier {
         if (hb != null) hb.cancel(false);
         if (stale.isOpen()) {
             try {
+                // 先发 KICKED_OUT 信令，让前端抑制重连，再关闭连接
+                sendJson(sessionId, stale, WsKickedOutMessage.INSTANCE);
                 stale.close(CloseStatus.GOING_AWAY);
             } catch (IOException e) {
                 log.warn("[VisitorRegistry] 关闭旧连接失败 sessionId={} wsId={} msg={}",

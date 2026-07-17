@@ -134,6 +134,8 @@ services:
       RABBITMQ_PORT: "5672"
       RABBITMQ_USERNAME: guest
       RABBITMQ_PASSWORD: guest
+      # 启用知识库翻译接口（知识库检索结果快速翻译，依赖已配置的默认 AI 模型）
+      KNOWLEDGE_TRANSLATE_ENABLED: "true"
     healthcheck:
       test: ["CMD-SHELL", "curl -s -o /dev/null --connect-timeout 5 http://localhost:8081/actuator/health || exit 1"]
       interval: 20s
