@@ -118,6 +118,9 @@ public class ConversationPersistRepository {
      * 转人工：将 AI_CHAT 状态的会话升级为 WAITING（纯 UPDATE，无 insert 兜底）。
      * 新设计下转人工时会话一定已存在，insert 兜底已无必要。
      *
+     * <p>注意：{@code started_at} 字段不在此处更新，保留 AI_CHAT 阶段创建时的原始值，
+     * 以确保会话时长指标从会话真正开始时刻计算，而非仅反映 WAITING 阶段时长。
+     *
      * @param sessionId      会话唯一标识
      * @param visitorName    访客名称
      * @param transferReason 转接原因
@@ -134,7 +137,6 @@ public class ConversationPersistRepository {
                 .set(ConversationEntity::getVisitorName,    visitorName)
                 .set(ConversationEntity::getTransferReason, transferReason)
                 .set(ConversationEntity::getTag,            tag != null && !tag.isBlank() ? tag : "咨询")
-                .set(ConversationEntity::getStartedAt,      now)
                 .set(ConversationEntity::getUpdatedAt,      now)
                 .eq(ConversationEntity::getSessionId,       sessionId)
                 .eq(ConversationEntity::getStatus,          SessionStatus.AI_CHAT.getValue())

@@ -36,7 +36,11 @@ class VisitorSessionServiceTest {
     void setUp() {
         service = new VisitorSessionService(persistRepository, redissonClient);
         when(redissonClient.getLock(anyString())).thenReturn(rLock);
-        doNothing().when(rLock).lock(anyLong(), any(TimeUnit.class));
+        try {
+            when(rLock.tryLock(anyLong(), anyLong(), any(TimeUnit.class))).thenReturn(true);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
+        }
         doNothing().when(rLock).unlock();
     }
 
