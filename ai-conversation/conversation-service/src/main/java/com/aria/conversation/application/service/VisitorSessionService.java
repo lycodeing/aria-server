@@ -30,7 +30,7 @@ public class VisitorSessionService {
 
     /** anonymousId 校验正则：至少含一个 _ 或 - 的字母数字下划线连字符串，总长 2-64 位 */
     private static final Pattern ANONYMOUS_ID_PATTERN =
-            Pattern.compile("^[a-zA-Z0-9]*[_\\-][a-zA-Z0-9_\\-]*$");
+            Pattern.compile("^[a-zA-Z0-9_\\-]{8,64}$");
 
     private static final String GUEST_SESSION_PREFIX = "guest-";
     private static final String LOCK_KEY_PREFIX      = "visitor:init:";
