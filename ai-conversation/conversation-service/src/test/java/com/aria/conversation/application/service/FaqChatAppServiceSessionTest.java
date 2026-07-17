@@ -56,10 +56,8 @@ class FaqChatAppServiceSessionTest {
 
     @Test
     void stream_sessionExists_doesNotThrow() {
-        when(persistRepository.existsBySessionId("sess_ok")).thenReturn(true);
-
-        // 防御性校验通过后，reactive 管道为懒执行，不在此处触发
-        // 只验证 stream() 不会立即返回 error 事件 Flux（即不走存在性校验的短路路径）
+        // 防御性校验现在位于 Mono.fromCallable 内（懒执行），stream() 本身不阻塞不抛出。
+        // 只验证 stream() 返回非 null Flux，不触发订阅（下游 pipeline 在本测试范围之外）。
         Flux<ChatEvent> flux = service.stream("sess_ok", "hi");
         assertThat(flux).isNotNull();
     }

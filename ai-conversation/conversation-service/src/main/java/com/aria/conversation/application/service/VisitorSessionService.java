@@ -87,7 +87,9 @@ public class VisitorSessionService {
             log.info("[VisitorSession] 新建会话 anonymousId={} sessionId={}", anonymousId, sessionId);
             return new InitSessionResult(sessionId, SessionStatus.AI_CHAT, true);
         } finally {
-            lock.unlock();
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
         }
     }
 
