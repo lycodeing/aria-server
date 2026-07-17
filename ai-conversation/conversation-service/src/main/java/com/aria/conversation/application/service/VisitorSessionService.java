@@ -35,6 +35,7 @@ public class VisitorSessionService {
     private static final String GUEST_SESSION_PREFIX = "guest-";
     private static final String LOCK_KEY_PREFIX      = "visitor:init:";
     private static final long   LOCK_TTL_SECONDS     = 3L;
+    private static final long   LOCK_WAIT_SECONDS    = 2L;
     private static final String DEFAULT_VISITOR_NAME = "访客";
 
     private final ConversationPersistRepository persistRepository;
@@ -59,7 +60,16 @@ public class VisitorSessionService {
         validateAnonymousId(anonymousId);
 
         RLock lock = redissonClient.getLock(LOCK_KEY_PREFIX + anonymousId);
-        lock.lock(LOCK_TTL_SECONDS, TimeUnit.SECONDS);
+        boolean acquired;
+        try {
+            acquired = lock.tryLock(LOCK_WAIT_SECONDS, LOCK_TTL_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BusinessException(503, "系统繁忙，请稍后重试");
+        }
+        if (!acquired) {
+            throw new BusinessException(503, "请求频繁，请稍后重试");
+        }
         try {
             Optional<ConversationEntity> active = persistRepository.findActiveByVisitorId(anonymousId);
             if (active.isPresent()) {
