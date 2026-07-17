@@ -46,13 +46,14 @@ import static org.mockito.Mockito.when;
 class ChatControllerStreamTest {
 
     @Mock private ChatAppService chatService;
+    @Mock private com.aria.conversation.application.service.MessageFeedbackService messageFeedbackService;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private ChatController controller;
 
     @BeforeEach
     void setUp() {
-        controller = new ChatController(chatService, objectMapper);
+        controller = new ChatController(chatService, messageFeedbackService, objectMapper);
     }
 
     // -------------------------------------------------------

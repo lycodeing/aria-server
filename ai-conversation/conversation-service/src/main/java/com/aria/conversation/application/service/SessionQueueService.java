@@ -416,13 +416,10 @@ public class SessionQueueService {
                     ? Long.parseLong(agentId) : null;
             CsatRatingDO csat = csatService.createInvitation(
                     sessionId, null, agentIdLong, "HUMAN");
-            visitorNotifier.notifyVisitor(sessionId, Map.of(
-                    "type",      ChatEvent.EventType.CSAT_REQUEST,
-                    "csatId",    csat.getId(),
-                    "sessionId", sessionId,
-                    "message",   "请对本次服务进行评价",
-                    "expiresAt", csat.getExpiredAt().toString()
-            ));
+            Map<String, Object> frame = new java.util.LinkedHashMap<>(
+                    com.aria.conversation.application.service.support.CsatInvites.payload(csat));
+            frame.put("type", ChatEvent.EventType.CSAT_REQUEST);
+            visitorNotifier.notifyVisitor(sessionId, frame);
             log.info("[CSAT] 人工会话关闭触发评价邀请 sessionId={} csatId={}", sessionId, csat.getId());
         } catch (Exception e) {
             log.warn("[CSAT] 触发评价邀请失败 sessionId={}", sessionId, e);

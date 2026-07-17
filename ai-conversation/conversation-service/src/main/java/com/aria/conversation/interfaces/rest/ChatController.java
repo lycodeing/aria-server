@@ -3,11 +3,14 @@ package com.aria.conversation.interfaces.rest;
 import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.ChatAppService;
 import com.aria.conversation.application.service.ChatEvent;
+import com.aria.conversation.application.service.MessageFeedbackService;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.ConversationMessage;
-import com.aria.conversation.domain.SessionStatus;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.MediaType;
@@ -15,6 +18,7 @@ import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Flux;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -52,6 +56,7 @@ public class ChatController {
             java.util.regex.Pattern.compile("^[a-zA-Z0-9_\\-]{1,64}$");
 
     private final ChatAppService chatService;
+    private final MessageFeedbackService messageFeedbackService;
     /** Jackson ObjectMapper 用于将 ChatEvent 的 error/token 等 payload 序列化为 JSON 信封 */
     private final ObjectMapper objectMapper;
 
@@ -130,6 +135,33 @@ public class ChatController {
         }
         chatService.clearHistory(sessionId);
         return R.ok(Map.of("message", "会话历史已清除", "sessionId", sessionId));
+    }
+
+    /**
+     * 访客对单条消息的反馈（点赞/点踩/取消）。
+     *
+     * <p>请求体：
+     * <pre>
+     *   {
+     *     "sessionId": "sess_xxx",
+     *     "seq": 42,            // 可选；缺省时后端取当前 session 最近一条 assistant 消息
+     *     "feedback": "up"      // "up" / "down" / null（取消反馈）
+     *   }
+     * </pre>
+     *
+     * <p>返回体：{@code { "feedback": "up"|"down"|null }} 表示落库后的最终态。
+     *
+     * <p>CORS：访客公开接口，允许任意源。
+     */
+    @CrossOrigin(origins = "*")
+    @PostMapping("/messages/feedback")
+    public R<Map<String, Object>> submitFeedback(@RequestBody @Valid FeedbackRequest req) {
+        String finalValue = messageFeedbackService.submit(
+                req.getSessionId(), req.getSeq(), req.getFeedback(), null);
+        // 使用 HashMap 而非 Map.of 以允许 null feedback 值（取消反馈场景）
+        Map<String, Object> body = new HashMap<>(1);
+        body.put("feedback", finalValue);
+        return R.ok(body);
     }
 
     /**
@@ -219,16 +251,35 @@ public class ChatController {
 
     @Data
     public static class TransferRequest {
-        @jakarta.validation.constraints.NotBlank(message = "sessionId 不能为空")
-        @jakarta.validation.constraints.Pattern(
-                regexp = "^[a-zA-Z0-9_\\-]{1,64}$",
+        @NotBlank(message = "sessionId 不能为空")
+        @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$",
                 message = "sessionId 格式非法（只允许字母、数字、下划线、连字符，长度 1~64）")
         private String sessionId;
 
-        @jakarta.validation.constraints.NotBlank(message = "userName 不能为空")
+        @NotBlank(message = "userName 不能为空")
         private String userName;
 
         private String transferReason;
         private String tag;
+    }
+
+    @Data
+    public static class FeedbackRequest {
+        @NotBlank(message = "sessionId 不能为空")
+        @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$",
+                message = "sessionId 格式非法（只允许字母、数字、下划线、连字符，长度 1~64）")
+        private String sessionId;
+
+        /**
+         * 目标消息 seq，允许缺省。缺省时后端回落到最近一条 assistant 消息（若无则 400）。
+         */
+        @Min(value = 1, message = "seq 必须为正整数")
+        private Long seq;
+
+        /**
+         * up=点赞, down=点踩, null=取消反馈。
+         */
+        @Pattern(regexp = "^(up|down)$", message = "feedback 必须为 up 或 down")
+        private String feedback;
     }
 }

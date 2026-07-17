@@ -9,7 +9,9 @@ import org.springframework.stereotype.Service;
 import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * 访客手机号身份验证服务。
@@ -32,6 +34,10 @@ public class VisitorAuthService {
 
     private static final Duration ATTEMPTS_WINDOW = Duration.ofMinutes(10);
     private static final Duration TOKEN_TTL       = Duration.ofHours(2);
+
+    /** sessionId 格式校验，与 ChatController.SESSION_ID_PATTERN 保持一致 */
+    private static final Pattern SESSION_ID_PATTERN =
+            Pattern.compile("^[a-zA-Z0-9_\\-]{1,64}$");
 
     /** 密码学安全的随机数生成器，全局共享（线程安全），节约熵源 */
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -75,14 +81,33 @@ public class VisitorAuthService {
     }
 
     /**
-     * 校验验证码，成功返回访客 token。
+     * 校验验证码，成功返回访客 token（不绑定 session）。
      *
-     * @param phone 手机号
-     * @param code  用户输入的 6 位验证码
-     * @return 访客 token（UUID，TTL 2 小时）
-     * @throws BusinessException 400 验证码错误 / 423 已锁定
+     * <p>兼容旧调用；新调用请使用 {@link #verifyCode(String, String, String)}
+     * 传入 sessionId，以支持刷新后通过 sessionId 回查认证状态。
      */
     public String verifyCode(String phone, String code) {
+        return verifyCode(phone, code, null);
+    }
+
+    /**
+     * 校验验证码，成功返回访客 token，可选绑定到会话。
+     *
+     * <p>sessionId 非空时，除了签发 token，还会额外建立 session → phone 索引（TTL 与 token 相同），
+     * 用于访客刷新页面后通过 {@code GET /chat/auth/state?sessionId=} 恢复认证态。
+     *
+     * @param phone     手机号
+     * @param code      用户输入的 6 位验证码
+     * @param sessionId 会话 ID，可为 null；非空时格式非法直接抛异常
+     * @return 访客 token（UUID，TTL 2 小时）
+     * @throws BusinessException 400 验证码错误 / 400 sessionId 非法 / 423 已锁定
+     */
+    public String verifyCode(String phone, String code, String sessionId) {
+        // 提前校验 sessionId 格式，避免非法值污染 Redis
+        if (sessionId != null && !sessionId.isBlank() && !SESSION_ID_PATTERN.matcher(sessionId).matches()) {
+            throw new BusinessException(400, "非法的 sessionId 格式");
+        }
+
         // 锁定检查：错误次数超限直接拒绝
         long attempts = codeRepository.getAttempts(phone);
         if (attempts >= maxAttempts) {
@@ -106,7 +131,13 @@ public class VisitorAuthService {
         String token = UUID.randomUUID().toString().replace("-", "");
         codeRepository.saveToken(token, phone, TOKEN_TTL);
 
-        log.info("[VisitorAuth] 验证成功 phone={}****{}", phone.substring(0, 3), phone.substring(7));
+        // 建立会话级绑定，用于刷新后回查
+        if (sessionId != null && !sessionId.isBlank()) {
+            codeRepository.saveSessionAuth(sessionId, phone, TOKEN_TTL);
+        }
+
+        log.info("[VisitorAuth] 验证成功 phone={}****{} sessionBound={}",
+                phone.substring(0, 3), phone.substring(7), sessionId != null && !sessionId.isBlank());
         return token;
     }
 
@@ -116,6 +147,26 @@ public class VisitorAuthService {
     public String resolvePhone(String token) {
         if (token == null || token.isBlank()) return null;
         return codeRepository.resolveToken(token).orElse(null);
+    }
+
+    /**
+     * 通过 sessionId 解析关联的手机号；未绑定或已过期返回 empty。
+     *
+     * <p>用于 {@code GET /chat/auth/state?sessionId=} 接口，访客刷新页面后
+     * 只需携带 sessionId 即可判断当前会话是否已通过短信验证。
+     */
+    public Optional<String> resolveSessionPhone(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) return Optional.empty();
+        if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) return Optional.empty();
+        return codeRepository.resolveSessionAuth(sessionId);
+    }
+
+    /**
+     * 生成手机号掩码：{@code 138****5678}，用于展示已认证访客的部分号码。
+     */
+    public static String maskPhone(String phone) {
+        if (phone == null || phone.length() < 11) return phone;
+        return phone.substring(0, 3) + "****" + phone.substring(7);
     }
 
     /**

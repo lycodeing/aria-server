@@ -96,6 +96,23 @@ public class CsatService {
     }
 
     /**
+     * 按 sessionId 查询当前有效的 PENDING 评价邀请。
+     *
+     * <p>用于访客刷新页面后恢复评价弹窗：过滤掉状态非 PENDING、以及 PENDING 但已过 expiredAt 的记录。
+     * 已过期但仍标记为 PENDING 的行由 {@link #expirePending()} 定时任务批量转 EXPIRED，
+     * 本方法即便命中也不返回。
+     *
+     * @param sessionId 会话 ID（调用方保证格式已校验）
+     * @return 有效的 CsatRatingDO；无待评价返回 empty
+     */
+    public java.util.Optional<CsatRatingDO> findPending(String sessionId) {
+        OffsetDateTime now = OffsetDateTime.now(java.time.ZoneOffset.UTC);
+        return mapper.findBySessionId(sessionId)
+                .filter(r -> "PENDING".equals(r.getStatus()))
+                .filter(r -> r.getExpiredAt() != null && r.getExpiredAt().isAfter(now));
+    }
+
+    /**
      * 批量过期已超时的 PENDING 记录（供 Scheduler 调用）。
      *
      * @return 过期条数

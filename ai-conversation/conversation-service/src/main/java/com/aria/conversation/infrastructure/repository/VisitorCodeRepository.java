@@ -27,10 +27,11 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class VisitorCodeRepository {
 
-    private static final String KEY_CODE     = "visitor:sms:";
-    private static final String KEY_RATE     = "visitor:sms:rate:";
-    private static final String KEY_ATTEMPTS = "visitor:sms:attempts:";
-    private static final String KEY_TOKEN    = "visitor:token:";
+    private static final String KEY_CODE         = "visitor:sms:";
+    private static final String KEY_RATE         = "visitor:sms:rate:";
+    private static final String KEY_ATTEMPTS     = "visitor:sms:attempts:";
+    private static final String KEY_TOKEN        = "visitor:token:";
+    private static final String KEY_SESSION_AUTH = "visitor:session:auth:";
 
     private final RedisCacheHelper   cache;
     private final RedisCounterHelper counter;
@@ -118,5 +119,33 @@ public class VisitorCodeRepository {
      */
     public Optional<String> resolveToken(String token) {
         return Optional.ofNullable(cache.get(KEY_TOKEN + token));
+    }
+
+    // ----------------------------------------------------------------
+    // 会话级认证绑定
+    //
+    // 与 token 平行的独立索引，用于「访客刷新页面 → 只有 sessionId → 想知道当前会话是否已通过短信验证」的场景。
+    // 与 token 生命周期同步：写入 TTL 由调用方决定，通常等于 token TTL（2h）。
+    // ----------------------------------------------------------------
+
+    /**
+     * 保存 session → phone 绑定，用于认证状态回查。
+     *
+     * @param sessionId 会话 ID
+     * @param phone     关联手机号
+     * @param ttl       过期时间（通常与 token TTL 保持一致）
+     */
+    public void saveSessionAuth(String sessionId, String phone, Duration ttl) {
+        cache.set(KEY_SESSION_AUTH + sessionId, phone, ttl);
+    }
+
+    /**
+     * 查询指定 session 关联的手机号。
+     *
+     * @param sessionId 会话 ID
+     * @return 手机号，未绑定或已过期返回 empty
+     */
+    public Optional<String> resolveSessionAuth(String sessionId) {
+        return Optional.ofNullable(cache.get(KEY_SESSION_AUTH + sessionId));
     }
 }
