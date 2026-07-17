@@ -1,6 +1,7 @@
 package com.aria.conversation.interfaces.rest;
 
 import com.aria.common.web.response.R;
+import com.aria.common.web.util.HttpRequestUtils;
 import com.aria.conversation.application.dto.InitSessionRequest;
 import com.aria.conversation.application.dto.InitSessionResult;
 import com.aria.conversation.application.service.VisitorSessionService;
@@ -45,7 +46,7 @@ public class ChatSessionController {
             HttpServletRequest request,
             @RequestBody(required = false) InitSessionRequest body) {
 
-        String visitorIp     = resolveClientIp(request);
+        String visitorIp     = HttpRequestUtils.getClientIp(request);
         String visitorDevice = request.getHeader("User-Agent");
         String visitorName   = body != null ? body.getVisitorName() : null;
 
@@ -55,17 +56,4 @@ public class ChatSessionController {
         return R.ok(new InitSessionVO(result.sessionId(), result.status().name(), result.isNew()));
     }
 
-    /**
-     * 提取客户端真实 IP：优先取 X-Forwarded-For 首个地址，未经代理时取 RemoteAddr。
-     *
-     * @param request HTTP 请求
-     * @return 客户端 IP 字符串
-     */
-    private String resolveClientIp(HttpServletRequest request) {
-        String xff = request.getHeader("X-Forwarded-For");
-        if (xff != null && !xff.isBlank()) {
-            return xff.split(",")[0].trim();
-        }
-        return request.getRemoteAddr();
-    }
 }
