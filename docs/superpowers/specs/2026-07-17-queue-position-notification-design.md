@@ -25,15 +25,18 @@
 
 ## 2.1 触发时机
 
-排队位次变化只在 **WAITING → ACTIVE** 转换时发生，系统中有三个触发点：
+排队位次变化只在 **WAITING → ACTIVE** 转换时发生，系统中有**两个**触发点：
 
-| 触发方法 | 场景 | 所在类 |
+| 触发方法 | 场景 | 调用位置 |
 |---|---|---|
-| `accept()` | 客服手动接入 WAITING 会话 | `SessionQueueService` |
-| `doAssignNewSession()` | 入队时自动分配（有空余客服） | `SessionQueueService` |
-| `doDispatchWaitingSession()` | close/registerAgent 消化排队 | `SessionQueueService` |
+| `accept()` | 客服手动接入 WAITING 会话 | 方法末尾，锁外 |
+| `tryDispatchFromQueue()` | close/registerAgent 消化排队 | `withAgentLock` 返回后，锁释放后 |
 
-每个触发点执行完 ACTIVE 写入后，调用 `broadcastQueuePositions()`。
+> **注意：`doAssignNewSession()` 不在此列。** 该方法处理的是新入队时直接自动分配的情况——新会话从未进入 WAITING 状态，其他等待者的位次没有任何变化，广播无意义。
+>
+> **注意：广播必须在锁外调用。** `doDispatchWaitingSession()` 和 `doAssignNewSession()` 都在 Redisson 分布式锁（TTL=3s）内执行。`broadcastQueuePositions()` 需要对每个 WAITING 访客做一次 WebSocket I/O，若队列较长或连接有背压，会消耗完锁的 TTL，导致锁提前过期，破坏并发安全。因此广播调用点需要提升到锁释放之后。
+
+每个触发点在锁释放后调用 `broadcastQueuePositions()`。
 
 ## 2.2 数据流
 
@@ -105,6 +108,10 @@ SessionQueueService
  *
  * <p>消息格式：{@code {"type":"queue_position","position":N,"total":M}}，
  * position 从 1 开始，1 表示下一个被接入。
+ *
+ * <p><strong>必须在分布式锁释放后调用。</strong>
+ * 此方法对每个 WAITING 访客做一次 WebSocket I/O，持锁时调用可能耗尽
+ * Redisson TTL（3s），导致锁提前过期，破坏并发安全。
  */
 private void broadcastQueuePositions() {
     // findByStatus 已按 waitSince 升序排列，保证位次与等待时间对应
@@ -130,11 +137,11 @@ private void broadcastQueuePositions() {
 }
 ```
 
-## 3.2 三个调用点改造
+## 3.2 两个调用点改造
 
 ### accept()
 
-在现有 `publishSessionAccept(...)` 之后追加：
+`accept()` 本身在锁外执行，直接在末尾追加：
 
 ```java
 public SessionQueueItem accept(String sessionId, String agentId) {
@@ -142,54 +149,37 @@ public SessionQueueItem accept(String sessionId, String agentId) {
     publishSessionAccept(sessionId, agentId, Instant.now().getEpochSecond());
     log.info("[SessionQueue] accept 成功 sessionId={}", sessionId);
 
-    // 新增：广播剩余排队访客的位次
+    // 新增：广播剩余排队访客的位次（锁外，无 TTL 风险）
     broadcastQueuePositions();
 
     return updated;
 }
 ```
 
-### doAssignNewSession()
+### tryDispatchFromQueue()
 
-在 `publishEvent(...)` 之后追加：
+`doDispatchWaitingSession()` 在 `withAgentLock` 内执行（TTL=3s），不能在其内部调 I/O。
+广播提升到 `tryDispatchFromQueue()` 的锁释放之后：
 
 ```java
-private SessionQueueItem doAssignNewSession(String sessionId, SessionQueueItem item, String agentId) {
-    SessionQueueItem activeItem = buildActiveItem(item, agentId);
-    queueRepository.save(activeItem);
-    publishSessionStart(sessionId, item.userName(), item.transferReason(),
-            item.tag(), item.waitSince());
-    publishSessionAccept(sessionId, agentId, Instant.now().getEpochSecond());
-    publishEvent(new SessionEvent(SessionEventType.AUTO_ASSIGNED, activeItem));
-    log.info("[AutoDispatch] 会话 {} 自动分配给客服 {}", sessionId, agentId);
-
-    // 新增：广播剩余排队访客的位次
+private void tryDispatchFromQueue(String agentId) {
+    int max = csAgentConfigProvider.getMaxSessionsPerAgent();
+    boolean acquired = withAgentLock(agentId, () -> {
+        tryAssignOldestWaiting(agentId, max);
+        return true;
+    });
+    if (!acquired) {
+        log.debug("[QueueDrain] 加锁竞争，跳过本次消化 agentId={}", agentId);
+        return;
+    }
+    // 锁已释放后广播（避免在 TTL=3s 的锁内做 N 次 WS I/O）
     broadcastQueuePositions();
-
-    return activeItem;
 }
 ```
 
-### doDispatchWaitingSession()
+> `doDispatchWaitingSession()` 和 `tryAssignOldestWaiting()` 本身**不调用** `broadcastQueuePositions()`，广播统一由 `tryDispatchFromQueue()` 在锁外触发。
 
-CAS 成功并发布事件后追加：
-
-```java
-private void doDispatchWaitingSession(String sessionId, SessionQueueItem waitingItem,
-                                      String agentId) {
-    SessionQueueItem activeItem = buildActiveItem(waitingItem, agentId);
-    boolean cas = queueRepository.compareAndSetStatus(sessionId, activeItem);
-    if (!cas) {
-        log.debug("[QueueDrain] CAS 失败，会话 {} 已被手动接入", sessionId);
-        return;
-    }
-    publishSessionAccept(sessionId, agentId, Instant.now().getEpochSecond());
-    publishEvent(new SessionEvent(SessionEventType.AUTO_ASSIGNED, activeItem));
-    log.info("[QueueDrain] 排队会话 {} 分配给客服 {}", sessionId, agentId);
-
-    // 新增：广播剩余排队访客的位次
-    broadcastQueuePositions();
-}
+> `doAssignNewSession()` 同样**不调用** `broadcastQueuePositions()`：自动分配是新会话直接进 ACTIVE，从未进过 WAITING，其他等待者位次无变化，广播无意义。
 ```
 
 ## 3.3 依赖说明
@@ -211,9 +201,9 @@ private void doDispatchWaitingSession(String sessionId, SessionQueueItem waiting
 | 访客 WS 未连接 | `VisitorSessionRegistry.getSession()` 返回 null，`notifyVisitor` 静默 return |
 | 推送时 WS 连接突然断开 | `WebSocketSession.sendMessage` 抛异常，被 try/catch 捕获，log.debug 后继续广播下一个 |
 | 并发两个接入（并发竞态） | 两次 `broadcastQueuePositions()` 各自独立执行，最终结果收敛正确，位次以最后一次广播为准（best-effort） |
-| 访客入队时 WS 还未建立 | 访客连接 WS 后第一次收到位次是下次有人出队时；入队响应（`POST /transfer`）已包含 `status=WAITING`，前端可据此展示「排队中」初始状态 |
-| `doDispatchWaitingSession` CAS 失败 | CAS 失败说明该会话已被手动接入，直接 return，不调用 `broadcastQueuePositions()`（避免广播两次） |
-| `doAssignNewSession` 中新会话本身从未进入 WAITING | 该会话不在 `findByStatus(WAITING)` 结果里，广播的是其他 WAITING 访客，逻辑正确 |
+| `doDispatchWaitingSession` CAS 失败 | CAS 失败说明该会话已被手动接入，`tryDispatchFromQueue` 锁内动作无实质输出，锁外的广播仍执行，此时 WAITING 列表未变（合理：已有人被手动接入但广播代价很低） |
+| **已知限制：访客入队时 WS 还未建立** | 入队后到 WS 建立之前如果队列静止（无人出队），访客不会收到初始位次。入队 HTTP 响应已包含 `status=WAITING`，前端应据此展示「排队中」，并在收到第一个 `queue_position` 推送时更新具体位次 |
+| **已知限制：访客 WS 断开后重连** | 重连后不会立即收到当前位次，需等下次有人出队触发广播。如需立即恢复位次，前端可在 WS 连接成功后调用 `GET /api/v1/chat/state` 确认仍在 WAITING，然后用轮询或等待下次广播 |
 
 ## 4.2 时序图 — 手动接入场景
 
@@ -292,11 +282,51 @@ sequenceDiagram
 |---|---|
 | `accept_broadcastsPositionToRemainingWaiting` | accept 成功后，剩余 WAITING 访客收到正确位次 |
 | `accept_noNotification_whenQueueEmpty` | accept 后队列为空，`notifyVisitor` 不被调用 |
-| `autoDispatch_broadcastsPositionAfterAssign` | 自动分配成功后，剩余 WAITING 访客收到更新位次 |
-| `queueDrain_broadcastsPosition_afterCasSuccess` | 队列消化 CAS 成功后广播位次 |
-| `queueDrain_noPosition_afterCasFailure` | CAS 失败（已被手动接入）时不广播 |
+| `queueDrain_broadcastsPosition_afterLockRelease` | 队列消化（tryDispatchFromQueue）锁释放后广播位次 |
+| `queueDrain_stillBroadcasts_afterCasFailure` | CAS 失败（已被手动接入）时，`tryDispatchFromQueue` 仍在锁外广播（队列未变，代价低） |
 | `broadcastQueuePositions_positionOrderMatchesWaitSince` | 位次顺序按 `waitSince` 升序，最早入队的 position=1 |
 | `broadcastQueuePositions_notifyFailure_continuesOtherVisitors` | 某个访客推送失败（WS 断开），不中断对其他访客的广播 |
+| `autoDispatch_doesNotBroadcastPosition` | 新会话自动分配（doAssignNewSession）后，不触发位次广播（WAITING 队列无变化） |
+
+### 测试类 setUp（10 参数构造器）
+
+测试类需适配 `feat/agent-auto-dispatch` worktree 的 10 参数构造器：
+
+```java
+@ExtendWith(MockitoExtension.class)
+class SessionQueueServiceQueuePositionTest {
+
+    @Mock SessionQueueRepository        queueRepository;
+    @Mock AgentOnlineRegistry           agentRegistry;
+    @Mock ConversationMessagePublisher  publisher;
+    @Mock RabbitTemplate                rabbitTemplate;
+    @Mock ConversationPersistRepository persistRepository;
+    @Mock CsatService                   csatService;
+    @Mock VisitorNotifier               visitorNotifier;
+    @Mock CsAgentConfigProvider         configProvider;
+    @Mock RedissonClient                redissonClient;
+    @Mock RLock                         rLock;
+
+    SessionQueueService service;
+
+    @BeforeEach
+    void setUp() throws Exception {
+        // 10 参数：queueRepository, agentRegistry, publisher, rabbitTemplate,
+        //   eventsExchange, persistRepository, csatService, visitorNotifier,
+        //   configProvider, redissonClient
+        service = new SessionQueueService(
+                queueRepository, agentRegistry, publisher, rabbitTemplate,
+                "test.exchange", persistRepository, csatService, visitorNotifier,
+                configProvider, redissonClient);
+
+        // Redisson stub（lenient：部分测试不需要）
+        lenient().when(redissonClient.getLock(anyString())).thenReturn(rLock);
+        lenient().when(rLock.tryLock(0, 3, TimeUnit.SECONDS)).thenReturn(true);
+        lenient().when(rLock.isHeldByCurrentThread()).thenReturn(true);
+        lenient().when(configProvider.getMaxSessionsPerAgent()).thenReturn(5);
+    }
+}
+```
 
 ### 关键测试代码示例
 
@@ -304,7 +334,6 @@ sequenceDiagram
 @Test
 @DisplayName("accept 后剩余两个 WAITING 访客收到正确位次")
 void accept_broadcastsPositionToRemainingWaiting() {
-    // 准备两个 WAITING 访客（按 waitSince 排序）
     SessionQueueItem w1 = new SessionQueueItem(
             "sess-w1", "V1", "", "", 1000L, SessionStatus.WAITING, null);
     SessionQueueItem w2 = new SessionQueueItem(
@@ -314,16 +343,16 @@ void accept_broadcastsPositionToRemainingWaiting() {
 
     when(queueRepository.findById("sess-a")).thenReturn(Optional.of(active));
     when(queueRepository.compareAndSetStatus(eq("sess-a"), any())).thenReturn(true);
-    // accept 后 findByStatus(WAITING) 返回剩余的两个
     when(queueRepository.findByStatus(SessionStatus.WAITING)).thenReturn(List.of(w1, w2));
 
     service.accept("sess-a", "agent-A");
 
-    // 验证位次推送正确
     verify(visitorNotifier).notifyVisitor(eq("sess-w1"),
-            argThat(m -> Integer.valueOf(1).equals(m.get("position")) && Integer.valueOf(2).equals(m.get("total"))));
+            argThat(m -> Integer.valueOf(1).equals(m.get("position"))
+                      && Integer.valueOf(2).equals(m.get("total"))));
     verify(visitorNotifier).notifyVisitor(eq("sess-w2"),
-            argThat(m -> Integer.valueOf(2).equals(m.get("position")) && Integer.valueOf(2).equals(m.get("total"))));
+            argThat(m -> Integer.valueOf(2).equals(m.get("position"))
+                      && Integer.valueOf(2).equals(m.get("total"))));
 }
 
 @Test
@@ -338,17 +367,12 @@ void broadcastQueuePositions_notifyFailure_continuesOtherVisitors() {
             new SessionQueueItem("sess-a", "VA", "", "", 500L, SessionStatus.WAITING, null)));
     when(queueRepository.compareAndSetStatus(any(), any())).thenReturn(true);
     when(queueRepository.findByStatus(SessionStatus.WAITING)).thenReturn(List.of(w1, w2));
-    // w1 推送抛异常（WS 已断开）
-    doThrow(new RuntimeException("WS closed")).when(visitorNotifier)
-            .notifyVisitor(eq("sess-w1"), any());
+    doThrow(new RuntimeException("WS closed"))
+            .when(visitorNotifier).notifyVisitor(eq("sess-w1"), any());
 
-    // 不应抛异常
     assertThatNoException().isThrownBy(() -> service.accept("sess-a", "agent-A"));
-
-    // w2 仍然收到推送
     verify(visitorNotifier).notifyVisitor(eq("sess-w2"), any());
 }
-```
 
 ## 5.3 验收标准
 
