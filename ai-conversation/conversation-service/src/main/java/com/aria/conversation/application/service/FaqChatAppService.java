@@ -1,5 +1,6 @@
 package com.aria.conversation.application.service;
 
+import com.aria.common.core.exception.BusinessException;
 import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.domain.model.IntentResult;
@@ -10,6 +11,7 @@ import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
+import com.aria.conversation.infrastructure.persistence.ConversationPersistRepository;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -55,12 +57,14 @@ public class FaqChatAppService {
     private final KnowledgeServiceClient         knowledgeServiceClient;
     /** 意图分类服务（@Primary 实现为 HybridIntentService），Tier1 规则 → Tier2 LLM */
     private final IntentService                  intentService;
-    /** 会话队列服务，提供幂等初始化、入队和状态查询能力 */
+    /** 会话队列服务，提供入队和状态查询能力 */
     private final SessionQueueService            sessionQueueService;
     /** JSON 序列化工具，用于构造 TransferPayload、sources 等 SSE 载荷 */
     private final ObjectMapper                   objectMapper;
     /** CSAT 服务，AI 对话流结束后追加评价邀请事件 */
     private final CsatService                    csatService;
+    /** 对话持久化仓储，用于消息发送前的会话存在性校验 */
+    private final ConversationPersistRepository  persistRepository;
 
     /**
      * 已接入人工时的消息处理：仅追加历史记录并返回提示，不调用 AI。
@@ -82,8 +86,12 @@ public class FaqChatAppService {
      * @return ChatEvent 流，包含 token 事件，RAG 命中时首先发送 sources 事件
      */
     public Flux<ChatEvent> stream(String sessionId, String message) {
+        // 会话必须已通过 /session/init 接口创建，此处做防御性校验
+        if (!persistRepository.existsBySessionId(sessionId)) {
+            log.warn("[FAQ] 会话不存在 sessionId={}，前端可能未调用 /session/init", sessionId);
+            return Flux.just(ChatEvent.error("会话不存在，请刷新页面重试", objectMapper));
+        }
         return Mono.fromCallable(() -> {
-                    sessionQueueService.initAiChatSession(sessionId);
                     historyRepository.append(sessionId, MessageRole.USER.getValue(), message);
                     List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(message);
                     IntentResult intent = intentService.classify(message);

@@ -92,6 +92,7 @@ public class SessionQueueService {
                 Instant.now().getEpochSecond(), SessionStatus.WAITING, null
         );
         try {
+            // save 到 redis
             queueRepository.save(item);
         } catch (IllegalStateException e) {
             log.error("[SessionQueue] enqueue 失败 sessionId={}", sessionId, e);
@@ -184,16 +185,6 @@ public class SessionQueueService {
                 .forEach(result::add);
 
         return result;
-    }
-
-    /**
-     * 幂等初始化 AI_CHAT 会话记录（ChatAppService 在首条消息时调用）。
-     * 若记录已存在，静默跳过；若已是 WAITING/ACTIVE，同样跳过（转人工流程已覆盖）。
-     *
-     * @param sessionId 会话唯一标识
-     */
-    public void initAiChatSession(String sessionId) {
-        persistRepository.initAiChatSession(sessionId, OffsetDateTime.now());
     }
 
     /**

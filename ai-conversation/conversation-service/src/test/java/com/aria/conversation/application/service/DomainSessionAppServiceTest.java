@@ -26,7 +26,6 @@ import static org.mockito.Mockito.*;
 @DisplayName("DomainSessionAppService")
 class DomainSessionAppServiceTest {
 
-    @Mock private SessionQueueService            sessionQueueService;
     @Mock private SessionDomainRepository        sessionDomainRepo;
     @Mock private SessionDomainSwitchRepository  domainSwitchRepo;
     @Mock private ConversationHistoryRepository  historyRepository;
@@ -36,7 +35,7 @@ class DomainSessionAppServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new DomainSessionAppService(sessionQueueService, sessionDomainRepo,
+        service = new DomainSessionAppService(sessionDomainRepo,
                 domainSwitchRepo, historyRepository, domainRoutingService);
     }
 
