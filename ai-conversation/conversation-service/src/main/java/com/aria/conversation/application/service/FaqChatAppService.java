@@ -1,6 +1,5 @@
 package com.aria.conversation.application.service;
 
-import com.aria.common.core.exception.BusinessException;
 import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.domain.model.IntentResult;
