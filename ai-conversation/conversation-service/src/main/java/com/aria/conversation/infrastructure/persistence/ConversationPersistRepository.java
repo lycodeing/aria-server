@@ -181,6 +181,7 @@ public class ConversationPersistRepository {
                 .set(ConversationEntity::getTransferReason, transferReason)
                 .set(ConversationEntity::getTag,            tag != null && !tag.isBlank() ? tag : "咨询")
                 .set(ConversationEntity::getStartedAt,      now)
+                .set(ConversationEntity::getUpdatedAt,      now)
                 .eq(ConversationEntity::getSessionId,       sessionId)
                 .eq(ConversationEntity::getStatus,          SessionStatus.AI_CHAT.getValue())
         );
