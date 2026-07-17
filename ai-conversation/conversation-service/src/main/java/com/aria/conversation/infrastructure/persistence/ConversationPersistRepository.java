@@ -226,6 +226,20 @@ public class ConversationPersistRepository {
     }
 
     /**
+     * 按 visitor_id 查询历史会话列表（不含当前会话）。
+     *
+     * @param visitorId        访客唯一标识（X-Anonymous-Id）
+     * @param excludeSessionId 要排除的会话 ID（当前会话），可为 null
+     * @param limit            最大返回条数
+     * @return 历史会话列表，按 started_at 倒序
+     */
+    public List<ConversationEntity> getVisitorHistoryByVisitorId(String visitorId,
+                                                                  String excludeSessionId,
+                                                                  int limit) {
+        return conversationMapper.selectByVisitorId(visitorId, excludeSessionId, limit);
+    }
+
+    /**
      * 批量统计多个会话的消息总数，避免 N+1 查询。
      *
      * @param sessionIds 会话 ID 列表
