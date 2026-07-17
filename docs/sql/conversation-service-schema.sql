@@ -954,3 +954,23 @@ CREATE INDEX idx_csat_agent_rated ON cs_conversation.cs_csat_rating (agent_id, r
 COMMENT ON TABLE  cs_conversation.cs_csat_rating         IS '会话满意度评价';
 COMMENT ON COLUMN cs_conversation.cs_csat_rating.channel IS 'AI=AI对话, HUMAN=人工接待';
 COMMENT ON COLUMN cs_conversation.cs_csat_rating.status  IS 'PENDING/RATED/EXPIRED/SKIPPED';
+
+--
+-- message feedback (cs_conversation schema)
+-- 访客对 AI/座席消息的点赞/点踩，(session_id, seq) 唯一，null feedback 表示取消
+--
+CREATE TABLE cs_conversation.cs_message_feedback (
+    id          BIGSERIAL PRIMARY KEY,
+    session_id  VARCHAR(64) NOT NULL,
+    seq         BIGINT      NOT NULL,
+    feedback    VARCHAR(8)  NOT NULL,
+    visitor_id  VARCHAR(64),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_msg_feedback UNIQUE (session_id, seq),
+    CONSTRAINT ck_msg_feedback_value CHECK (feedback IN ('up','down'))
+);
+CREATE INDEX idx_msg_feedback_session ON cs_conversation.cs_message_feedback(session_id);
+COMMENT ON TABLE  cs_conversation.cs_message_feedback           IS '访客对单条消息的反馈（up/down），(session_id, seq) 唯一';
+COMMENT ON COLUMN cs_conversation.cs_message_feedback.seq       IS '对应 cs_conversation_message.seq，允许历史消息（seq 非空）被反馈';
+COMMENT ON COLUMN cs_conversation.cs_message_feedback.feedback  IS '反馈类型：up=点赞, down=点踩；取消反馈则删除该行';

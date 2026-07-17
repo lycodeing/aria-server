@@ -1,5 +1,6 @@
 package com.aria.conversation.application.service;
 
+import com.aria.conversation.application.service.payload.AuthRequiredPayload;
 import com.aria.conversation.application.service.payload.DomainSwitchPayload;
 import com.aria.conversation.application.service.payload.ErrorPayload;
 import com.aria.conversation.application.service.payload.TokenPayload;
@@ -78,6 +79,15 @@ public record ChatEvent(String eventType, String data) {
          */
         public static final String CSAT_REQUEST = "csat_request";
 
+        /**
+         * 需要短信验证信号，data 为 {@link AuthRequiredPayload} JSON。
+         * 前端收到后弹起手机号验证浮层，验证通过后前端负责回放被阻塞的消息。
+         *
+         * <p>本常量与工厂方法在此 PR 中先定义骨架，实际触发点由后续 PR
+         * （意图/DIT 规则）接入。
+         */
+        public static final String AUTH_REQUIRED = "auth_required";
+
         private EventType() { /* 工具类，不允许实例化 */ }
     }
 
@@ -148,5 +158,16 @@ public record ChatEvent(String eventType, String data) {
      */
     public static ChatEvent domainSwitch(String targetDomain, ObjectMapper mapper) {
         return new ChatEvent(EventType.DOMAIN_SWITCH, SseJson.encode(mapper, new DomainSwitchPayload(targetDomain)));
+    }
+
+    /**
+     * 需要短信验证信号。data 为 {@link AuthRequiredPayload} JSON。
+     *
+     * <p>骨架方法：本 PR 仅提供工厂，实际发射点由后续 PR 在意图判定/DIT pipeline 内接入。
+     *
+     * @param reason 触发原因，可为 null（前端会展示默认提示）
+     */
+    public static ChatEvent authRequired(String reason, ObjectMapper mapper) {
+        return new ChatEvent(EventType.AUTH_REQUIRED, SseJson.encode(mapper, new AuthRequiredPayload(reason)));
     }
 }

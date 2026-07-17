@@ -185,12 +185,8 @@ public class FaqChatAppService {
         return flux.concatWith(Flux.defer(() -> {
             try {
                 CsatRatingDO csat = csatService.createInvitation(sessionId, null, null, "AI");
-                String payload = objectMapper.writeValueAsString(Map.of(
-                        "csatId",    csat.getId(),
-                        "sessionId", sessionId,
-                        "message",   "请对本次服务进行评价",
-                        "expiresAt", csat.getExpiredAt().toString()
-                ));
+                String payload = objectMapper.writeValueAsString(
+                        com.aria.conversation.application.service.support.CsatInvites.payload(csat));
                 return Flux.just(new ChatEvent(ChatEvent.EventType.CSAT_REQUEST, payload));
             } catch (Exception e) {
                 log.warn("[CSAT] AI 流追加评价邀请失败 sessionId={}", sessionId, e);

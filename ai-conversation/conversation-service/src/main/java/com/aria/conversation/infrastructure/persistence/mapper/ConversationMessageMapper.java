@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.persistence.mapper;
 
+import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationMessageEntity;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
@@ -9,6 +10,7 @@ import org.apache.ibatis.annotations.Param;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * 对话消息 Mapper。
@@ -103,5 +105,25 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
                         .orderByDesc(ConversationMessageEntity::getSeq)
                         .last("LIMIT 1"));
         return one != null && one.getSeq() != null ? one.getSeq() : 0L;
+    }
+
+    /**
+     * 查询指定 session 最近一条 assistant 消息的 seq。
+     *
+     * <p>用于消息反馈接口：当前端未指定 seq 时，回落到"最新 AI 回复"。
+     * 只考虑 seq 非空的行；DIT 迁移前的历史 assistant 消息 seq=NULL 不参与。
+     *
+     * @param sessionId 会话唯一标识
+     * @return 最近一条 assistant 消息的 seq，无数据时返回空
+     */
+    default Optional<Long> selectLastAssistantSeq(@Param("sessionId") String sessionId) {
+        ConversationMessageEntity one = selectOne(
+                Wrappers.lambdaQuery(ConversationMessageEntity.class)
+                        .eq(ConversationMessageEntity::getSessionId, sessionId)
+                        .eq(ConversationMessageEntity::getRole, MessageRole.ASSISTANT)
+                        .isNotNull(ConversationMessageEntity::getSeq)
+                        .orderByDesc(ConversationMessageEntity::getSeq)
+                        .last("LIMIT 1"));
+        return one != null && one.getSeq() != null ? Optional.of(one.getSeq()) : Optional.empty();
     }
 }
