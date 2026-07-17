@@ -2,6 +2,7 @@ package com.aria.conversation.infrastructure.persistence.entity;
 
 import com.aria.conversation.domain.SessionStatus;
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -80,4 +81,16 @@ public class ConversationEntity {
 
     /** 记录最后更新时间（由数据库触发器自动维护） */
     private OffsetDateTime updatedAt;
+
+    /** 访客唯一标识，前端 localStorage 生成的 anonymousId，历史数据为 null */
+    @TableField("visitor_id")
+    private String visitorId;
+
+    /** 访客 IP，取 X-Forwarded-For 首个地址或直连 RemoteAddr，支持 IPv4/IPv6，历史数据为 null */
+    @TableField("visitor_ip")
+    private String visitorIp;
+
+    /** 访客设备信息，原始 User-Agent 字符串，历史数据为 null */
+    @TableField("visitor_device")
+    private String visitorDevice;
 }
