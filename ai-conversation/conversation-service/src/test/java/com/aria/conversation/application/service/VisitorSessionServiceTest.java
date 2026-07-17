@@ -45,9 +45,9 @@ class VisitorSessionServiceTest {
         ConversationEntity existing = new ConversationEntity();
         existing.setSessionId("guest-existingsess");
         existing.setStatus(SessionStatus.AI_CHAT);
-        when(persistRepository.findActiveByVisitorId("v_abc")).thenReturn(Optional.of(existing));
+        when(persistRepository.findActiveByVisitorId("vis_abc_001")).thenReturn(Optional.of(existing));
 
-        InitSessionResult result = service.getOrCreate("v_abc", "张三", "1.2.3.4", "Mozilla/5.0");
+        InitSessionResult result = service.getOrCreate("vis_abc_001", "张三", "1.2.3.4", "Mozilla/5.0");
 
         assertThat(result.sessionId()).isEqualTo("guest-existingsess");
         assertThat(result.status()).isEqualTo(SessionStatus.AI_CHAT);
@@ -57,15 +57,15 @@ class VisitorSessionServiceTest {
 
     @Test
     void getOrCreate_noActiveSession_createsNewSession() {
-        when(persistRepository.findActiveByVisitorId("v_new")).thenReturn(Optional.empty());
+        when(persistRepository.findActiveByVisitorId("vis_new_001")).thenReturn(Optional.empty());
 
-        InitSessionResult result = service.getOrCreate("v_new", null, "1.2.3.4", "Mozilla/5.0");
+        InitSessionResult result = service.getOrCreate("vis_new_001", null, "1.2.3.4", "Mozilla/5.0");
 
         assertThat(result.sessionId()).startsWith("guest-");
         assertThat(result.status()).isEqualTo(SessionStatus.AI_CHAT);
         assertThat(result.isNew()).isTrue();
         verify(persistRepository).createAiChatSession(
-                eq(result.sessionId()), eq("v_new"), eq("访客"),
+                eq(result.sessionId()), eq("vis_new_001"), eq("访客"),
                 eq("1.2.3.4"), eq("Mozilla/5.0"), any());
     }
 
@@ -83,11 +83,11 @@ class VisitorSessionServiceTest {
 
     @Test
     void getOrCreate_visitorNameNull_defaultsToGuestName() {
-        when(persistRepository.findActiveByVisitorId("v_noname")).thenReturn(Optional.empty());
+        when(persistRepository.findActiveByVisitorId("vis_noname1")).thenReturn(Optional.empty());
 
-        InitSessionResult result = service.getOrCreate("v_noname", null, null, null);
+        InitSessionResult result = service.getOrCreate("vis_noname1", null, null, null);
 
         verify(persistRepository).createAiChatSession(
-                any(), eq("v_noname"), eq("访客"), isNull(), isNull(), any());
+                any(), eq("vis_noname1"), eq("访客"), isNull(), isNull(), any());
     }
 }
