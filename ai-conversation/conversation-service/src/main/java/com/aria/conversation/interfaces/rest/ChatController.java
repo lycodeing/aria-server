@@ -21,7 +21,6 @@ import reactor.core.publisher.Flux;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * 对话接口。
@@ -44,7 +43,6 @@ import java.util.UUID;
 public class ChatController {
 
     // ---- 常量定义 ----
-    private static final String GUEST_SESSION_PREFIX = "guest-";
     private static final String DEFAULT_TRANSFER_REASON = "用户主动请求转人工";
     private static final String DEFAULT_TAG = "咨询";
 
@@ -199,12 +197,17 @@ public class ChatController {
     // ---- 私有工具方法 ----
 
     /**
-     * 解析 sessionId：前端传入时校验格式；未传则生成合规 ID。
-     * 格式非法时返回 null。
+     * 校验 sessionId 格式。
+     *
+     * <p>sessionId 为必传，前端须通过 {@code POST /api/v1/chat/session/init} 获取后携带。
+     * null 或格式非法时返回 null，调用方负责返回错误响应。
+     *
+     * @param sessionId 前端传入的会话 ID
+     * @return 合法的 sessionId，或 null（表示非法）
      */
     private String resolveSessionId(String sessionId) {
-        if (sessionId == null) {
-            return GUEST_SESSION_PREFIX + UUID.randomUUID().toString().replace("-", "");
+        if (sessionId == null || sessionId.isBlank()) {
+            return null;
         }
         return SESSION_ID_PATTERN.matcher(sessionId).matches() ? sessionId : null;
     }
