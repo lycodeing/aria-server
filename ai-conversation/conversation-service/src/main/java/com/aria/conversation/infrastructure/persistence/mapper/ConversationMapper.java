@@ -204,4 +204,41 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                 .isNull(ConversationEntity::getFirstReplyAt)
         );
     }
+
+    /**
+     * 按 visitor_id 查询非 CLOSED 的会话，按 started_at 倒序，最多返回 1 条。
+     * 利用 idx_cs_conv_visitor_id 部分索引，避免全表扫描。
+     *
+     * @param visitorId 访客唯一标识
+     * @return 最近一条活跃会话，visitor_id 为 null 或不存在时返回空列表
+     */
+    default List<ConversationEntity> selectActiveByVisitorId(@Param("visitorId") String visitorId) {
+        return selectList(
+            Wrappers.lambdaQuery(ConversationEntity.class)
+                .eq(ConversationEntity::getVisitorId, visitorId)
+                .ne(ConversationEntity::getStatus, SessionStatus.CLOSED.getValue())
+                .orderByDesc(ConversationEntity::getStartedAt)
+                .last("LIMIT 1")
+        );
+    }
+
+    /**
+     * 按 visitor_id 查询历史会话，排除指定 sessionId，按 started_at 倒序。
+     *
+     * @param visitorId        访客唯一标识
+     * @param excludeSessionId 要排除的会话 ID（当前会话），可为 null
+     * @param limit            最大返回条数
+     * @return 历史会话列表
+     */
+    default List<ConversationEntity> selectByVisitorId(@Param("visitorId") String visitorId,
+                                                        @Param("excludeSessionId") String excludeSessionId,
+                                                        @Param("limit") int limit) {
+        return selectList(
+            Wrappers.lambdaQuery(ConversationEntity.class)
+                .eq(ConversationEntity::getVisitorId, visitorId)
+                .ne(excludeSessionId != null, ConversationEntity::getSessionId, excludeSessionId)
+                .orderByDesc(ConversationEntity::getStartedAt)
+                .last("LIMIT " + limit)
+        );
+    }
 }

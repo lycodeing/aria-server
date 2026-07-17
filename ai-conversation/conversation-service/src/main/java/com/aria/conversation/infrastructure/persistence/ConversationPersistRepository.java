@@ -1,19 +1,21 @@
 package com.aria.conversation.infrastructure.persistence;
 
-import org.springframework.dao.DuplicateKeyException;
 import com.aria.conversation.domain.SessionStatus;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationMessageEntity;
 import com.aria.conversation.infrastructure.persistence.mapper.ConversationMapper;
 import com.aria.conversation.infrastructure.persistence.mapper.ConversationMessageMapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Repository;
 
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * 对话持久化 Repository。
@@ -34,7 +36,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class ConversationPersistRepository {
 
-    private final ConversationMapper        conversationMapper;
+    private final ConversationMapper conversationMapper;
     private final ConversationMessageMapper messageMapper;
 
     /**
@@ -48,8 +50,8 @@ public class ConversationPersistRepository {
      * @param startedAt      会话开始时间
      */
     public void startConversation(String sessionId, String visitorName,
-                                   String transferReason, String tag,
-                                   OffsetDateTime startedAt) {
+                                  String transferReason, String tag,
+                                  OffsetDateTime startedAt) {
         ConversationEntity entity = new ConversationEntity();
         entity.setSessionId(sessionId);
         entity.setVisitorName(visitorName != null ? visitorName : "访客");
@@ -66,16 +68,14 @@ public class ConversationPersistRepository {
         } catch (DuplicateKeyException e) {
             // 可能是 AI_CHAT 记录，用户后来转人工时需要升级为 WAITING
             int upgraded = conversationMapper.update(
-                    com.baomidou.mybatisplus.core.toolkit.Wrappers
-                            .lambdaUpdate(ConversationEntity.class)
-                            .set(ConversationEntity::getStatus,     SessionStatus.WAITING.getValue())
+                    Wrappers.lambdaUpdate(ConversationEntity.class)
+                            .set(ConversationEntity::getStatus, SessionStatus.WAITING.getValue())
                             .set(ConversationEntity::getVisitorName, entity.getVisitorName())
                             .set(ConversationEntity::getTransferReason, entity.getTransferReason())
-                            .set(ConversationEntity::getTag,         entity.getTag())
-                            .set(ConversationEntity::getStartedAt,   entity.getStartedAt())
-                            .eq(ConversationEntity::getSessionId,    sessionId)
-                            .eq(ConversationEntity::getStatus,
-                                    SessionStatus.AI_CHAT.getValue())
+                            .set(ConversationEntity::getTag, entity.getTag())
+                            .set(ConversationEntity::getStartedAt, entity.getStartedAt())
+                            .eq(ConversationEntity::getSessionId, sessionId)
+                            .eq(ConversationEntity::getStatus, SessionStatus.AI_CHAT.getValue())
             );
             if (upgraded > 0) {
                 log.debug("[Persist] AI_CHAT 会话升级为 WAITING sessionId={}", sessionId);
@@ -117,6 +117,92 @@ public class ConversationPersistRepository {
         } else {
             log.debug("[Persist] 会话转交 sessionId={} → agentId={}", sessionId, targetAgentId);
         }
+    }
+
+    /**
+     * 按 visitor_id 查询最近一条非 CLOSED 会话。
+     *
+     * @param visitorId 访客唯一标识（X-Anonymous-Id）
+     * @return 最近一条活跃会话；visitor_id 为 null 或无活跃会话时返回 empty
+     */
+    public Optional<ConversationEntity> findActiveByVisitorId(String visitorId) {
+        List<ConversationEntity> list = conversationMapper.selectActiveByVisitorId(visitorId);
+        return list.isEmpty() ? Optional.empty() : Optional.of(list.get(0));
+    }
+
+    /**
+     * 创建 AI_CHAT 状态的新会话，包含访客唯一标识和设备信息。
+     * 调用方应通过分布式锁保证同一 visitorId 不会并发创建。
+     *
+     * @param sessionId     会话唯一标识
+     * @param visitorId     访客唯一标识（前端 localStorage UUID）
+     * @param visitorName   访客展示名称
+     * @param visitorIp     访客 IP（X-Forwarded-For 或 RemoteAddr）
+     * @param visitorDevice 访客设备信息（User-Agent）
+     * @param now           会话开始时间
+     */
+    public void createAiChatSession(String sessionId, String visitorId,
+                                     String visitorName, String visitorIp,
+                                     String visitorDevice, OffsetDateTime now) {
+        ConversationEntity entity = new ConversationEntity();
+        entity.setSessionId(sessionId);
+        entity.setVisitorId(visitorId);
+        entity.setVisitorName(visitorName);
+        entity.setVisitorIp(visitorIp);
+        entity.setVisitorDevice(visitorDevice);
+        entity.setTransferReason("");
+        entity.setTag("AI 对话");
+        entity.setStatus(SessionStatus.AI_CHAT);
+        entity.setStartedAt(now);
+        entity.setCreatedAt(now);
+        entity.setUpdatedAt(now);
+        conversationMapper.insert(entity);
+        log.debug("[Persist] 创建 AI_CHAT 会话 sessionId={} visitorId={}", sessionId, visitorId);
+    }
+
+    /**
+     * 转人工：将 AI_CHAT 状态的会话升级为 WAITING（纯 UPDATE，无 insert 兜底）。
+     * 新设计下转人工时会话一定已存在，insert 兜底已无必要。
+     *
+     * @param sessionId      会话唯一标识
+     * @param visitorName    访客名称
+     * @param transferReason 转接原因
+     * @param tag            问题分类标签
+     * @param now            更新时间
+     * @return 受影响行数；0 表示会话不存在或状态已超过 WAITING（记 warn 日志）
+     */
+    public int upgradeToWaiting(String sessionId, String visitorName,
+                                 String transferReason, String tag,
+                                 OffsetDateTime now) {
+        int rows = conversationMapper.update(
+            Wrappers.lambdaUpdate(ConversationEntity.class)
+                .set(ConversationEntity::getStatus,         SessionStatus.WAITING.getValue())
+                .set(ConversationEntity::getVisitorName,    visitorName)
+                .set(ConversationEntity::getTransferReason, transferReason)
+                .set(ConversationEntity::getTag,            tag != null && !tag.isBlank() ? tag : "咨询")
+                .set(ConversationEntity::getStartedAt,      now)
+                .eq(ConversationEntity::getSessionId,       sessionId)
+                .eq(ConversationEntity::getStatus,          SessionStatus.AI_CHAT.getValue())
+        );
+        if (rows == 0) {
+            log.warn("[Persist] upgradeToWaiting 影响 0 行，sessionId={} 可能不存在或已超过 WAITING 状态",
+                     sessionId);
+        }
+        return rows;
+    }
+
+    /**
+     * 检查指定 sessionId 是否存在且未关闭（用于消息发送前的会话存在性校验）。
+     *
+     * @param sessionId 会话唯一标识
+     * @return true 表示会话存在且非 CLOSED
+     */
+    public boolean existsBySessionId(String sessionId) {
+        return conversationMapper.exists(
+            Wrappers.lambdaQuery(ConversationEntity.class)
+                .eq(ConversationEntity::getSessionId, sessionId)
+                .ne(ConversationEntity::getStatus,    SessionStatus.CLOSED.getValue())
+        );
     }
 
     /**
