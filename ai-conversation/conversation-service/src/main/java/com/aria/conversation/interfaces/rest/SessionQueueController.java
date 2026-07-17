@@ -215,17 +215,18 @@ public class SessionQueueController {
     /**
      * 查询同一访客的历史会话列表（不含当前会话）。
      *
-     * @param visitorName      访客名称，必填，最大 128 字符
+     * @param visitorId        访客唯一标识（X-Anonymous-Id Header），必填，最大 64 字符
      * @param excludeSessionId 排除的会话 ID（通常为当前会话，可选）
      * @return 历史会话列表，按 startedAt 倒序，最多 20 条
      */
     @GetMapping("/visitor-history")
     public R<List<VisitorHistoryVO>> getVisitorHistory(
-            @RequestParam @NotBlank(message = "visitorName 不能为空") @Size(max = 128) String visitorName,
+            @RequestHeader("X-Anonymous-Id") @NotBlank(message = "X-Anonymous-Id 不能为空")
+            @Size(max = 64) String visitorId,
             @RequestParam(required = false)
             @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "excludeSessionId 格式非法")
             String excludeSessionId) {
-        List<VisitorHistoryDTO> dtos = visitorHistoryService.getVisitorHistory(visitorName, excludeSessionId);
+        List<VisitorHistoryDTO> dtos = visitorHistoryService.getVisitorHistory(visitorId, excludeSessionId);
         List<VisitorHistoryVO> vos = dtos.stream()
                 .map(d -> new VisitorHistoryVO(
                         d.sessionId(), d.tag(), d.status(),

@@ -41,13 +41,13 @@ public class VisitorHistoryService {
     /**
      * 查询指定访客的历史会话列表（不含当前会话）。
      *
-     * @param visitorName      访客名称，不能为空
+     * @param visitorId        访客唯一标识（X-Anonymous-Id），不能为空
      * @param excludeSessionId 要排除的会话 ID（当前会话），可为 null
      * @return 历史会话 DTO 列表，按 startedAt 倒序，最多 {@value #VISITOR_HISTORY_LIMIT} 条
      */
-    public List<VisitorHistoryDTO> getVisitorHistory(String visitorName, String excludeSessionId) {
+    public List<VisitorHistoryDTO> getVisitorHistory(String visitorId, String excludeSessionId) {
         List<ConversationEntity> entities =
-                persistRepository.getVisitorHistory(visitorName, excludeSessionId, VISITOR_HISTORY_LIMIT);
+                persistRepository.getVisitorHistoryByVisitorId(visitorId, excludeSessionId, VISITOR_HISTORY_LIMIT);
         if (entities.isEmpty()) {
             return Collections.emptyList();
         }
