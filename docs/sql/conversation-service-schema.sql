@@ -61,7 +61,10 @@ CREATE TABLE cs_conversation.cs_conversation (
     agent_id character varying(100) DEFAULT NULL::character varying,
     accepted_at timestamp with time zone,
     first_reply_at timestamp with time zone,
-    closed_by character varying(20)
+    closed_by character varying(20),
+    visitor_id      character varying(64)  DEFAULT NULL,
+    visitor_ip      character varying(45)  DEFAULT NULL,
+    visitor_device  character varying(500) DEFAULT NULL
 );
 
 --
@@ -974,3 +977,22 @@ CREATE INDEX idx_msg_feedback_session ON cs_conversation.cs_message_feedback(ses
 COMMENT ON TABLE  cs_conversation.cs_message_feedback           IS '访客对单条消息的反馈（up/down），(session_id, seq) 唯一';
 COMMENT ON COLUMN cs_conversation.cs_message_feedback.seq       IS '对应 cs_conversation_message.seq，允许历史消息（seq 非空）被反馈';
 COMMENT ON COLUMN cs_conversation.cs_message_feedback.feedback  IS '反馈类型：up=点赞, down=点踩；取消反馈则删除该行';
+
+-- 2026-07-17: 访客会话创建统一化改造
+-- 1. 新增访客标识列
+ALTER TABLE cs_conversation.cs_conversation
+    ADD COLUMN IF NOT EXISTS visitor_id     VARCHAR(64)  DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS visitor_ip     VARCHAR(45)  DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS visitor_device VARCHAR(500) DEFAULT NULL;
+
+COMMENT ON COLUMN cs_conversation.cs_conversation.visitor_id
+    IS '访客唯一标识，前端 localStorage 生成的 anonymousId';
+COMMENT ON COLUMN cs_conversation.cs_conversation.visitor_ip
+    IS '访客 IP，取 X-Forwarded-For 首个地址或直连 RemoteAddr，支持 IPv4/IPv6';
+COMMENT ON COLUMN cs_conversation.cs_conversation.visitor_device
+    IS '访客设备信息，原始 User-Agent 字符串';
+
+-- 2. 新增索引（生产执行时用 CONCURRENTLY）
+CREATE INDEX IF NOT EXISTS idx_cs_conv_visitor_id
+    ON cs_conversation.cs_conversation (visitor_id, status)
+    WHERE visitor_id IS NOT NULL;
