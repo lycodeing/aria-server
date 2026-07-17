@@ -96,18 +96,22 @@ class SessionQueueServiceQueueDrainTest {
     }
 
     @Test
-    @DisplayName("registerAgent 后 WAITING 会话被自动分配")
+    @DisplayName("registerAgent 后 WAITING 会话被自动分配（仅一次，其余 drain 因 CAS 失败跳过）")
     void registerAgent_triggersQueueDrain() throws Exception {
         SessionQueueItem waiting = new SessionQueueItem(
                 "sess-wait", "v2", "", "", 1000L, SessionStatus.WAITING, null);
         when(queueRepository.findAll()).thenReturn(List.of(waiting));
         when(agentRegistry.isOnline("agent-new")).thenReturn(true);
-        when(queueRepository.compareAndSetStatus(eq("sess-wait"), any())).thenReturn(true);
+        // 第一次 CAS 成功（分配给客服），后续 CAS 失败（已被分配）
+        when(queueRepository.compareAndSetStatus(eq("sess-wait"), any()))
+                .thenReturn(true)
+                .thenReturn(false);
 
         service.registerAgent("agent-new", "NewAgent");
-        Thread.sleep(200);
+        Thread.sleep(300); // registerAgent 触发 maxSessions 次 async drain
 
-        verify(publisher).publishSessionAccept(eq("sess-wait"), eq("agent-new"), anyLong());
+        // 只应分配一次
+        verify(publisher, times(1)).publishSessionAccept(eq("sess-wait"), eq("agent-new"), anyLong());
     }
 
     @Test

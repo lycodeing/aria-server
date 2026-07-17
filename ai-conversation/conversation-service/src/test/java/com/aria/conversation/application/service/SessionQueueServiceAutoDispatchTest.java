@@ -165,7 +165,9 @@ class SessionQueueServiceAutoDispatchTest {
         SessionQueueItem raced = new SessionQueueItem(
                 "race", "v", "", "", 0L, SessionStatus.ACTIVE, "agent-A");
         when(queueRepository.findAll()).thenReturn(List.of(), List.of(raced));
-        // isOnline 不会被调用（countActiveSessions 已短路 && 运算）
+        // isAgentAvailable: isOnline 在左侧先执行，但此场景 isOnline 未被 stub
+        // → Mockito 默认返回 false，短路后 countActiveSessions 不调用
+        // 实际效果：二次校验不通过，降级 WAITING（符合测试意图）
 
         service.enqueue("sess-6", "v6", "reason", "tag");
 

@@ -48,7 +48,11 @@ import java.util.regex.Pattern;
  * <p>本类不直接操作 Redis，所有 Redis 细节由 Repository 层封装。
  *
  * <p>状态机（由 {@link SessionStatus} 枚举保证合法转换）：
- * <pre>WAITING → ACTIVE → CLOSED</pre>
+ * <pre>
+ *   AI_CHAT → ACTIVE  → CLOSED  （自动分配：直接跳过 WAITING）
+ *   AI_CHAT → WAITING → ACTIVE → CLOSED  （全员满员时排队）
+ *   AI_CHAT → CLOSED             （AI 对话直接结束）
+ * </pre>
  */
 @Slf4j
 @Service
@@ -105,9 +109,10 @@ public class SessionQueueService {
                 Instant.now().getEpochSecond(), SessionStatus.WAITING, null
         );
         // 优先尝试推送给有空余名额的在线客服，避免访客进入排队等待
-        boolean dispatched = tryAutoDispatch(sessionId, item);
-        if (dispatched) {
-            return item; // 已自动分配，不需要写 WAITING 或广播队列更新
+        // 返回 Optional：存在则为已持久化的 ACTIVE 项（含真实 agentId），供 HTTP 响应使用
+        Optional<SessionQueueItem> dispatched = tryAutoDispatch(sessionId, item);
+        if (dispatched.isPresent()) {
+            return dispatched.get();
         }
         // 无空闲客服：持久化 WAITING，广播通知所有在线客服
         try {
@@ -400,8 +405,13 @@ public class SessionQueueService {
     /** 注册座席上线（SSE 连接建立时调用）。 */
     public void registerAgent(String agentId, String displayName) {
         agentRegistry.register(agentId, displayName);
-        // 新客服上线，sessions=0，优先接待等待最久的访客
-        CompletableFuture.runAsync(() -> tryDispatchFromQueue(agentId));
+        // 新客服上线，sessions=0，最多消化 maxSessions 个排队会话
+        // 每次 tryDispatchFromQueue 持锁，串行消化，防止并发超额
+        // 注意：lock contention 时单次 tryLock(wait=0) 会跳过，属预期行为（窗口极短，<5ms）
+        int max = csAgentConfigProvider.getMaxSessionsPerAgent();
+        for (int i = 0; i < max; i++) {
+            CompletableFuture.runAsync(() -> tryDispatchFromQueue(agentId));
+        }
     }
 
     /** 注销座席下线（SSE 连接断开时调用）。引用计数归零后才真正下线。 */
@@ -461,16 +471,16 @@ public class SessionQueueService {
      * 尝试将会话自动分配给负载最低的空闲客服。
      * 按 sessions 升序遍历候选，第一个通过加锁+二次校验的客服即为目标。
      *
-     * @return true=分配成功；false=无空闲客服，调用方应写 WAITING
+     * @return 分配成功时返回已持久化的 ACTIVE 队列项（含真实 agentId）；
+     *         无空闲客服时返回 empty，调用方应写 WAITING
      */
-    private boolean tryAutoDispatch(String sessionId, SessionQueueItem item) {
+    private Optional<SessionQueueItem> tryAutoDispatch(String sessionId, SessionQueueItem item) {
         int max = csAgentConfigProvider.getMaxSessionsPerAgent();
         for (OnlineAgentVO candidate : findAvailableCandidates(max)) {
-            if (tryAssignNewSession(sessionId, item, candidate.id(), max)) {
-                return true;
-            }
+            Optional<SessionQueueItem> result = tryAssignNewSession(sessionId, item, candidate.id(), max);
+            if (result.isPresent()) return result;
         }
-        return false;
+        return Optional.empty();
     }
 
     /**
@@ -485,22 +495,27 @@ public class SessionQueueService {
 
     /**
      * 对单个候选客服：加锁 → 二次校验 → 执行分配。
-     * 加锁失败或校验不通过均返回 false。
+     * 加锁失败或校验不通过均返回 empty。
      */
-    private boolean tryAssignNewSession(String sessionId, SessionQueueItem item,
-                                        String agentId, int max) {
-        return withAgentLock(agentId, () -> {
+    private Optional<SessionQueueItem> tryAssignNewSession(String sessionId, SessionQueueItem item,
+                                                           String agentId, int max) {
+        // 用数组 holder 将锁内的结果传递到锁外（lambda 不允许捕获非 final 局部变量）
+        SessionQueueItem[] holder = {null};
+        boolean success = withAgentLock(agentId, () -> {
             if (!isAgentAvailable(agentId, max)) return false;
-            doAssignNewSession(sessionId, item, agentId);
+            holder[0] = doAssignNewSession(sessionId, item, agentId);
             return true;
         });
+        return success ? Optional.of(holder[0]) : Optional.empty();
     }
 
     /**
      * 执行新会话的完整分配动作：Redis → MQ（SESSION_START + SESSION_ACCEPT）→ SSE fanout。
      * DB 由 MQ 消费者（ConversationMessageConsumer）异步写入，与现有 enqueue+accept 路径一致。
+     *
+     * @return 已持久化到 Redis 的 ACTIVE 队列项，供调用链向上传递给 HTTP 响应
      */
-    private void doAssignNewSession(String sessionId, SessionQueueItem item, String agentId) {
+    private SessionQueueItem doAssignNewSession(String sessionId, SessionQueueItem item, String agentId) {
         SessionQueueItem activeItem = buildActiveItem(item, agentId);
         queueRepository.save(activeItem);
         publishSessionStart(sessionId, item.userName(), item.transferReason(),
@@ -508,6 +523,7 @@ public class SessionQueueService {
         publishSessionAccept(sessionId, agentId, Instant.now().getEpochSecond());
         publishEvent(new SessionEvent(SessionEventType.AUTO_ASSIGNED, activeItem));
         log.info("[AutoDispatch] 会话 {} 自动分配给客服 {}", sessionId, agentId);
+        return activeItem;
     }
 
     /**
