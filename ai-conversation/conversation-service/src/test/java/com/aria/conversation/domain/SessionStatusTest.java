@@ -78,10 +78,10 @@ class SessionStatusTest {
     // ---- AI_CHAT 非法转换 ----
 
     @Test
-    @DisplayName("AI_CHAT → ACTIVE 非法（必须先经过 WAITING）")
-    void aiChatToActive_throws() {
-        assertThrows(IllegalStateException.class,
-                () -> SessionStatus.AI_CHAT.transitionTo(SessionStatus.ACTIVE));
+    @DisplayName("AI_CHAT → ACTIVE 合法（自动分配跳过 WAITING）")
+    void aiChatToActive_ok() {
+        SessionStatus result = SessionStatus.AI_CHAT.transitionTo(SessionStatus.ACTIVE);
+        assertEquals(SessionStatus.ACTIVE, result);
     }
 
     @Test

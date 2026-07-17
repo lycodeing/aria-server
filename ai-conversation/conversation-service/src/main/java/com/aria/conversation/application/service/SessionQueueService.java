@@ -5,6 +5,7 @@ import com.aria.conversation.domain.SessionAlreadyAcceptedException;
 import com.aria.conversation.domain.SessionEventType;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.SessionStatus;
+import com.aria.conversation.infrastructure.config.CsAgentConfigProvider;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import com.aria.conversation.infrastructure.mq.ConversationMessagePublisher;
 import com.aria.conversation.infrastructure.persistence.ConversationPersistRepository;
@@ -12,6 +13,8 @@ import com.aria.conversation.infrastructure.repository.AgentOnlineRegistry;
 import com.aria.conversation.infrastructure.repository.SessionQueueRepository;
 import com.aria.conversation.infrastructure.websocket.VisitorNotifier;
 import lombok.extern.slf4j.Slf4j;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -24,6 +27,10 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 /**
@@ -41,7 +48,11 @@ import java.util.regex.Pattern;
  * <p>本类不直接操作 Redis，所有 Redis 细节由 Repository 层封装。
  *
  * <p>状态机（由 {@link SessionStatus} 枚举保证合法转换）：
- * <pre>WAITING → ACTIVE → CLOSED</pre>
+ * <pre>
+ *   AI_CHAT → ACTIVE  → CLOSED  （自动分配：直接跳过 WAITING）
+ *   AI_CHAT → WAITING → ACTIVE → CLOSED  （全员满员时排队）
+ *   AI_CHAT → CLOSED             （AI 对话直接结束）
+ * </pre>
  */
 @Slf4j
 @Service
@@ -59,6 +70,8 @@ public class SessionQueueService {
     private final ConversationPersistRepository  persistRepository;
     private final CsatService                    csatService;
     private final VisitorNotifier                visitorNotifier;
+    private final CsAgentConfigProvider          csAgentConfigProvider;
+    private final RedissonClient                 redissonClient;
 
     public SessionQueueService(
             SessionQueueRepository queueRepository,
@@ -68,22 +81,26 @@ public class SessionQueueService {
             @Value("${conversation.events.exchange}") String eventsExchange,
             ConversationPersistRepository persistRepository,
             CsatService csatService,
-            VisitorNotifier visitorNotifier) {
-        this.queueRepository   = queueRepository;
-        this.agentRegistry     = agentRegistry;
-        this.publisher         = publisher;
-        this.rabbitTemplate    = rabbitTemplate;
-        this.eventsExchange    = eventsExchange;
-        this.persistRepository = persistRepository;
-        this.csatService       = csatService;
-        this.visitorNotifier   = visitorNotifier;
+            VisitorNotifier visitorNotifier,
+            CsAgentConfigProvider csAgentConfigProvider,   // 新增
+            RedissonClient redissonClient) {               // 新增
+        this.queueRepository      = queueRepository;
+        this.agentRegistry        = agentRegistry;
+        this.publisher            = publisher;
+        this.rabbitTemplate       = rabbitTemplate;
+        this.eventsExchange       = eventsExchange;
+        this.persistRepository    = persistRepository;
+        this.csatService          = csatService;
+        this.visitorNotifier      = visitorNotifier;
+        this.csAgentConfigProvider = csAgentConfigProvider;
+        this.redissonClient        = redissonClient;
     }
 
     // ---- 队列操作 ----
 
     /**
-     * 用户请求转人工，加入等待队列，广播 Fanout 事件，
-     * 并向持久化 Direct Exchange 发布 SESSION_START 事件。
+     * 用户请求转人工，优先尝试自动分配给空闲客服，无空闲客服时加入等待队列。
+     * 广播 Fanout 事件，并向持久化 Direct Exchange 发布 SESSION_START 事件。
      */
     public SessionQueueItem enqueue(String sessionId, String userName,
                                     String transferReason, String tag) {
@@ -91,6 +108,13 @@ public class SessionQueueService {
                 sessionId, userName, transferReason, tag,
                 Instant.now().getEpochSecond(), SessionStatus.WAITING, null
         );
+        // 优先尝试推送给有空余名额的在线客服，避免访客进入排队等待
+        // 返回 Optional：存在则为已持久化的 ACTIVE 项（含真实 agentId），供 HTTP 响应使用
+        Optional<SessionQueueItem> dispatched = tryAutoDispatch(sessionId, item);
+        if (dispatched.isPresent()) {
+            return dispatched.get();
+        }
+        // 无空闲客服：持久化 WAITING，广播通知所有在线客服
         try {
             queueRepository.save(item);
         } catch (IllegalStateException e) {
@@ -99,7 +123,7 @@ public class SessionQueueService {
         }
         publishEvent(new SessionEvent(SessionEventType.ENQUEUE, item));
         publishSessionStart(sessionId, userName, transferReason, tag, item.waitSince());
-        log.info("[SessionQueue] enqueue sessionId={} userName={}", sessionId, userName);
+        log.info("[SessionQueue] enqueue WAITING sessionId={} userName={}", sessionId, userName);
         return item;
     }
 
@@ -279,6 +303,11 @@ public class SessionQueueService {
             queueRepository.delete(sessionId); // 幂等，无数据时 no-op
             publishSessionEnd(sessionId, closedBy);
             triggerCsatAsync(sessionId, agentIdHolder[0]);
+            // 腾出空位后异步消化排队队列（不阻塞关闭请求）
+            String freedAgent = agentIdHolder[0];
+            if (freedAgent != null) {
+                CompletableFuture.runAsync(() -> tryDispatchFromQueue(freedAgent));
+            }
         } catch (IllegalStateException e) {
             log.warn("[SessionQueue] close 状态机校验失败 sessionId={} msg={}", sessionId, e.getMessage());
         }
@@ -376,6 +405,13 @@ public class SessionQueueService {
     /** 注册座席上线（SSE 连接建立时调用）。 */
     public void registerAgent(String agentId, String displayName) {
         agentRegistry.register(agentId, displayName);
+        // 新客服上线，sessions=0，最多消化 maxSessions 个排队会话
+        // 每次 tryDispatchFromQueue 持锁，串行消化，防止并发超额
+        // 注意：lock contention 时单次 tryLock(wait=0) 会跳过，属预期行为（窗口极短，<5ms）
+        int max = csAgentConfigProvider.getMaxSessionsPerAgent();
+        for (int i = 0; i < max; i++) {
+            CompletableFuture.runAsync(() -> tryDispatchFromQueue(agentId));
+        }
     }
 
     /** 注销座席下线（SSE 连接断开时调用）。引用计数归零后才真正下线。 */
@@ -424,6 +460,166 @@ public class SessionQueueService {
         } catch (Exception e) {
             log.warn("[CSAT] 触发评价邀请失败 sessionId={}", sessionId, e);
         }
+    }
+
+    // ---- 自动分配：tryAutoDispatch 及辅助方法 ----
+
+    /**
+     * 尝试将会话自动分配给负载最低的空闲客服。
+     * 按 sessions 升序遍历候选，第一个通过加锁+二次校验的客服即为目标。
+     *
+     * @return 分配成功时返回已持久化的 ACTIVE 队列项（含真实 agentId）；
+     *         无空闲客服时返回 empty，调用方应写 WAITING
+     */
+    private Optional<SessionQueueItem> tryAutoDispatch(String sessionId, SessionQueueItem item) {
+        int max = csAgentConfigProvider.getMaxSessionsPerAgent();
+        for (OnlineAgentVO candidate : findAvailableCandidates(max)) {
+            Optional<SessionQueueItem> result = tryAssignNewSession(sessionId, item, candidate.id(), max);
+            if (result.isPresent()) return result;
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * 从在线客服中筛选出 sessions < max 的候选列表（已按负载升序）。
+     * 此处为乐观读，仅做粗筛，真正容量校验在持锁后进行。
+     */
+    private List<OnlineAgentVO> findAvailableCandidates(int max) {
+        return getOnlineAgents().stream()
+                .filter(a -> a.sessions() < max)
+                .toList();
+    }
+
+    /**
+     * 对单个候选客服：加锁 → 二次校验 → 执行分配。
+     * 加锁失败或校验不通过均返回 empty。
+     */
+    private Optional<SessionQueueItem> tryAssignNewSession(String sessionId, SessionQueueItem item,
+                                                           String agentId, int max) {
+        // 用数组 holder 将锁内的结果传递到锁外（lambda 不允许捕获非 final 局部变量）
+        SessionQueueItem[] holder = {null};
+        boolean success = withAgentLock(agentId, () -> {
+            if (!isAgentAvailable(agentId, max)) return false;
+            holder[0] = doAssignNewSession(sessionId, item, agentId);
+            return true;
+        });
+        return success ? Optional.of(holder[0]) : Optional.empty();
+    }
+
+    /**
+     * 执行新会话的完整分配动作：Redis → MQ（SESSION_START + SESSION_ACCEPT）→ SSE fanout。
+     * DB 由 MQ 消费者（ConversationMessageConsumer）异步写入，与现有 enqueue+accept 路径一致。
+     *
+     * @return 已持久化到 Redis 的 ACTIVE 队列项，供调用链向上传递给 HTTP 响应
+     */
+    private SessionQueueItem doAssignNewSession(String sessionId, SessionQueueItem item, String agentId) {
+        SessionQueueItem activeItem = buildActiveItem(item, agentId);
+        queueRepository.save(activeItem);
+        publishSessionStart(sessionId, item.userName(), item.transferReason(),
+                item.tag(), item.waitSince());
+        publishSessionAccept(sessionId, agentId, Instant.now().getEpochSecond());
+        publishEvent(new SessionEvent(SessionEventType.AUTO_ASSIGNED, activeItem));
+        log.info("[AutoDispatch] 会话 {} 自动分配给客服 {}", sessionId, agentId);
+        return activeItem;
+    }
+
+    /**
+     * Redisson 分布式锁通用包装：tryLock(wait=0, TTL=3s) → action → unlock。
+     * 加锁失败立即返回 false，不阻塞，不抛异常。
+     */
+    private boolean withAgentLock(String agentId, Supplier<Boolean> action) {
+        RLock lock = redissonClient.getLock("lock:assign:agent:" + agentId);
+        try {
+            if (!lock.tryLock(0, 3, TimeUnit.SECONDS)) return false;
+            try {
+                return action.get();
+            } finally {
+                if (lock.isHeldByCurrentThread()) lock.unlock();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("[AgentLock] 加锁中断，agentId={}", agentId);
+            return false;
+        }
+    }
+
+    /**
+     * 持锁后二次校验：ACTIVE 会话数 < max 且客服在线。
+     */
+    private boolean isAgentAvailable(String agentId, int max) {
+        // isOnline 为单次 Redis hash lookup，代价低；countActiveSessions 需全量扫描，放后面短路
+        return agentRegistry.isOnline(agentId) && countActiveSessions(agentId) < max;
+    }
+
+    /**
+     * 统计指定客服当前 ACTIVE 会话数（全量扫描 Redis Hash）。
+     */
+    private long countActiveSessions(String agentId) {
+        return queueRepository.findAll().stream()
+                .filter(i -> agentId.equals(i.agentId()) && i.status() == SessionStatus.ACTIVE)
+                .count();
+    }
+
+    /** 构造 ACTIVE 状态的队列项（record 不可变，返回新实例）。 */
+    private SessionQueueItem buildActiveItem(SessionQueueItem item, String agentId) {
+        return new SessionQueueItem(
+                item.sessionId(), item.userName(), item.transferReason(),
+                item.tag(), item.waitSince(), SessionStatus.ACTIVE, agentId);
+    }
+
+    // ---- 排队消化：tryDispatchFromQueue 及辅助方法 ----
+
+    /**
+     * 当指定客服腾出空位时，从 WAITING 队列取出等待最久的会话并自动分配。
+     * 仅消化一条（一次空位只消化一条，避免瞬间超额）。
+     * 在异步线程中执行，不阻塞主请求。
+     */
+    private void tryDispatchFromQueue(String agentId) {
+        int max = csAgentConfigProvider.getMaxSessionsPerAgent();
+        boolean acquired = withAgentLock(agentId, () -> {
+            tryAssignOldestWaiting(agentId, max);
+            return true;
+        });
+        if (!acquired) {
+            log.debug("[QueueDrain] 加锁竞争，跳过本次消化 agentId={}", agentId);
+        }
+    }
+
+    /**
+     * 持锁后：二次校验有空位，取最早的 WAITING 会话执行分配。
+     */
+    private void tryAssignOldestWaiting(String agentId, int max) {
+        if (!isAgentAvailable(agentId, max)) return;
+        pickOldestWaiting().ifPresent(entry ->
+                doDispatchWaitingSession(entry.getKey(), entry.getValue(), agentId));
+    }
+
+    /**
+     * 从 Redis 中取出 waitSince 最小（等待最久）的 WAITING 会话。
+     */
+    private Optional<Map.Entry<String, SessionQueueItem>> pickOldestWaiting() {
+        // findAll() 返回 List，需要转为可查找 sessionId 的结构
+        return queueRepository.findAll().stream()
+                .filter(i -> i.status() == SessionStatus.WAITING)
+                .min(Comparator.comparingLong(SessionQueueItem::waitSince))
+                .map(i -> Map.entry(i.sessionId(), i));
+    }
+
+    /**
+     * CAS 激活排队会话 + 发布 SESSION_ACCEPT 事件。
+     * CAS 失败表示该会话已被手动接入，静默跳过。
+     */
+    private void doDispatchWaitingSession(String sessionId, SessionQueueItem waitingItem,
+                                          String agentId) {
+        SessionQueueItem activeItem = buildActiveItem(waitingItem, agentId);
+        boolean cas = queueRepository.compareAndSetStatus(sessionId, activeItem);
+        if (!cas) {
+            log.debug("[QueueDrain] CAS 失败，会话 {} 已被手动接入", sessionId);
+            return;
+        }
+        publishSessionAccept(sessionId, agentId, Instant.now().getEpochSecond());
+        publishEvent(new SessionEvent(SessionEventType.AUTO_ASSIGNED, activeItem));
+        log.info("[QueueDrain] 排队会话 {} 分配给客服 {}", sessionId, agentId);
     }
 
     // ---- 内部：事件广播 ----
