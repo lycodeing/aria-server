@@ -23,7 +23,9 @@ import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -170,15 +172,16 @@ public class SessionQueueController {
      */
     @SaIgnore
     @GetMapping(value = "/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter events(@RequestParam(required = false) String token) {
+    public ResponseEntity<SseEmitter> events(@RequestParam(required = false) String token) {
         String agentId = resolveAgentIdFromToken(token);
 
-        // token 无效或未传：拒绝连接，返回 401
+        // token 无效或未传：拒绝连接，返回 401。
+        // 注意：不可使用 SseEmitter.completeWithError(BusinessException) —— 该写法会触发
+        // Spring 标准异常解析，而 SSE 响应 Content-Type 已固定为 text/event-stream，
+        // 无法再渲染 JSON 错误体，最终抛出 HttpMediaTypeNotAcceptableException 导致 500。
+        // 直接以 ResponseEntity 返回 401（不启动 SSE 流）即可。
         if (agentId == null) {
-            SseEmitter rejected = new SseEmitter();
-            rejected.completeWithError(
-                    new com.aria.common.core.exception.BusinessException(401, "未登录或登录已过期"));
-            return rejected;
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
         String displayName = buildDisplayName(agentId);
@@ -193,7 +196,7 @@ public class SessionQueueController {
             eventSubscriber.remove(emitter);
             queueService.deregisterAgent(agentId);
             emitter.completeWithError(e);
-            return emitter;
+            return ResponseEntity.ok(emitter);
         }
 
         final String finalAgentId = agentId;
@@ -207,7 +210,7 @@ public class SessionQueueController {
         emitter.onTimeout(cleanup);
         emitter.onError(e -> cleanup.run());
 
-        return emitter;
+        return ResponseEntity.ok(emitter);
     }
 
     // ---- 新增接口 ----
@@ -215,22 +218,44 @@ public class SessionQueueController {
     /**
      * 查询同一访客的历史会话列表（不含当前会话）。
      *
-     * @param visitorId        访客唯一标识（X-Anonymous-Id Header），必填，最大 64 字符
+     * <p>访客身份二选一即可：
+     * <ol>
+     *   <li>{@code X-Anonymous-Id} 请求头（设计主路径，按匿名 ID 跨会话聚合同一访客）；</li>
+     *   <li>{@code visitorName} 查询参数（兼容路径，座席工作台仅持有访客展示名时使用）。</li>
+     * </ol>
+     * 两者皆缺时返回 400，避免缺失身份导致的服务端 500。
+     *
+     * @param visitorId        访客唯一标识（X-Anonymous-Id Header），可选，最大 64 字符
+     * @param visitorName      访客展示名（userName），可选
      * @param excludeSessionId 排除的会话 ID（通常为当前会话，可选）
      * @return 历史会话列表，按 startedAt 倒序，最多 20 条
      */
     @GetMapping("/visitor-history")
     public R<List<VisitorHistoryVO>> getVisitorHistory(
-            @RequestHeader("X-Anonymous-Id") @NotBlank(message = "X-Anonymous-Id 不能为空")
-            @Size(max = 64) String visitorId,
+            @RequestHeader(value = "X-Anonymous-Id", required = false)
+            @Size(max = 64, message = "X-Anonymous-Id 长度不能超过 64")
+            String visitorId,
+            @RequestParam(required = false)
+            @Size(max = 64, message = "visitorName 长度不能超过 64")
+            String visitorName,
             @RequestParam(required = false)
             @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "excludeSessionId 格式非法")
             String excludeSessionId) {
-        List<VisitorHistoryDTO> dtos = visitorHistoryService.getVisitorHistory(visitorId, excludeSessionId);
+        // 身份解析：优先匿名 ID（主路径），其次展示名（兼容座席工作台）
+        List<VisitorHistoryDTO> dtos;
+        if (visitorId != null && !visitorId.isBlank()) {
+            dtos = visitorHistoryService.getVisitorHistory(visitorId, excludeSessionId);
+        } else if (visitorName != null && !visitorName.isBlank()) {
+            dtos = visitorHistoryService.getVisitorHistoryByName(visitorName, excludeSessionId);
+        } else {
+            return R.fail(400, "缺少访客身份标识：请提供 X-Anonymous-Id 请求头或 visitorName 查询参数");
+        }
+
         List<VisitorHistoryVO> vos = dtos.stream()
                 .map(d -> new VisitorHistoryVO(
                         d.sessionId(), d.tag(), d.status(),
-                        d.startedAt(), d.endedAt(), d.msgCount(), d.aiSummary()))
+                        d.startedAt(), d.endedAt(), d.msgCount(), d.aiSummary(),
+                        d.transferReason()))
                 .toList();
         return R.ok(vos);
     }

@@ -108,19 +108,25 @@ public interface ConversationMessageMapper extends BaseMapper<ConversationMessag
     }
 
     /**
-     * 查询指定 session 最近一条 assistant 消息的 seq。
+     * 查询指定 session 最近一条"可反馈回复"的 seq。
      *
-     * <p>用于消息反馈接口：当前端未指定 seq 时，回落到"最新 AI 回复"。
-     * 只考虑 seq 非空的行；DIT 迁移前的历史 assistant 消息 seq=NULL 不参与。
+     * <p>用于消息反馈接口：前端未指定 seq 时，回落到"最新一条回复"。
+     * 回复角色包含 {@link MessageRole#ASSISTANT}（AI 机器人回复）与
+     * {@link MessageRole#AGENT}（人工座席回复）。自消息角色模型重构后，人工座席
+     * 回复以 {@code agent} 落库（不再用 {@code assistant}），纯人工会话不再有
+     * {@code assistant} 行，故必须同时匹配两种回复角色——否则纯人工会话的点赞/点踩
+     * 会因找不到可反馈消息而 400。
+     *
+     * <p>只考虑 seq 非空的行；DIT 迁移前的历史消息 seq=NULL 不参与。
      *
      * @param sessionId 会话唯一标识
-     * @return 最近一条 assistant 消息的 seq，无数据时返回空
+     * @return 最近一条回复消息的 seq，无回复时返回空
      */
-    default Optional<Long> selectLastAssistantSeq(@Param("sessionId") String sessionId) {
+    default Optional<Long> selectLastReplySeq(@Param("sessionId") String sessionId) {
         ConversationMessageEntity one = selectOne(
                 Wrappers.lambdaQuery(ConversationMessageEntity.class)
                         .eq(ConversationMessageEntity::getSessionId, sessionId)
-                        .eq(ConversationMessageEntity::getRole, MessageRole.ASSISTANT)
+                        .in(ConversationMessageEntity::getRole, MessageRole.ASSISTANT, MessageRole.AGENT)
                         .isNotNull(ConversationMessageEntity::getSeq)
                         .orderByDesc(ConversationMessageEntity::getSeq)
                         .last("LIMIT 1"));

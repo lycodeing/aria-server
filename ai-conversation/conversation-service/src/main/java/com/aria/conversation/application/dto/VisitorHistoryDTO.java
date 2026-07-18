@@ -14,8 +14,9 @@ import java.time.OffsetDateTime;
  * @param status     会话状态字符串
  * @param startedAt  会话开始时间
  * @param endedAt    会话结束时间（进行中时为 null）
- * @param msgCount   消息总数
- * @param aiSummary  AI 生成的摘要（未生成时为 null）
+ * @param msgCount       消息总数
+ * @param aiSummary      AI 生成的摘要（未生成时为 null）
+ * @param transferReason 转人工原因（无则为 null）
  */
 public record VisitorHistoryDTO(
         String sessionId,
@@ -24,5 +25,6 @@ public record VisitorHistoryDTO(
         OffsetDateTime startedAt,
         OffsetDateTime endedAt,
         int msgCount,
-        String aiSummary
+        String aiSummary,
+        String transferReason
 ) {}

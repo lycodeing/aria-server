@@ -12,8 +12,9 @@ import java.time.OffsetDateTime;
  * @param status     会话状态字符串（AI_CHAT / WAITING / ACTIVE / CLOSED）
  * @param startedAt  会话开始时间
  * @param endedAt    会话结束时间（进行中时为 null）
- * @param msgCount   该会话的消息总数
- * @param aiSummary  AI 生成的会话摘要（未生成时为 null）
+ * @param msgCount       该会话的消息总数
+ * @param aiSummary      AI 生成的会话摘要（未生成时为 null）
+ * @param transferReason 转人工原因（无则为 null），供座席侧历史工单展示
  */
 public record VisitorHistoryVO(
         String sessionId,
@@ -22,5 +23,6 @@ public record VisitorHistoryVO(
         OffsetDateTime startedAt,
         OffsetDateTime endedAt,
         int msgCount,
-        String aiSummary
+        String aiSummary,
+        String transferReason
 ) {}

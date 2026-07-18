@@ -27,8 +27,8 @@ class MessageFeedbackServiceTest {
     // ------------------ seq 缺省场景 ------------------
 
     @Test
-    void submit_seqOmitted_fallsBackToLastAssistantSeq() {
-        when(messageMapper.selectLastAssistantSeq("sess_1")).thenReturn(Optional.of(42L));
+    void submit_seqOmitted_fallsBackToLastReplySeq() {
+        when(messageMapper.selectLastReplySeq("sess_1")).thenReturn(Optional.of(42L));
         when(feedbackMapper.findBySessionAndSeq("sess_1", 42L)).thenReturn(Optional.empty());
 
         String result = service.submit("sess_1", null, "up", null);
@@ -41,12 +41,28 @@ class MessageFeedbackServiceTest {
     }
 
     @Test
-    void submit_seqOmitted_noAssistantMessage_throws() {
-        when(messageMapper.selectLastAssistantSeq("sess_1")).thenReturn(Optional.empty());
+    void submit_seqOmitted_noReplyMessage_throws() {
+        when(messageMapper.selectLastReplySeq("sess_1")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.submit("sess_1", null, "up", null))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("暂无可反馈的消息");
+    }
+
+    @Test
+    void submit_seqOmitted_humanOnlySession_fallsBackToAgentReply() {
+        // 回归：消息角色模型重构后，纯人工会话只有 agent 角色回复、无 assistant 行。
+        // 回落查询必须同时匹配 agent，否则会 400。
+        when(messageMapper.selectLastReplySeq("sess_human")).thenReturn(Optional.of(7L));
+        when(feedbackMapper.findBySessionAndSeq("sess_human", 7L)).thenReturn(Optional.empty());
+
+        String result = service.submit("sess_human", null, "down", "v_9");
+
+        assertThat(result).isEqualTo("down");
+        ArgumentCaptor<MessageFeedbackDO> cap = ArgumentCaptor.forClass(MessageFeedbackDO.class);
+        verify(feedbackMapper).insert((MessageFeedbackDO) cap.capture());
+        assertThat(cap.getValue().getSeq()).isEqualTo(7L);
+        assertThat(cap.getValue().getVisitorId()).isEqualTo("v_9");
     }
 
     // ------------------ 显式 seq 场景 ------------------

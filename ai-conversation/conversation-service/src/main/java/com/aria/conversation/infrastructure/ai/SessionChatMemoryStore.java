@@ -33,6 +33,7 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>user      ↔ {@link UserMessage}</li>
  *   <li>assistant ↔ {@link AiMessage}（含 tool_calls 请求，通过 {@link ConversationMessage#toolCalls()} 承载）</li>
+ *   <li>agent     ↔ {@link AiMessage}（人工座席回复，对 LLM 视为 assistant 轮次；角色还原见 {@link #updateMessages}）</li>
  *   <li>tool      ↔ {@link ToolExecutionResultMessage}，id/toolName 通过 {@code toolRequestId}/{@code toolName} 传递</li>
  * </ul>
  *
@@ -130,11 +131,26 @@ public class SessionChatMemoryStore implements ChatMemoryStore {
             long nextSeq = maxSeq;
             for (ChatMessage m : messages) {
                 ConversationMessage dm = toDomainMessage(m);
+                // LangChain4j 仅知道 user/assistant/tool，回写时将 agent 消息归为 assistant。
+                // 还原策略：先按"assistant|content"查找——若命中，说明这条确实是 AI 回复；
+                // 若未命中，则尝试"agent|content"——若命中，说明这条原本是人工座席回复，需还原角色。
+                // 用 Deque 保证同内容多条消息按顺序各自匹配，避免误将 AI 回复标记为 agent。
+                String resolvedRole = dm.role();
                 Deque<Long> seqQueue = seqIndex.get(matchKey(dm));
+                if ((seqQueue == null || seqQueue.isEmpty()) && "assistant".equals(dm.role()) && m instanceof AiMessage) {
+                    ConversationMessage agentVariant = new ConversationMessage(
+                            "agent", dm.content(), 0L, dm.timestamp(),
+                            dm.toolRequestId(), dm.toolName(), dm.toolCalls());
+                    Deque<Long> agentQueue = seqIndex.get(matchKey(agentVariant));
+                    if (agentQueue != null && !agentQueue.isEmpty()) {
+                        seqQueue = agentQueue;
+                        resolvedRole = "agent";
+                    }
+                }
                 Long existingSeq = (seqQueue != null) ? seqQueue.poll() : null;
                 long seq = (existingSeq != null && existingSeq > 0) ? existingSeq : ++nextSeq;
                 toSave.add(new ConversationMessage(
-                        dm.role(), dm.content(), seq, dm.timestamp(),
+                        resolvedRole, dm.content(), seq, dm.timestamp(),
                         dm.toolRequestId(), dm.toolName(), dm.toolCalls()));
             }
             historyRepo.saveAll(sessionId, toSave);
@@ -180,7 +196,9 @@ public class SessionChatMemoryStore implements ChatMemoryStore {
             return UserMessage.from(m.content() != null ? m.content() : "");
         }
         return switch (m.role()) {
-            case "assistant" -> toAiMessage(m);
+            // agent（人工座席）回复在 LangChain4j 中同样视为 assistant 轮次，以保证 AI 上下文连贯；
+            // Redis/WS 历史中仍保留 agent 以区分"人工客服"与"AI 助手"
+            case "assistant", "agent" -> toAiMessage(m);
             case "tool"      -> ToolExecutionResultMessage.from(
                     m.toolRequestId() != null ? m.toolRequestId() : "",
                     m.toolName()      != null ? m.toolName()      : "",

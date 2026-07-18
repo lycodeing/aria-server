@@ -193,9 +193,13 @@ public class DynamicModelFactory {
             result.add(SystemMessage.from(systemPrompt));
         }
         for (ChatMessage m : messages) {
-            result.add("assistant".equals(m.role())
-                    ? AiMessage.from(m.content())
-                    : UserMessage.from(m.content()));
+            // assistant 与 agent（人工座席）在 LLM 语境中均视为 assistant 轮次；
+            // agent 仅用于前端区分"人工客服"与"AI 助手"，对模型无语义差异
+            result.add(switch (m.role()) {
+                case "assistant", "agent" -> AiMessage.from(m.content());
+                case "system"             -> SystemMessage.from(m.content());
+                default                   -> UserMessage.from(m.content());
+            });
         }
         return result;
     }
