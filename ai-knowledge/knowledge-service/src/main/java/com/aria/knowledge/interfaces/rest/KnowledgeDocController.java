@@ -146,6 +146,9 @@ public class KnowledgeDocController {
             vo.setChunkType(c.getChunkType() != null ? c.getChunkType().name() : "TEXT");
             vo.setTokenCount(c.getTokenCount());
             vo.setContent(c.getContent());
+            // 检索权重：前端据此判定 chunk 启用(weight>0)/禁用(weight=0)态；缺失会导致启用/禁用 UI 失效
+            vo.setRetrievalWeight(c.getRetrievalWeight() != null
+                    ? c.getRetrievalWeight() : java.math.BigDecimal.ONE);
             return vo;
         }).toList();
         return R.ok(vos);
@@ -249,6 +252,8 @@ public class KnowledgeDocController {
         private String  chunkType;
         private Integer tokenCount;
         private String  content;
+        /** 检索权重 0~1.0，前端据此判定启用(>0)/禁用(=0)态 */
+        private java.math.BigDecimal retrievalWeight;
     }
 
     @Data
