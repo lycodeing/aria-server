@@ -3,6 +3,7 @@ package com.aria.auth.application.service;
 import com.aria.auth.infrastructure.persistence.systemconfig.SystemConfigDO;
 import com.aria.auth.infrastructure.persistence.systemconfig.SystemConfigMapper;
 import com.aria.auth.interfaces.dto.SystemConfigRequest;
+import com.aria.auth.interfaces.dto.SystemConfigUpdateRequest;
 import com.aria.auth.interfaces.rest.vo.SystemConfigVO;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.common.core.page.PageQuery;
@@ -106,7 +107,7 @@ public class SystemConfigService {
     /**
      * 新增配置
      */
-    @Transactional
+    @Transactional(rollbackFor = Exception.class)
     public SystemConfigVO create(SystemConfigRequest req) {
         assertTypeAccess(req.getConfigType());
 
@@ -136,7 +137,7 @@ public class SystemConfigService {
      * 更新配置（configKey 和 configType 不可修改）
      */
     @Transactional
-    public SystemConfigVO update(Long id, SystemConfigRequest req) {
+    public SystemConfigVO update(Long id, SystemConfigUpdateRequest req) {
         SystemConfigDO config = requireExists(id);
         assertTypeAccess(config.getConfigType());
 

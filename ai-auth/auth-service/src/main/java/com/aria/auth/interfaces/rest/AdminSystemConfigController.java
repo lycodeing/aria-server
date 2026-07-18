@@ -4,6 +4,7 @@ import cn.dev33.satoken.annotation.SaCheckLogin;
 import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.aria.auth.application.service.SystemConfigService;
 import com.aria.auth.interfaces.dto.SystemConfigRequest;
+import com.aria.auth.interfaces.dto.SystemConfigUpdateRequest;
 import com.aria.auth.interfaces.rest.vo.SystemConfigVO;
 import com.aria.common.core.page.PageQuery;
 import com.aria.common.core.page.PageResult;
@@ -79,7 +80,7 @@ public class AdminSystemConfigController {
     @SaCheckPermission("system:config:update")
     public R<SystemConfigVO> update(
             @PathVariable Long id,
-            @Valid @RequestBody SystemConfigRequest req) {
+            @Valid @RequestBody SystemConfigUpdateRequest req) {
         return R.ok(systemConfigService.update(id, req));
     }
 
