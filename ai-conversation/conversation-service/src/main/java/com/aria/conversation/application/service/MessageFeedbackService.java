@@ -20,7 +20,7 @@ import java.util.Set;
  *
  * <p>业务规则：
  * <ul>
- *   <li>seq 缺省时回落到当前 session 最近一条 assistant 消息的 seq；仍缺失 → 400</li>
+ *   <li>seq 缺省时回落到当前 session 最近一条回复（assistant 或 agent）的 seq；仍缺失 → 400</li>
  *   <li>feedback 为 null 表示取消反馈：删除已有行（幂等，不存在也返回成功）</li>
  *   <li>feedback 为 up/down：{@code (sessionId, seq)} 已存在则 update，否则 insert</li>
  * </ul>
@@ -42,7 +42,7 @@ public class MessageFeedbackService {
      * 提交或取消消息反馈。
      *
      * @param sessionId 会话 ID（调用方保证格式已校验）
-     * @param seq       目标消息的 seq；null 时后端回落到最近 assistant 消息
+     * @param seq       目标消息的 seq；null 时后端回落到最近一条回复（assistant/agent）
      * @param feedback  {@code "up"} / {@code "down"} / null（取消）
      * @param visitorId 访客标识（可 null）
      * @return 反馈落库后的最终值（up/down/null 三态），供前端确认服务端状态
@@ -106,7 +106,7 @@ public class MessageFeedbackService {
             }
             return seq;
         }
-        return messageMapper.selectLastAssistantSeq(sessionId)
+        return messageMapper.selectLastReplySeq(sessionId)
                 .orElseThrow(() -> new BusinessException(NOT_FOUND, "会话中暂无可反馈的消息"));
     }
 }

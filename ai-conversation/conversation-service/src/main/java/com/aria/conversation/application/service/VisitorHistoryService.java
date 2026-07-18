@@ -39,7 +39,10 @@ public class VisitorHistoryService {
     private final StringRedisTemplate           redisTemplate;
 
     /**
-     * 查询指定访客的历史会话列表（不含当前会话）。
+     * 查询指定访客的历史会话列表（不含当前会话）——按匿名 ID 聚合同一访客。
+     *
+     * <p>设计主路径：访客匿名 ID（X-Anonymous-Id）是跨会话的稳定身份键，
+     * 即使访客修改展示名也能正确归并其全部历史工单。
      *
      * @param visitorId        访客唯一标识（X-Anonymous-Id），不能为空
      * @param excludeSessionId 要排除的会话 ID（当前会话），可为 null
@@ -48,6 +51,28 @@ public class VisitorHistoryService {
     public List<VisitorHistoryDTO> getVisitorHistory(String visitorId, String excludeSessionId) {
         List<ConversationEntity> entities =
                 persistRepository.getVisitorHistoryByVisitorId(visitorId, excludeSessionId, VISITOR_HISTORY_LIMIT);
+        return toDTOs(entities);
+    }
+
+    /**
+     * 按访客展示名查询历史会话列表（不含当前会话）。
+     *
+     * <p>兼容路径：座席工作台在仅持有访客展示名（userName）而未携带匿名 ID 的场景下，
+     * 仍可查询该访客的历史工单。展示名可能不唯一（多人同名 / 同人改名），
+     * 故精度弱于 {@link #getVisitorHistory(String, String)}，仅作为兜底。
+     *
+     * @param visitorName      访客展示名（userName）
+     * @param excludeSessionId 要排除的会话 ID（当前会话），可为 null
+     * @return 历史会话 DTO 列表，按 startedAt 倒序，最多 {@value #VISITOR_HISTORY_LIMIT} 条
+     */
+    public List<VisitorHistoryDTO> getVisitorHistoryByName(String visitorName, String excludeSessionId) {
+        List<ConversationEntity> entities =
+                persistRepository.getVisitorHistory(visitorName, excludeSessionId, VISITOR_HISTORY_LIMIT);
+        return toDTOs(entities);
+    }
+
+    /** 批量装配历史会话 DTO（消息计数 + AI 摘要），与身份解析方式无关。 */
+    private List<VisitorHistoryDTO> toDTOs(List<ConversationEntity> entities) {
         if (entities.isEmpty()) {
             return Collections.emptyList();
         }
@@ -83,7 +108,8 @@ public class VisitorHistoryService {
                     e.getStartedAt(),
                     e.getEndedAt(),
                     (int) Math.min(msgCount, Integer.MAX_VALUE),
-                    summary);
+                    summary,
+                    e.getTransferReason());
         }).collect(Collectors.toList());
     }
 }

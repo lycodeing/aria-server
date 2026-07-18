@@ -269,7 +269,10 @@ public class SessionQueueService {
             );
             queueRepository.delete(sessionId); // 幂等，无数据时 no-op
             publishSessionEnd(sessionId, closedBy);
-            triggerCsatAsync(sessionId, agentIdHolder[0]);
+            // 同步推送 CSAT 邀请给访客 WS：必须在关闭访客连接之前完成，
+            // 否则连接已从注册表移除，csat_request 帧会被丢弃（访客端收不到实时评价弹窗）。
+            // 注意：此处为同实例自调用，@Async 代理不生效，保持同步以确保顺序。
+            triggerCsat(sessionId, agentIdHolder[0]);
         } catch (IllegalStateException e) {
             log.warn("[SessionQueue] close 状态机校验失败 sessionId={} msg={}", sessionId, e.getMessage());
         }
@@ -397,11 +400,10 @@ public class SessionQueueService {
     }
 
     /**
-     * 异步触发 CSAT 邀请推送，不阻塞会话关闭主流程。
-     * 推送失败只记录日志，不影响关闭结果。
+     * 触发 CSAT 邀请推送（同步）。在会话关闭主流程内、关闭访客 WS 之前调用，
+     * 确保 csat_request 实时送达访客端。推送失败只记录日志，不影响关闭结果。
      */
-    @Async
-    void triggerCsatAsync(String sessionId, String agentId) {
+    void triggerCsat(String sessionId, String agentId) {
         try {
             Long agentIdLong = agentId != null && !agentId.isBlank()
                     ? Long.parseLong(agentId) : null;

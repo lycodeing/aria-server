@@ -17,13 +17,27 @@ import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.context.request.async.AsyncRequestNotUsableException;
 import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
+
+import java.io.IOException;
 import java.util.stream.Collectors;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    /**
+     * 判断当前请求是否为 SSE / 流式请求（Accept 含 text/event-stream）。
+     * 对于 SSE 请求，异常处理器不应再尝试写入 JSON 响应体，否则会出现
+     * HttpMessageNotWritableException（Content-Type 已固定为 text/event-stream）。
+     * 注：SSE 为 GET 请求，客户端不发送 Content-Type，无需检查该头。
+     */
+    private static boolean isSseRequest(HttpServletRequest request) {
+        String accept = request.getHeader("Accept");
+        return accept != null && accept.contains("text/event-stream");
+    }
 
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<R<Void>> handleBusiness(BusinessException e, HttpServletRequest request) {
@@ -33,6 +47,11 @@ public class GlobalExceptionHandler {
         // - 四位以上业务码（如 4004/5010）统一返回 HTTP 400，客户端通过 R.code 获取业务含义
         // 避免将 4004 直接设为 HTTP 4004（无效状态码）导致客户端行为不可预期
         int httpStatus = isStandardHttpError(e.getCode()) ? e.getCode() : 400;
+        // SSE/流式请求：响应 Content-Type 已固定为 text/event-stream，无法再渲染 JSON 错误体，
+        // 强行写入会抛 HttpMediaTypeNotAcceptableException 进而 500。仅返回状态码即可。
+        if (isSseRequest(request)) {
+            return ResponseEntity.status(httpStatus).build();
+        }
         return ResponseEntity.status(httpStatus).body(R.fail(e.getCode(), e.getMessage()));
     }
 
@@ -91,8 +110,11 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(cn.dev33.satoken.exception.NotLoginException.class)
-    public ResponseEntity<R<Void>> handleNotLogin(cn.dev33.satoken.exception.NotLoginException e) {
-        log.warn("未登录: type={}", e.getType());
+    public ResponseEntity<?> handleNotLogin(cn.dev33.satoken.exception.NotLoginException e, HttpServletRequest request) {
+        log.warn("未登录: type={}, path={}", e.getType(), request.getRequestURI());
+        if (isSseRequest(request)) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(R.fail(401, "未登录或 Token 已过期"));
     }
 
@@ -124,8 +146,36 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(R.fail(405, "不支持的请求方法: " + e.getMethod()));
     }
 
+    /**
+     * 异步/SSE 请求客户端已断开（Broken pipe 等）。
+     * 无需返回 JSON 体，直接结束响应，避免污染 SSE 流或触发二次异常。
+     */
+    @ExceptionHandler(AsyncRequestNotUsableException.class)
+    public ResponseEntity<Void> handleAsyncRequestNotUsable(AsyncRequestNotUsableException e, HttpServletRequest request) {
+        log.warn("异步请求已不可用(通常是客户端断开SSE/流式连接): path={}", request.getRequestURI());
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+    }
+
+    /**
+     * Broken pipe：客户端已关闭连接，无需记录为 ERROR，也不必返回 JSON 体。
+     */
+    @ExceptionHandler(IOException.class)
+    public ResponseEntity<?> handleIOException(IOException e, HttpServletRequest request) {
+        String msg = e.getMessage();
+        if (msg != null && (msg.contains("Broken pipe") || msg.contains("Connection reset"))) {
+            log.warn("客户端连接已断开: path={}, msg={}", request.getRequestURI(), msg);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+        log.error("IO异常: path={}", request.getRequestURI(), e);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(R.fail(500, "服务器内部错误"));
+    }
+
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<R<Void>> handleUnknown(Exception e, HttpServletRequest request) {
+    public ResponseEntity<?> handleUnknown(Exception e, HttpServletRequest request) {
+        if (isSseRequest(request)) {
+            log.warn("SSE/流式请求发生未预期异常，客户端可能已断开: path={}", request.getRequestURI(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
         log.error("未预期的异常: path={}", request.getRequestURI(), e);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(R.fail(500, "服务器内部错误"));
     }

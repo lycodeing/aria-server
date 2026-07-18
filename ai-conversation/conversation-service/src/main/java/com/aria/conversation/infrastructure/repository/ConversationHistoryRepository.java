@@ -44,7 +44,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>角色约定：
  * <ul>
- *   <li>Redis List / AI 请求：user / assistant / tool（LangChain4j 标准）</li>
+ *   <li>Redis List / 实时 WS：user / assistant（AI 助手）/ agent（人工座席）/ tool</li>
+ *   <li>AI 请求（{@code FaqChatAppService#toAiPrompt}、{@code SessionChatMemoryStore}、
+ *       {@code DynamicModelFactory} 会将 agent 归一化为 assistant 以兼容 LangChain4j 标准角色）</li>
  *   <li>DB 持久化：user / assistant / agent / tool / system</li>
  * </ul>
  */
@@ -225,14 +227,19 @@ public class ConversationHistoryRepository {
 
     /**
      * 追加人工座席消息。
-     * Redis List 写入 assistant 角色（保持与 AI 历史格式兼容），DB 中标记为 agent（便于质检）。
+     * Redis List / 实时 WS 均写入 agent 角色（与前端契约一致：人类座席回复必须渲染为"人工客服"）；
+     * DB 持久化同样标记为 agent（便于质检）。
+     *
+     * <p>注意：AI 提示词构建（{@code FaqChatAppService#toAiPrompt}、
+     * {@code SessionChatMemoryStore}、{@code DynamicModelFactory}）会将 agent 归一化为
+     * assistant 以兼容 LangChain4j 标准角色，因此本方法改写 agent 不影响 AI 对话上下文。
      *
      * @return 分配给该消息的 seq
      */
     public long appendAgentMessage(String sessionId, String content) {
         long seq = nextSeq(sessionId);
         ConversationMessage msg = new ConversationMessage(
-                ROLE_ASSISTANT, content, seq, System.currentTimeMillis(), null, null, null);
+                ROLE_AGENT, content, seq, System.currentTimeMillis(), null, null, null);
         writeToListWithTrim(sessionId, msg);
         publishMessageEvent(sessionId, msg, ROLE_AGENT);
         return seq;
