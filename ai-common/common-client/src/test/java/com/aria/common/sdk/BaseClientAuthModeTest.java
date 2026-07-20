@@ -28,6 +28,7 @@ class BaseClientAuthModeTest {
     static class TestClient extends BaseClient {
         TestClient(ClientConfig config) { super(config); }
         String hit(String path) { return get(path, String.class); }
+        int callTimeoutMillis() { return httpClient.callTimeoutMillis(); }
     }
 
     @BeforeEach
@@ -39,6 +40,19 @@ class BaseClientAuthModeTest {
     @AfterEach
     void tearDown() throws Exception {
         server.shutdown();
+    }
+
+    @Test
+    @DisplayName("callTimeout 限制整个 HTTP 调用时长")
+    void callTimeoutLimitsEntireHttpCall() {
+        ClientConfig cfg = ClientConfig.builder()
+                .baseUrl(server.url("/").toString())
+                .authMode(AuthMode.NONE)
+                .callTimeout(Duration.ofSeconds(5))
+                .maxRetries(0)
+                .build();
+
+        assertThat(new TestClient(cfg).callTimeoutMillis()).isEqualTo(5_000);
     }
 
     @Test

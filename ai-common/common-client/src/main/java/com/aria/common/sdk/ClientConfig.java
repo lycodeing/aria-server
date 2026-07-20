@@ -24,6 +24,7 @@ public class ClientConfig {
     private final String sharedSecret;
     private final Duration connectTimeout;
     private final Duration readTimeout;
+    private final Duration callTimeout;
     private final int maxRetries;
     private final int callbackPort;
     private final String webhookSecret;
@@ -36,6 +37,7 @@ public class ClientConfig {
         this.sharedSecret = builder.sharedSecret;
         this.connectTimeout = builder.connectTimeout;
         this.readTimeout = builder.readTimeout;
+        this.callTimeout = builder.callTimeout;
         this.maxRetries = builder.maxRetries;
         this.callbackPort = builder.callbackPort;
         this.webhookSecret = builder.webhookSecret;
@@ -48,6 +50,7 @@ public class ClientConfig {
     public String getSharedSecret() { return sharedSecret; }
     public Duration getConnectTimeout() { return connectTimeout; }
     public Duration getReadTimeout() { return readTimeout; }
+    public Duration getCallTimeout() { return callTimeout; }
     public int getMaxRetries() { return maxRetries; }
     public int getCallbackPort() { return callbackPort; }
     public String getWebhookSecret() { return webhookSecret; }
@@ -78,6 +81,8 @@ public class ClientConfig {
         private String sharedSecret;
         private Duration connectTimeout = Duration.ofSeconds(10);
         private Duration readTimeout = Duration.ofSeconds(30);
+        /** 整个 HTTP 调用的可选端到端时限；null 表示不额外限制。 */
+        private Duration callTimeout;
         private int maxRetries = 3;
         private int callbackPort = 0;
         private String webhookSecret;
@@ -104,6 +109,7 @@ public class ClientConfig {
 
         public Builder connectTimeout(Duration timeout) { this.connectTimeout = timeout; return this; }
         public Builder readTimeout(Duration timeout) { this.readTimeout = timeout; return this; }
+        public Builder callTimeout(Duration timeout) { this.callTimeout = timeout; return this; }
         public Builder maxRetries(int maxRetries) { this.maxRetries = maxRetries; return this; }
         public Builder callbackPort(int port) { this.callbackPort = port; return this; }
         public Builder webhookSecret(String secret) { this.webhookSecret = secret; return this; }

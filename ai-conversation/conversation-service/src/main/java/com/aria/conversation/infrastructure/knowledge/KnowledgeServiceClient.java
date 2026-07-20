@@ -45,6 +45,7 @@ public class KnowledgeServiceClient {
                 .sharedSecret(internalSecret)
                 .connectTimeout(Duration.ofSeconds(timeoutSeconds))
                 .readTimeout(Duration.ofSeconds(timeoutSeconds))
+                .callTimeout(Duration.ofSeconds(timeoutSeconds))
                 .maxRetries(0)
                 .build();
     }

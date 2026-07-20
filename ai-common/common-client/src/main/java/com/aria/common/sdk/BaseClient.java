@@ -34,6 +34,9 @@ public abstract class BaseClient {
         OkHttpClient.Builder builder = new OkHttpClient.Builder()
                 .connectTimeout(config.getConnectTimeout())
                 .readTimeout(config.getReadTimeout());
+        if (config.getCallTimeout() != null) {
+            builder.callTimeout(config.getCallTimeout());
+        }
         // 鉴权拦截器按模式分派；NONE 模式不装配任何鉴权拦截器
         switch (config.getAuthMode()) {
             case AK_SK -> builder.addInterceptor(new AkSkSigningInterceptor(config));
