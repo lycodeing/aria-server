@@ -302,10 +302,14 @@ public class SessionQueueController {
             @RequestBody(required = false) ReplySuggestionsRequest req) {
         String lastMessage = (req != null) ? req.getLastMessage() : null;
         List<ReplySuggestionDTO> dtos = replySuggestionService.getSuggestions(sessionId, lastMessage);
-        List<ReplySuggestionVO> vos = dtos.stream()
+        return R.ok(toVoList(dtos));
+    }
+
+    /** 将建议 DTO 列表转换为 VO 列表。 */
+    private List<ReplySuggestionVO> toVoList(List<ReplySuggestionDTO> dtos) {
+        return dtos.stream()
                 .map(d -> new ReplySuggestionVO(d.id(), d.content(), d.confidence(), d.source()))
                 .toList();
-        return R.ok(vos);
     }
 
     // ---- 工具方法 ----
