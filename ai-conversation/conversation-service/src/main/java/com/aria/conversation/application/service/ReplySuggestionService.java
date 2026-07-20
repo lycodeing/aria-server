@@ -6,8 +6,8 @@ import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.infrastructure.cache.ConversationCacheKeys;
-import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
+import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.fasterxml.jackson.core.type.TypeReference;
 import jakarta.annotation.PreDestroy;
@@ -17,16 +17,17 @@ import org.apache.commons.lang3.StringUtils;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -45,15 +46,31 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class ReplySuggestionService {
 
-    private static final String KEY_PREFIX          = ConversationCacheKeys.REPLY_SUGGESTIONS_PREFIX;
-    /** 同一消息的建议缓存 30 秒 */
-    private static final long   CACHE_TTL_SECONDS   = 30L;
-    /** 单路任务最长等待时间（KB 检索 + LLM 推理各自独立计时） */
-    private static final long   TASK_TIMEOUT_SECONDS = 15L;
-    /** 用于上下文推理的最近消息轮数上限 */
-    private static final int    MAX_HISTORY_TURNS   = 5;
-    /** 上下文推理的固定置信度 */
-    private static final double CONTEXT_CONFIDENCE  = 0.7;
+    private static final String KEY_PREFIX = ConversationCacheKeys.REPLY_SUGGESTIONS_PREFIX;
+    /**
+     * 同一消息的建议缓存 30 秒
+     */
+    private static final long CACHE_TTL_SECONDS = 30L;
+    /**
+     * 单路任务最长等待时间（KB 检索 + LLM 推理各自独立计时）
+     */
+    private static final long TASK_TIMEOUT_SECONDS = 15L;
+    /**
+     * 建议生成并发任务上限，饱和时立即降级而不是无限创建线程。
+     */
+    private static final int MAX_WORKER_THREADS = 16;
+    /**
+     * 排队等待执行的任务上限。
+     */
+    private static final int MAX_QUEUED_TASKS = 32;
+    /**
+     * 用于上下文推理的最近消息轮数上限
+     */
+    private static final int MAX_HISTORY_TURNS = 5;
+    /**
+     * 上下文推理的固定置信度
+     */
+    private static final double CONTEXT_CONFIDENCE = 0.7;
 
     /**
      * 建议生成用的 LLM System Prompt。
@@ -68,21 +85,27 @@ public class ReplySuggestionService {
             """;
 
     /**
-     * I/O 密集型任务（KB HTTP + LLM 网络请求）使用 CachedThreadPool：
-     * 线程按需创建，空闲 60s 后回收，并发请求不会因线程数上限而排队等待。
+     * I/O 密集型任务（KB HTTP + LLM 网络请求）使用有界线程池：
+     * 线程与队列均设上限，饱和时由调用方降级，避免超时请求堆积耗尽资源。
      */
     private static final AtomicInteger WORKER_COUNTER = new AtomicInteger(0);
-    private final ExecutorService suggestionExecutor = Executors.newCachedThreadPool(
+    private final ExecutorService suggestionExecutor = new ThreadPoolExecutor(
+            4,
+            MAX_WORKER_THREADS,
+            60L,
+            TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(MAX_QUEUED_TASKS),
             r -> {
                 Thread t = new Thread(r, "reply-suggestion-worker-" + WORKER_COUNTER.incrementAndGet());
                 t.setDaemon(true);
                 return t;
-            });
+            },
+            new ThreadPoolExecutor.AbortPolicy());
 
-    private final StringRedisTemplate            redisTemplate;
-    private final ConversationHistoryRepository  historyRepository;
-    private final KnowledgeServiceClient         knowledgeServiceClient;
-    private final DynamicModelFactory            modelFactory;
+    private final StringRedisTemplate redisTemplate;
+    private final ConversationHistoryRepository historyRepository;
+    private final KnowledgeServiceClient knowledgeServiceClient;
+    private final DynamicModelFactory modelFactory;
 
     @PreDestroy
     public void shutdownExecutor() {
@@ -104,9 +127,9 @@ public class ReplySuggestionService {
      *
      * <p>流程：
      * <ol>
-     *   <li>一次性加载会话历史，供后续步骤复用，避免重复 Redis 读取</li>
-     *   <li>查 Redis 缓存（key 含消息 hash，30 秒内相同消息命中缓存）</li>
-     *   <li>未命中则并行执行 KB 检索 + LLM 推理，各自带 {@value TASK_TIMEOUT_SECONDS}s 超时独立降级</li>
+     *   <li>若未传最新消息，从历史中解析最后一条访客消息</li>
+     *   <li>查 Redis 缓存（key 含消息 SHA-256，30 秒内相同消息命中缓存）</li>
+     *   <li>未命中则并行执行 KB 检索和 LLM 推理；历史读取仅归属 LLM 分支，失败时独立降级</li>
      *   <li>合并去重后写入缓存再返回</li>
      * </ol>
      *
@@ -115,54 +138,78 @@ public class ReplySuggestionService {
      * @return 建议列表，KB 结果在前，CONTEXT 结果在后
      */
     public List<ReplySuggestionDTO> getSuggestions(String sessionId, String lastMessage) {
-        // 一次性加载历史，resolveLastUserMessage 和 generateContextSuggestions 共用
-        List<ConversationMessage> history = historyRepository.findAll(sessionId);
-
-        String resolvedMessage = StringUtils.isBlank(lastMessage)
-                ? resolveLastUserMessage(history)
-                : lastMessage;
-        if (resolvedMessage == null || resolvedMessage.isBlank()) {
+        List<ConversationMessage> history = null;
+        String resolvedMessage = lastMessage;
+        if (StringUtils.isBlank(resolvedMessage)) {
+            try {
+                // 未传消息时必须从历史中确定 KB 查询文本；该历史也复用给上下文推理。
+                history = historyRepository.findAll(sessionId);
+                resolvedMessage = resolveLastUserMessage(history);
+            } catch (Exception e) {
+                log.warn("[Suggestion] 历史读取失败，无法确定访客消息 sessionId={}", sessionId, e);
+                return List.of();
+            }
+        }
+        if (StringUtils.isBlank(resolvedMessage)) {
             log.warn("[Suggestion] 会话 {} 无有效访客消息，返回空建议", sessionId);
             return List.of();
         }
 
-        // key 包含消息内容 hash：新消息自动绕过旧缓存，无需手动失效
+        // 请求带 lastMessage 时无需依赖历史即可命中缓存，避免 Redis 历史读取影响缓存可用性。
         String cacheKey = buildCacheKey(sessionId, resolvedMessage);
-
         List<ReplySuggestionDTO> cached = readCache(cacheKey, sessionId);
         if (cached != null) {
             return cached;
         }
 
-        // 并行：KB 检索 + LLM 上下文推理，各自带超时 + 独立降级
-        CompletableFuture<List<ReplySuggestionDTO>> kbFuture = CompletableFuture
-                .supplyAsync(() -> searchKb(resolvedMessage), suggestionExecutor)
-                .orTimeout(TASK_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                .exceptionally(e -> {
-                    log.warn("[Suggestion] KB 检索失败/超时，降级为空列表 sessionId={}", sessionId, e);
-                    return List.of();
-                });
-
-        CompletableFuture<List<ReplySuggestionDTO>> contextFuture = CompletableFuture
-                .supplyAsync(() -> generateContextSuggestions(sessionId, resolvedMessage, history),
-                        suggestionExecutor)
-                .orTimeout(TASK_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-                .exceptionally(e -> {
-                    log.warn("[Suggestion] LLM 推理失败/超时，降级为空列表 sessionId={}", sessionId, e);
-                    return List.of();
-                });
+        String message = resolvedMessage;
+        CompletableFuture<List<ReplySuggestionDTO>> kbFuture = runAsync(
+                "KB 检索", sessionId, () -> searchKb(message));
+        List<ConversationMessage> resolvedHistory = history;
+        CompletableFuture<List<ReplySuggestionDTO>> contextFuture = runAsync(
+                "LLM 推理", sessionId, () -> generateContextSuggestions(
+                        sessionId,
+                        message,
+                        resolvedHistory != null ? resolvedHistory : historyRepository.findAll(sessionId)));
 
         List<ReplySuggestionDTO> merged = merge(kbFuture.join(), contextFuture.join());
-
         writeCache(cacheKey, merged, sessionId);
         return merged;
     }
 
     // ---- 内部方法 ----
 
-    /** 构建缓存 key：前缀 + sessionId + 消息内容 hash（hex）。 */
+    private CompletableFuture<List<ReplySuggestionDTO>> runAsync(String taskName,
+                                                                 String sessionId,
+                                                                 Supplier<List<ReplySuggestionDTO>> task) {
+        try {
+            return CompletableFuture.supplyAsync(task, suggestionExecutor)
+                    .orTimeout(TASK_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+                    .exceptionally(e -> {
+                        log.warn("[Suggestion] {}失败/超时，降级为空列表 sessionId={}", taskName, sessionId, e);
+                        return List.of();
+                    });
+        } catch (RejectedExecutionException e) {
+            log.warn("[Suggestion] {}线程池已饱和，降级为空列表 sessionId={}", taskName, sessionId);
+            return CompletableFuture.completedFuture(List.of());
+        }
+    }
+
+    /**
+     * 构建缓存 key：前缀 + sessionId + 消息内容 SHA-256（hex）。
+     */
     private String buildCacheKey(String sessionId, String message) {
-        return KEY_PREFIX + sessionId + ":" + Integer.toHexString(message.hashCode());
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(message.getBytes(StandardCharsets.UTF_8));
+            StringBuilder hex = new StringBuilder(digest.length * 2);
+            for (byte b : digest) {
+                hex.append(String.format("%02x", b));
+            }
+            return KEY_PREFIX + sessionId + ":" + hex;
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
     }
 
     /**
@@ -201,8 +248,8 @@ public class ReplySuggestionService {
      * 解析 LLM 输出中以"数字点/顿号 空格"开头的行，confidence 固定 {@value #CONTEXT_CONFIDENCE}。
      */
     private List<ReplySuggestionDTO> generateContextSuggestions(String sessionId,
-                                                                 String lastMessage,
-                                                                 List<ConversationMessage> history) {
+                                                                String lastMessage,
+                                                                List<ConversationMessage> history) {
         List<ConversationMessage> recentHistory = history.stream()
                 .filter(m -> m.role() != null
                         && List.of("user", "assistant", "agent").contains(m.role()))
@@ -214,9 +261,9 @@ public class ReplySuggestionService {
 
         String contextBlock = recentHistory.stream()
                 .map(m -> switch (m.role()) {
-                    case "user"               -> "访客：" + m.content();
+                    case "user" -> "访客：" + m.content();
                     case "assistant", "agent" -> "客服：" + m.content();
-                    default                   -> "";
+                    default -> "";
                 })
                 .filter(line -> !line.isBlank())
                 .collect(Collectors.joining("\n"));
@@ -227,7 +274,9 @@ public class ReplySuggestionService {
                 lastMessage);
 
         String response = modelFactory.chat(
-                List.of(ChatMessage.user(userPrompt)), SUGGESTION_SYSTEM_PROMPT);
+                List.of(ChatMessage.user(userPrompt)),
+                SUGGESTION_SYSTEM_PROMPT,
+                Duration.ofSeconds(TASK_TIMEOUT_SECONDS));
         return parseSuggestions(response);
     }
 
@@ -276,7 +325,9 @@ public class ReplySuggestionService {
         return result;
     }
 
-    /** 读取缓存，反序列化失败时静默降级。 */
+    /**
+     * 读取缓存，反序列化失败时静默降级。
+     */
     private List<ReplySuggestionDTO> readCache(String cacheKey, String sessionId) {
         String cached = redisTemplate.opsForValue().get(cacheKey);
         if (cached == null) {
@@ -284,7 +335,8 @@ public class ReplySuggestionService {
         }
         try {
             List<ReplySuggestionDTO> result = JsonUtils.parseObject(
-                    cached, new TypeReference<List<ReplySuggestionDTO>>() {});
+                    cached, new TypeReference<List<ReplySuggestionDTO>>() {
+                    });
             if (result != null) {
                 log.debug("[Suggestion] 命中缓存 sessionId={}", sessionId);
                 return result;
@@ -295,7 +347,9 @@ public class ReplySuggestionService {
         return null;
     }
 
-    /** 写入缓存，失败时静默降级不影响主流程。 */
+    /**
+     * 写入缓存，失败时静默降级不影响主流程。
+     */
     private void writeCache(String cacheKey, List<ReplySuggestionDTO> data, String sessionId) {
         try {
             String json = JsonUtils.toJsonString(data);
