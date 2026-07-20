@@ -19,6 +19,7 @@ import reactor.core.publisher.Sinks;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -91,12 +92,45 @@ public class DynamicModelFactory {
     }
 
     /**
+     * 带独立请求时限的阻塞式对话。
+     * 用于不应受全局模型超时拖延的低优先级辅助调用。
+     *
+     * @param messages     对话消息列表
+     * @param systemPrompt 系统提示词（可为 null）
+     * @param timeout      请求时限
+     * @return AI 完整回复文本
+     */
+    public String chat(List<ChatMessage> messages, String systemPrompt, Duration timeout) {
+        return getChatModel(timeout).chat(toLangChain4jMessages(messages, systemPrompt))
+                .aiMessage().text();
+    }
+
+    /**
      * 获取当前活跃配置对应的缓存 ChatModel。
      *
      * @return 缓存的 ChatModel 实例
      */
     public ChatModel getChatModel() {
-        AiModelConfig cfg = configProvider.getActive();
+        return getChatModel(configProvider.getActive());
+    }
+
+    /**
+     * 获取指定请求时限对应的缓存 ChatModel。
+     * 用于需要比全局模型配置更短 deadline 的独立调用场景。
+     *
+     * @param timeout 请求时限
+     * @return 缓存的 ChatModel 实例
+     */
+    public ChatModel getChatModel(java.time.Duration timeout) {
+        AiModelConfig active = configProvider.getActive();
+        AiModelConfig cfg = new AiModelConfig(
+                active.id(), active.name(), active.provider(), active.apiProtocol(),
+                active.baseUrl(), active.apiKey(), active.modelName(), active.temperature(),
+                active.maxTokens(), Math.toIntExact(timeout.toSeconds()));
+        return getChatModel(cfg);
+    }
+
+    private ChatModel getChatModel(AiModelConfig cfg) {
         return chatCache.get(configHash(cfg), k -> {
             log.info("[AI] Building ChatModel protocol={} model={}", cfg.apiProtocol(), cfg.modelName());
             return resolveBuilder(cfg).buildChatModel(cfg);
@@ -159,6 +193,7 @@ public class DynamicModelFactory {
                 cfg.baseUrl() != null ? cfg.baseUrl() : "",
                 cfg.modelName() != null ? cfg.modelName() : "",
                 cfg.apiProtocol() != null ? cfg.apiProtocol() : "",
+                String.valueOf(cfg.timeoutSec()),
                 maskApiKey(cfg.apiKey()));
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");

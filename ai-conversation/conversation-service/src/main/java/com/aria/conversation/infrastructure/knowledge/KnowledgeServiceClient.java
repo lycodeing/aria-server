@@ -43,7 +43,9 @@ public class KnowledgeServiceClient {
         this.knowledgeClient = KnowledgeClient.builder()
                 .baseUrl(baseUrl)
                 .sharedSecret(internalSecret)
+                .connectTimeout(Duration.ofSeconds(timeoutSeconds))
                 .readTimeout(Duration.ofSeconds(timeoutSeconds))
+                .maxRetries(0)
                 .build();
     }
 

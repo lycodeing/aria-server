@@ -288,7 +288,7 @@ public class SessionQueueController {
      * 获取 AI 回复建议列表。
      *
      * <p>并行调用知识库向量检索（KB 来源）和 LLM 上下文推理（CONTEXT 来源），
-     * 合并去重后返回，KB 结果置前。2 秒内重复请求返回缓存（防抖兜底）。
+     * 合并去重后返回，KB 结果置前。同一会话和消息内容在 30 秒内重复请求返回缓存。
      *
      * @param sessionId 会话唯一标识
      * @param req       请求体，含 lastMessage 字段

@@ -6,22 +6,32 @@ import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
 
+import java.time.Duration;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class DynamicModelFactoryTest {
 
-    @Mock private AiModelConfigProvider configProvider;
-    @Mock private LlmModelBuilder openAiBuilder;
-    @Mock private LlmModelBuilder anthropicBuilder;
-    @Mock private ChatModel mockChatModel;
-    @Mock private ChatModel mockAnthropicModel;
-    @Mock private StreamingChatModel mockStreamingModel;
+    @Mock
+    private AiModelConfigProvider configProvider;
+    @Mock
+    private LlmModelBuilder openAiBuilder;
+    @Mock
+    private LlmModelBuilder anthropicBuilder;
+    @Mock
+    private ChatModel mockChatModel;
+    @Mock
+    private ChatModel mockAnthropicModel;
+    @Mock
+    private StreamingChatModel mockStreamingModel;
 
     private DynamicModelFactory factory;
 
@@ -65,6 +75,18 @@ class DynamicModelFactoryTest {
         when(configProvider.getActive()).thenReturn(anthropicCfg());
         ChatModel m2 = factory.getChatModel();
         assertThat(m1).isNotSameAs(m2);
+    }
+
+    @Test
+    void getChatModel_withTimeout_buildsModelUsingRequestedDeadline() {
+        when(configProvider.getActive()).thenReturn(openAiCfg());
+        when(openAiBuilder.buildChatModel(any())).thenReturn(mockChatModel);
+
+        factory.getChatModel(Duration.ofSeconds(15));
+
+        ArgumentCaptor<AiModelConfig> captor = ArgumentCaptor.forClass(AiModelConfig.class);
+        verify(openAiBuilder).buildChatModel(captor.capture());
+        assertThat(captor.getValue().timeoutSec()).isEqualTo(15);
     }
 
     @Test
