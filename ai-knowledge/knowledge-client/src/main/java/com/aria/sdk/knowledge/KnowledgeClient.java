@@ -165,6 +165,11 @@ public class KnowledgeClient extends BaseClient {
             return this;
         }
 
+        public Builder callTimeout(Duration d) {
+            configBuilder.callTimeout(d);
+            return this;
+        }
+
         public Builder maxRetries(int n) {
             configBuilder.maxRetries(n);
             return this;

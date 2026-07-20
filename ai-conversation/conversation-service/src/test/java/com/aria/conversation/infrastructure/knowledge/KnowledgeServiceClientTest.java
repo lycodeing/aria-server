@@ -23,6 +23,7 @@ class KnowledgeServiceClientTest {
         Assertions.assertNotNull(config);
         assertThat(config.getConnectTimeout()).isEqualTo(Duration.ofSeconds(5));
         assertThat(config.getReadTimeout()).isEqualTo(Duration.ofSeconds(5));
+        assertThat(config.getCallTimeout()).isEqualTo(Duration.ofSeconds(5));
         assertThat(config.getMaxRetries()).isZero();
     }
 }
