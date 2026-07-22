@@ -211,20 +211,32 @@ public class DocIngestAppService {
     /**
      * 审核文档：通过时将状态推进到 PUBLISHED，退回时推回 DRAFT。
      *
+     * <p>使用条件 UPDATE（WHERE status = expectedStatus）替代 findById + update 两步操作，
+     * 消除并发审核时的 TOCTOU 竞态——两个并发请求最多只有一个能更新成功，
+     * 另一个因 affected=0 而抛出异常，由调用方重试。
+     *
      * @param docId        文档 ID
      * @param approved     true=通过，false=退回
      * @param rejectReason 退回原因（仅 approved=false 时有意义）
      */
+    @Transactional(rollbackFor = Exception.class)
     public void review(String docId, boolean approved, String rejectReason) {
+        // 先查一次确认文档存在，并做合法性说明（不用于并发保护，并发保护由条件 UPDATE 承担）
         KnowledgeDoc doc = docRepository.findById(docId)
             .orElseThrow(() -> new BusinessException(ERROR_DOC_NOT_FOUND, "文档不存在：" + docId));
 
-        // 状态模式：流转合法性由 DocStatus.transitionTo() 统一校验，非法流转抛出 5010
-        DocStatus newStatus = doc.getStatus().transitionTo(
+        // 用状态机确认流转合法，但实际写入改用条件 UPDATE 保证原子性
+        DocStatus expectedStatus = doc.getStatus();
+        DocStatus newStatus = expectedStatus.transitionTo(
             approved ? DocStatus.PUBLISHED : DocStatus.DRAFT
         );
         String reviewerId = safeLoginId();
-        docRepository.updateReview(docId, newStatus, reviewerId);
+
+        int affected = docRepository.updateReviewIfStatus(docId, expectedStatus, newStatus, reviewerId);
+        if (affected == 0) {
+            throw new BusinessException(ERROR_BAD_REQUEST,
+                "文档状态已被其他操作变更，请刷新后重试 docId=" + docId);
+        }
 
         log.info("文档审核完成，docId={}，结果={}，reviewerId={}",
             docId, approved ? "通过" : "退回", reviewerId);
@@ -237,14 +249,25 @@ public class DocIngestAppService {
     /**
      * 下线文档（更新状态为 DEPRECATED，chunk 由 Worker 异步清理）。
      *
+     * <p>使用条件 UPDATE（WHERE status = expectedStatus）替代 findById + update 两步，
+     * 消除并发下线时的 TOCTOU 竞态。
+     *
      * @param docId 文档 ID
      */
+    @Transactional(rollbackFor = Exception.class)
     public void offline(String docId) {
         KnowledgeDoc doc = docRepository.findById(docId)
             .orElseThrow(() -> new BusinessException(ERROR_DOC_NOT_FOUND, "文档不存在：" + docId));
-        // 状态模式：DEPRECATED 是终态，DRAFT/FAILED 状态直接下线也应拒绝
-        doc.getStatus().transitionTo(DocStatus.DEPRECATED);
-        docRepository.updateStatusBatch(List.of(docId), DocStatus.DEPRECATED);
+
+        // 验证流转合法性（DRAFT/FAILED 不允许直接 DEPRECATED）
+        DocStatus expectedStatus = doc.getStatus();
+        expectedStatus.transitionTo(DocStatus.DEPRECATED);
+
+        int affected = docRepository.updateStatusIf(docId, expectedStatus, DocStatus.DEPRECATED);
+        if (affected == 0) {
+            throw new BusinessException(ERROR_BAD_REQUEST,
+                "文档状态已被其他操作变更，请刷新后重试 docId=" + docId);
+        }
         log.info("文档已下线，docId={}", docId);
     }
 

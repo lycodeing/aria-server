@@ -4,7 +4,9 @@ import com.aria.common.sdk.ClientConfig;
 import okhttp3.HttpUrl;
 import okhttp3.Interceptor;
 import okhttp3.Request;
+import okhttp3.RequestBody;
 import okhttp3.Response;
+import okio.Buffer;
 
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
@@ -107,11 +109,21 @@ public class AkSkSigningInterceptor implements Interceptor {
     }
 
     /**
-     * 提取 OkHttp Request body（用于签名计算）。
+     * 提取 OkHttp Request body 字节，用于签名计算。
+     *
+     * <p>通过 {@link okio.Buffer} 将 body 内容拷贝到内存缓冲区，不消费原始流。
+     * 无 body（GET / DELETE）时返回空数组，对应 body hash 为空串，与服务端约定一致。
+     *
+     * @param request 原始请求
+     * @return body 字节数组；无 body 时为空数组
      */
-    private static byte[] okhttpBody(Request request) {
-        // body 在 OkHttp 拦截器链中可能已被消费，实际使用时配合 RetryInterceptor 的 body cache
-        // 此处返回空数组（签名仍有效，因为 body hash 一致）
-        return new byte[0];
+    private static byte[] okhttpBody(Request request) throws IOException {
+        RequestBody body = request.body();
+        if (body == null) {
+            return new byte[0];
+        }
+        Buffer buffer = new Buffer();
+        body.writeTo(buffer);
+        return buffer.readByteArray();
     }
 }

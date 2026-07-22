@@ -15,6 +15,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -100,5 +101,18 @@ class DynamicModelFactoryTest {
     void currentConfigHash_returnsNonEmpty() {
         when(configProvider.getActive()).thenReturn(openAiCfg());
         assertThat(factory.currentConfigHash()).isNotBlank();
+    }
+
+    @Test
+    void getChatModel_sameConfigDifferentTimeout_returnsDistinctInstances() {
+        // 验证 timeoutSec 已纳入缓存 key：相同 baseUrl/model/key 但不同 timeout → builder 各调用一次
+        when(configProvider.getActive()).thenReturn(openAiCfg());
+        when(openAiBuilder.buildChatModel(any())).thenReturn(mockChatModel);
+
+        factory.getChatModel(Duration.ofSeconds(30));
+        factory.getChatModel(Duration.ofSeconds(5));
+
+        // 两个不同 hash → buildChatModel 被调用两次，而非命中缓存
+        verify(openAiBuilder, times(2)).buildChatModel(any());
     }
 }
