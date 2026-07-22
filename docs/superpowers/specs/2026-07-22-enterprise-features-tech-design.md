@@ -47,7 +47,8 @@ Aria 客服系统已具备 AI 对话、人工坐席队列、知识库检索、CS
 ```
 ai-conversation/conversation-service/
 ├── domain/
-│   └── model/          ← 新增：SlaPolicy, BreachType, Tag 领域枚举/值对象
+│   ├── model/          ← 新增：SlaPolicy, BreachType, BreachStage, Tag 领域枚举/值对象
+│   └── service/        ← 新增：SlaPolicyMatcher（领域服务，按优先级匹配策略）
 ├── application/
 │   └── service/        ← 新增：BusinessHoursService, TagAppService, NoteAppService
 ├── infrastructure/
@@ -59,6 +60,10 @@ ai-conversation/conversation-service/
 └── interfaces/
     └── rest/           ← 新增：9 个 Controller，修改 2 个现有 Controller
 ```
+
+> **DDD 分层说明：**
+> - `SlaPolicyMatcher` 包含核心业务规则（按访客标签、转人工标签匹配策略），属于 **domain service**，放在 `domain/service/` 下；通过 `SlaPolicyRepository` 接口（domain 层定义，infrastructure 层实现）读取策略列表，保持 domain 层不依赖 infrastructure。
+> - `SlaBreachEvaluator` 需要业务时间计算能力，在 domain 层定义 `IBusinessHoursCalculator` 接口，infrastructure 的 `BusinessHoursService` 实现该接口，通过依赖倒置保持 Evaluator 可在 domain 层内测试。
 
 ### 2.2 新增表一览
 
@@ -80,9 +85,11 @@ ai-conversation/conversation-service/
 | Key | TTL | 说明 |
 |---|---|---|
 | `visitor:tags:{visitorId}` | 24h | 访客标签缓存，标签变更时 invalidate |
-| `business_hours:status:{yyyy-MM-dd}` | 距当天午夜剩余秒数 | 当天营业状态缓存 |
-| `sla:policy:active` | 5min | 启用中的 SLA 策略缓存 |
+| `business_hours:schedule:{yyyy-MM-dd}` | 距当天午夜剩余秒数 | 当天生效的时间段列表（含节假日覆盖），管理员修改排班/节假日时主动 del |
+| `sla:policies:enabled` | 5min | 所有启用中的 SLA 策略列表（`List<SlaPolicy>`），策略 CRUD 时 evict |
 | `lock:scheduler:sla-scan:shard:{N}` | 25s（leaseTime）| 分片扫描分布式锁 |
+
+> `sla:policies:enabled` 缓存的是完整策略列表，`SlaPolicyMatcher.findPolicy()` 从缓存中按优先级遍历匹配，不再是单条策略。
 
 ## 三、SLA 管理
 
@@ -116,12 +123,23 @@ CREATE TABLE cs_sla_policy (
     -- 违规行为
     actions                JSON        NOT NULL                    COMMENT '违规触发行为配置',
 
-    created_at             DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at             DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    create_time            DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,           -- I7修复：阿里规范用 create_time
+    update_time            DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) COMMENT='SLA 策略';
 ```
 
-`actions` JSON 结构（每条策略独立配置开关）：
+> **M7修复 — JSON 列 TypeHandler：** `actions`、`match_visitor_tags`、`match_transfer_tags` 均为 JSON 列，Entity 注解需显式指定 TypeHandler，否则 MyBatis-Plus 取出的是 `String` 而非对象：
+> ```java
+> @TableField(typeHandler = JacksonTypeHandler.class)
+> private SlaBreachActions actions;
+>
+> @TableField(typeHandler = JacksonTypeHandler.class)
+> private List<String> matchVisitorTags;
+>
+> @TableField(typeHandler = JacksonTypeHandler.class)
+> private List<String> matchTransferTags;
+> ```
+> `cs_business_hours_schedule.time_ranges`、`cs_business_hours_holiday.time_ranges` 同理，Entity 需注解 `@TableField(typeHandler = JacksonTypeHandler.class)` 并声明泛型类型 `List<TimeRange>`。
 
 ```json
 {
@@ -248,8 +266,10 @@ Pod 宕机后分片锁 25s TTL 自动释放，其他 Pod 下轮接管，**不漏
 ```yaml
 sla:
   shard-count: 4          # 建议 ≥ Pod 数
-  scan-interval-ms: 30000
+  scan-interval-ms: 30000 # M6修复：@Scheduled 中使用 ${sla.scan-interval-ms:30000}，与此键保持一致
 ```
+
+> **M6修复 — 配置键对齐：** `@Scheduled` 注解中写 `fixedDelayString = "${sla.scan-interval-ms:30000}"`（连字符），`SlaProperties` 中字段 `scanIntervalMs` 对应 Spring Boot kebab-case 绑定键 `sla.scan-interval-ms`，两者必须一致，否则 `SlaProperties.scanIntervalMs` 修改对调度器无效。
 
 ### 3.4 组件设计（单一职责拆分）
 
@@ -258,28 +278,47 @@ sla:
 ```
 SlaBreachScanScheduler   ← 调度入口，分片锁逻辑
 └── SlaBreachDetector    ← 薄编排层，串联下面三个
-    ├── SlaBreachEvaluator   ← 纯计算，判断违规，无任何 I/O（单测零 Mock）
-    ├── SlaBreachRecorder    ← 幂等持久化到 DB
-    └── SlaBreachNotifier    ← SSE 告警 + 自动升级
+    ├── SlaBreachEvaluator   ← 违规计算，依赖 IBusinessHoursCalculator 接口（单测只需 Mock 该接口）
+    ├── SlaBreachRecorder    ← 幂等持久化到 DB（按 session_id + breach_type + stage 三维幂等）
+    └── SlaBreachNotifier    ← SSE 告警；autoEscalate 通过发布领域事件解耦 SessionQueueService
 ```
 
-**`BreachCandidate`**（值对象，package-private）：
+**`BreachCandidate`**（值对象，位于 `infrastructure/scheduler/` 包，包内共享）：
 ```java
 record BreachCandidate(
     String sessionId,
     BreachType type,
-    BreachStage stage,          // WARNING | BREACH
+    BreachStage stage,              // WARNING | BREACH
     int targetSec,
-    int warnAtSec,              // = targetSec × warningThresholdPct / 100
+    int warnAtSec,                  // = targetSec × warningThresholdPct / PCT_DIVISOR
     int actualSec,
     OffsetDateTime detectedAt
 ) {}
 ```
 
-**`SlaBreachEvaluator`**（纯函数，依赖为零）：
+**`IBusinessHoursCalculator`**（domain 层接口，依赖倒置）：
+```java
+// 位于 domain/service/ 包下
+public interface IBusinessHoursCalculator {
+    /** 计算 [start, now] 区间内的业务时间秒数，跳过非服务时段 */
+    long calcBusinessSeconds(OffsetDateTime start, OffsetDateTime now);
+}
+// infrastructure 层的 BusinessHoursService 实现此接口
+```
+
+**`SlaBreachEvaluator`**（domain service，通过接口隔离 infrastructure 依赖）：
+
+> `SlaBreachEvaluator` 依赖 `IBusinessHoursCalculator` 接口（而非 infrastructure 实现），符合 DDD 依赖倒置原则。单元测试 Mock `IBusinessHoursCalculator` 即可，无需启动 Spring 容器。
+
 ```java
 @Component
+@RequiredArgsConstructor
 public class SlaBreachEvaluator {
+
+    private static final int PCT_DIVISOR = 100;
+
+    private final IBusinessHoursCalculator businessHoursCalculator;
+
     public List<BreachCandidate> evaluate(ConversationEntity session,
                                           SlaPolicy policy, OffsetDateTime now) {
         List<BreachCandidate> results = new ArrayList<>();
@@ -289,7 +328,7 @@ public class SlaBreachEvaluator {
         if (session.getStatus() == SessionStatus.WAITING) {
             long elapsed = calcElapsed(session.getStartedAt(), now, policy.getTimeMode());
             int  target  = policy.getWaitTimeTargetSec();
-            int  warnAt  = target * pct / 100;
+            int  warnAt  = target * pct / PCT_DIVISOR;
             if      (elapsed >= target) results.add(candidate(session, WAIT, BREACH,  target, warnAt, elapsed, now));
             else if (elapsed >= warnAt) results.add(candidate(session, WAIT, WARNING, target, warnAt, elapsed, now));
         }
@@ -300,7 +339,7 @@ public class SlaBreachEvaluator {
                 && session.getFirstReplyAt() == null) {
             long elapsed = calcElapsed(session.getAcceptedAt(), now, policy.getTimeMode());
             int  target  = policy.getFrtTargetSec();
-            int  warnAt  = target * pct / 100;
+            int  warnAt  = target * pct / PCT_DIVISOR;
             if      (elapsed >= target) results.add(candidate(session, FRT, BREACH,  target, warnAt, elapsed, now));
             else if (elapsed >= warnAt) results.add(candidate(session, FRT, WARNING, target, warnAt, elapsed, now));
         }
@@ -310,7 +349,7 @@ public class SlaBreachEvaluator {
                 && session.getAcceptedAt() != null) {
             long elapsed = calcElapsed(session.getAcceptedAt(), now, policy.getTimeMode());
             int  target  = policy.getHandleTimeTargetSec();
-            int  warnAt  = target * pct / 100;
+            int  warnAt  = target * pct / PCT_DIVISOR;
             if      (elapsed >= target) results.add(candidate(session, HANDLE, BREACH,  target, warnAt, elapsed, now));
             else if (elapsed >= warnAt) results.add(candidate(session, HANDLE, WARNING, target, warnAt, elapsed, now));
         }
@@ -320,7 +359,7 @@ public class SlaBreachEvaluator {
 
     private long calcElapsed(OffsetDateTime start, OffsetDateTime now, TimeMode mode) {
         return mode == TimeMode.BUSINESS_HOURS
-            ? businessHoursService.calcBusinessSeconds(start, now)
+            ? businessHoursCalculator.calcBusinessSeconds(start, now)
             : ChronoUnit.SECONDS.between(start, now);
     }
 }
@@ -344,6 +383,120 @@ public void check(ConversationEntity session) {
     if (!newBreaches.isEmpty()) {
         // 本轮同一 session 的所有新增违规（WARNING + BREACH 混合）聚合为一条 SSE，避免告警疲劳
         notifier.notifyBatch(newBreaches, policy, session);
+    }
+}
+```
+
+**`SlaBreachRecorder`**（幂等写入，三维唯一性检查）：
+```java
+@Component
+@RequiredArgsConstructor
+public class SlaBreachRecorder {
+
+    private final SlaBreachMapper slaBreachMapper;
+
+    /**
+     * 幂等写入：按 (session_id, breach_type, stage) 三维检查，
+     * WARNING 入库不阻断后续 BREACH 写入（两者 stage 不同）。
+     */
+    public Optional<SlaBreachEntity> record(BreachCandidate candidate, Long policyId) {
+        // C5修复：检查维度必须包含 stage，否则 WARNING 入库后 BREACH 会被错误跳过
+        if (slaBreachMapper.existsBySessionTypeAndStage(
+                candidate.sessionId(), candidate.type(), candidate.stage())) {
+            return Optional.empty();
+        }
+        SlaBreachEntity entity = SlaBreachEntity.builder()
+            .sessionId(candidate.sessionId())
+            .policyId(policyId)
+            .breachType(candidate.type().name())
+            .stage(candidate.stage().name())
+            .targetSec(candidate.targetSec())
+            .warnAtSec(candidate.warnAtSec())
+            .actualSec(candidate.actualSec())
+            .breachAt(candidate.detectedAt())
+            .build();
+        slaBreachMapper.insert(entity);
+        return Optional.of(entity);
+    }
+
+    public void markAlerted(Long breachId, OffsetDateTime at) {
+        slaBreachMapper.updateAlertedAt(breachId, at);
+    }
+
+    public void markEscalated(Long breachId, OffsetDateTime at) {
+        slaBreachMapper.updateEscalatedAt(breachId, at);
+    }
+}
+```
+
+**`SlaBreachNotifier`**（SSE 告警 + 领域事件触发自动升级）：
+
+> **I3 修复：** `SlaBreachNotifier` 不直接调用 `SessionQueueService.transfer()`（跨聚合直接调用违反 DDD 边界），改为发布 `SlaEscalationRequestedEvent` 领域事件，由 application 层的事件处理器响应并调用 `SessionQueueService`，两个聚合通过事件解耦。
+
+```java
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class SlaBreachNotifier {
+
+    @Value("${conversation.events.exchange}")
+    private String eventsExchange;
+
+    private final RabbitTemplate       eventsRabbitTemplate;
+    private final ApplicationEventPublisher springEventPublisher;  // Spring 内部事件总线
+    private final SlaBreachRecorder    recorder;
+
+    public void notifyBatch(List<SlaBreachEntity> newBreaches,
+                            SlaPolicy policy, ConversationEntity session) {
+        SlaBreachActions actions = policy.getActions();
+        OffsetDateTime now = OffsetDateTime.now();
+
+        // SSE：聚合推送，WARNING + BREACH 合并为一条消息
+        if (actions.isSseAlert()) {
+            SlaBreachBatchEvent event = buildBatchEvent(newBreaches, policy, session);
+            try {
+                eventsRabbitTemplate.convertAndSend(eventsExchange, "", event);
+                newBreaches.forEach(b -> recorder.markAlerted(b.getId(), now));
+            } catch (Exception e) {
+                log.error("[SLA] SSE publish failed session={}", session.getSessionId(), e);
+            }
+        }
+
+        // 自动升级：仅 BREACH 阶段触发，发布领域事件，由 application 层处理
+        boolean hasActualBreach = newBreaches.stream()
+            .anyMatch(b -> BreachStage.BREACH.name().equals(b.getStage()));
+        if (hasActualBreach && actions.isAutoEscalate()
+                && actions.getEscalateToUserId() != null) {
+            springEventPublisher.publishEvent(
+                new SlaEscalationRequestedEvent(
+                    session.getSessionId(), actions.getEscalateToUserId(),
+                    newBreaches.stream()
+                        .filter(b -> BreachStage.BREACH.name().equals(b.getStage()))
+                        .map(SlaBreachEntity::getId).toList()
+                )
+            );
+        }
+    }
+}
+
+// application 层事件处理器
+@Component
+@RequiredArgsConstructor
+public class SlaEscalationHandler {
+
+    private final SessionQueueService  sessionQueueService;
+    private final SlaBreachRecorder    recorder;
+
+    @EventListener
+    public void onEscalationRequested(SlaEscalationRequestedEvent event) {
+        try {
+            sessionQueueService.transfer(event.sessionId(), event.targetAgentId());
+            OffsetDateTime now = OffsetDateTime.now();
+            event.breachIds().forEach(id -> recorder.markEscalated(id, now));
+        } catch (Exception e) {
+            log.warn("[SLA] autoEscalate failed session={} target={}",
+                event.sessionId(), event.targetAgentId(), e);
+        }
     }
 }
 ```
@@ -420,10 +573,10 @@ isOpen() = true  → 正常入队
 CREATE TABLE cs_business_hours_schedule (
     day_of_week  TINYINT     NOT NULL PRIMARY KEY COMMENT '1=周一 … 7=周日',
     is_open      TINYINT(1)  NOT NULL DEFAULT 1   COMMENT '当天是否营业',
-    time_ranges  JSON        NOT NULL              COMMENT '多时段数组',
+    time_ranges  JSON        NOT NULL              COMMENT '多时段数组（JacksonTypeHandler 反序列化为 List<TimeRange>）',
     timezone     VARCHAR(50) NOT NULL DEFAULT 'Asia/Shanghai',
     updated_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) COMMENT='每周排班配置（7条固定记录）';
+) COMMENT='每周排班配置（7条固定记录，只允许 UPDATE 不允许 DELETE）';
 ```
 
 `time_ranges` 支持每天多个时间段（满足午休间隔场景）：
@@ -433,6 +586,10 @@ CREATE TABLE cs_business_hours_schedule (
 
 Flyway 初始化插入 7 条记录：周一至周五 09:00–18:00，周六周日关闭。
 
+**I5修复 — 防误删保护：**
+- `PUT /api/v1/admin/business-hours/schedule` 只做 `UPDATE`，接口层不暴露 `DELETE` 端点
+- `BusinessHoursService.isOpen()` 增加防空降级：若周排班表查无数据（意外被删），记录 `WARN` 日志并降级返回 `true`（允许转人工，而非永久拒绝服务）
+
 #### `cs_business_hours_holiday` — 节假日例外
 
 ```sql
@@ -440,21 +597,23 @@ CREATE TABLE cs_business_hours_holiday (
     id          BIGINT      NOT NULL AUTO_INCREMENT PRIMARY KEY,
     date        DATE        NOT NULL COMMENT '具体日期',
     type        VARCHAR(10) NOT NULL COMMENT 'CLOSED | CUSTOM | WORKDAY',
-    time_ranges JSON                 COMMENT 'type=CUSTOM 时有效',
+    time_ranges JSON                 COMMENT 'CUSTOM/WORKDAY 类型有效，指定当天服务时段；CLOSED 时为 null',
     remark      VARCHAR(100)         COMMENT '备注，如"国庆节"',
     source      VARCHAR(10) NOT NULL DEFAULT 'MANUAL' COMMENT 'AUTO | MANUAL',
-    created_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    create_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_date (date)
 ) COMMENT='节假日例外配置';
 ```
 
 `type` 枚举：
 
-| 值 | 含义 | 来源 |
-|---|---|---|
-| `CLOSED` | 强制关闭（法定节假日）| holiday-cn 自动同步 / 管理员手动 |
-| `WORKDAY` | 调休补班日（holiday-cn `isOffDay=false`）| holiday-cn 自动同步 |
-| `CUSTOM` | 自定义时间段（临时调整）| 管理员手动 |
+| 值 | 含义 | `time_ranges` | 来源 |
+|---|---|---|---|
+| `CLOSED` | 强制关闭（法定节假日）| null | holiday-cn / 管理员 |
+| `WORKDAY` | 调休补班日（`isOffDay=false`）| **必填**，指定当天服务时段 | holiday-cn（同步时从周一排班复制）|
+| `CUSTOM` | 临时自定义时段 | **必填** | 管理员手动 |
+
+> **holiday-cn 同步 WORKDAY 时的 `time_ranges` 处理：** 自动同步任务写入 WORKDAY 记录时，将 `day_of_week=1`（周一）的 `time_ranges` 作为默认值复制过来，确保字段非空。管理员可后续修改单条记录覆盖。
 
 `source` 枚举：`AUTO`（holiday-cn 同步）/ `MANUAL`（管理员手动）
 
@@ -482,6 +641,22 @@ https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/{year}.json
 2. **管理员手动触发**：`POST /api/v1/admin/business-hours/holidays/sync?year={year}`，立即拉取指定年份
 3. **单条手动兜底**：管理员可对任意记录增删改，处理国务院临时补充通知
 
+**M8修复 — HTTP 超时与降级策略：**
+
+jsDelivr CDN 在中国大陆网络环境中可能出现延迟或不可达，同步任务需明确超时和降级行为：
+
+```java
+// HolidaySyncService 中的 HTTP 配置
+private static final int CONNECT_TIMEOUT_MS = 5_000;
+private static final int READ_TIMEOUT_MS    = 10_000;
+private static final int MAX_RETRY_TIMES    = 3;
+```
+
+- 连接超时 5s，读取超时 10s
+- 失败时重试最多 3 次（指数退避：1s / 3s / 9s）
+- 全部重试失败：年度自动同步记录 ERROR 日志并抛出异常（不静默吞掉）；手动触发接口返回 `500` 让前端提示重试
+- 备用数据源：可在 `system_config` 中配置自定义 CDN 地址覆盖默认值
+
 ### 4.4 营业状态判断逻辑
 
 ```
@@ -489,8 +664,8 @@ BusinessHoursService.isOpen(now: ZonedDateTime): boolean
 
 ① 查节假日表 date = today
    CLOSED   → false（直接返回）
-   WORKDAY  → 跳到步骤③（忽略周表，按工作日处理）
-   CUSTOM   → 用该记录的 time_ranges 判断时间段
+   WORKDAY  → 用该记录的 time_ranges 判断时间段（步骤③）
+   CUSTOM   → 用该记录的 time_ranges 判断时间段（步骤③）
    无记录   → 继续步骤②
 
 ② 查周排班表 day_of_week = today.dayOfWeek
@@ -499,10 +674,34 @@ BusinessHoursService.isOpen(now: ZonedDateTime): boolean
 ③ 遍历 time_ranges，now.time 落在任意区间内 → true，否则 → false
 ```
 
-结果缓存 Redis，TTL = 距当天午夜的剩余秒数（每天自动失效，无需手动清理）：
+**缓存策略（修正版）：**
+
+> ⚠️ 不能缓存 `boolean` 结果——上午 09:01 缓存 `true`，午休 12:00 后取缓存仍是 `true`，导致非服务时间放行转人工。
+
+正确做法：**缓存当天的排班区间列表**，每次 `isOpen()` 用实时时间与缓存的区间比较：
+
 ```
-key: business_hours:status:{yyyy-MM-dd}
+key:   business_hours:schedule:{yyyy-MM-dd}
+value: List<TimeRange>（当天实际生效的时间段，已合并节假日覆盖）
+TTL:   距当天午夜的剩余秒数（每天自动重新加载）
 ```
+
+`isOpen()` 的 Redis 读写逻辑：
+```java
+public boolean isOpen(ZonedDateTime now) {
+    String dateKey = "business_hours:schedule:" + now.toLocalDate();
+    List<TimeRange> ranges = cache.get(dateKey);          // 取当天时间段列表
+    if (ranges == null) {
+        ranges = loadTodayRanges(now.toLocalDate());       // 查 DB（节假日 → 周排班）
+        long ttl = secondsUntilMidnight(now);
+        cache.set(dateKey, ranges, ttl);
+    }
+    LocalTime t = now.toLocalTime();
+    return ranges.stream().anyMatch(r -> !t.isBefore(r.start()) && t.isBefore(r.end()));
+}
+```
+
+缓存失效时机：管理员修改排班或节假日时，主动 `del business_hours:schedule:{date}` 使对应日期缓存失效。
 
 ### 4.5 集成点
 
@@ -579,12 +778,15 @@ CREATE TABLE cs_tag (
     name        VARCHAR(50) NOT NULL                   COMMENT '标签名',
     color       VARCHAR(7)  NOT NULL DEFAULT '#6B7280' COMMENT '十六进制色值',
     source      VARCHAR(10) NOT NULL DEFAULT 'PRESET'  COMMENT 'PRESET | CUSTOM',
-    usage_count INT         NOT NULL DEFAULT 0         COMMENT '使用次数（访客+会话标签合计）',
+    usage_count INT         NOT NULL DEFAULT 0         COMMENT '使用次数（含访客+会话标签合计，原子更新）',
     created_by  VARCHAR(64)                            COMMENT '创建人 userId',
-    created_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    create_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,   -- I7修复：阿里规范字段名
+    update_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_name (name)
-) COMMENT='标签字典';
+) COMMENT='标签字典（JSON 列 TypeHandler 见 Entity 注解）';
+```
+
+> **I4修复 — `usage_count` 并发安全：** 坐席打标签时，`usage_count` 自增使用 MyBatis-Plus 的 `update("usage_count = usage_count + 1")` 方式，让 DB 做原子操作，不允许先 SELECT 再 UPDATE 的非原子写法。
 ```
 
 预置 5 个标签（Flyway 初始化，`source=PRESET`）：
@@ -836,12 +1038,14 @@ GET    /api/v1/admin/sessions  # 支持 tagId/agentId/status/startDate/endDate/k
 ```java
 public enum SessionEventType {
     ENQUEUE, ACCEPTED, CLOSED, TRANSFER,  // 现有
-    SLA_BREACH,   // 新增：SLA 违规告警
+    SLA_BREACH,   // 新增：SLA 违规告警（含 WARNING 和 BREACH 两个阶段）
     TAG_UPDATED   // 新增：标签变更通知
 }
 ```
 
 访客侧 SSE 新增 event 名：`offline`，payload：`{ message, nextOpenTime }`
+
+> **M4说明 — `SessionEventSubscriber` 无需修改：** 现有 `SessionEventSubscriber.onSessionEvent(Message)` 直接将 AMQP message body 的 JSON bytes 透传给所有已连接坐席的 `SseEmitter`，不反序列化 `SessionEvent` 对象。因此新增 `SLA_BREACH` 事件类型只需往同一个 fanout exchange 发送新 payload 对象即可，subscriber 自动广播，无需改动消费者代码。
 
 ### 6.5 权限 key 新增汇总
 
@@ -886,9 +1090,10 @@ CREATE TABLE cs_sla_policy (
     frt_target_sec         INT         NOT NULL DEFAULT 60         COMMENT '首次响应超时（秒）',
     handle_time_target_sec INT         NOT NULL DEFAULT 1800       COMMENT '处理总时长超时（秒）',
     warning_threshold_pct  TINYINT     NOT NULL DEFAULT 80         COMMENT '预警百分比阈值',
-    actions                JSON        NOT NULL                    COMMENT '违规行为配置',
-    created_at             DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at             DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    actions                JSON        NOT NULL                    COMMENT '违规行为配置（JacksonTypeHandler 反序列化为 SlaBreachActions）',
+    create_time            DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time            DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_priority (is_enabled, priority)   -- I6修复：策略匹配按 priority DESC 全表扫描，需要复合索引
 ) COMMENT='SLA 策略';
 
 -- 默认兜底策略，priority=0，无匹配条件限制，所有会话都会命中
@@ -910,6 +1115,7 @@ CREATE TABLE cs_sla_breach (
     breach_at    DATETIME    NOT NULL COMMENT '记录时间',
     alerted_at   DATETIME             COMMENT 'SSE 告警时间',
     escalated_at DATETIME             COMMENT '自动升级时间（WARNING 阶段不填）',
+    create_time  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,  -- I7修复：补齐阿里规范 create_time
     INDEX idx_session_id (session_id),
     INDEX idx_breach_at  (breach_at),
     UNIQUE KEY uk_session_type_stage (session_id, breach_type, stage)
@@ -944,7 +1150,7 @@ CREATE TABLE cs_business_hours_holiday (
     time_ranges JSON                 COMMENT 'type=CUSTOM 时有效',
     remark      VARCHAR(100)         COMMENT '备注',
     source      VARCHAR(10) NOT NULL DEFAULT 'MANUAL' COMMENT 'AUTO | MANUAL',
-    created_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    create_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE KEY uk_date (date)
 ) COMMENT='节假日例外配置';
 
@@ -963,10 +1169,10 @@ CREATE TABLE cs_tag (
     name        VARCHAR(50) NOT NULL                   COMMENT '标签名',
     color       VARCHAR(7)  NOT NULL DEFAULT '#6B7280' COMMENT '十六进制色值',
     source      VARCHAR(10) NOT NULL DEFAULT 'PRESET'  COMMENT 'PRESET | CUSTOM',
-    usage_count INT         NOT NULL DEFAULT 0         COMMENT '使用次数',
+    usage_count INT         NOT NULL DEFAULT 0         COMMENT '使用次数（原子更新：usage_count = usage_count + 1）',
     created_by  VARCHAR(64)                            COMMENT '创建人 userId',
-    created_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    create_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_name (name)
 ) COMMENT='标签字典';
 
@@ -981,7 +1187,7 @@ CREATE TABLE cs_visitor_tag (
     visitor_id  VARCHAR(64) NOT NULL COMMENT 'anonymousId',
     tag_id      BIGINT      NOT NULL COMMENT 'FK → cs_tag.id',
     tagged_by   VARCHAR(64) NOT NULL COMMENT '坐席 userId',
-    tagged_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    create_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (visitor_id, tag_id),
     INDEX idx_visitor_id (visitor_id)
 ) COMMENT='访客持久标签';
@@ -990,7 +1196,7 @@ CREATE TABLE cs_conversation_tag (
     session_id  VARCHAR(64) NOT NULL COMMENT 'sessionId',
     tag_id      BIGINT      NOT NULL COMMENT 'FK → cs_tag.id',
     tagged_by   VARCHAR(64) NOT NULL COMMENT '坐席 userId',
-    tagged_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    create_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (session_id, tag_id),
     INDEX idx_session_id (session_id)
 ) COMMENT='会话级标签';
@@ -1000,8 +1206,8 @@ CREATE TABLE cs_conversation_note (
     session_id  VARCHAR(64) NOT NULL COMMENT 'sessionId',
     content     TEXT        NOT NULL COMMENT '备注内容（对访客不可见）',
     created_by  VARCHAR(64) NOT NULL COMMENT '坐席 userId',
-    created_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    create_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_session_id (session_id)
 ) COMMENT='会话内部备注';
 ```
