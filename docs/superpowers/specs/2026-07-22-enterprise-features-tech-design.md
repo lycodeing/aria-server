@@ -311,56 +311,151 @@ public interface IBusinessHoursCalculator {
 > `SlaBreachEvaluator` 依赖 `IBusinessHoursCalculator` 接口（而非 infrastructure 实现），符合 DDD 依赖倒置原则。单元测试 Mock `IBusinessHoursCalculator` 即可，无需启动 Spring 容器。
 
 ```java
+/**
+ * SLA 违规评估器 — 无状态计算组件，判断单个会话是否触发 SLA 违规（WARNING / BREACH）。
+ *
+ * <p>职责边界：仅负责"是否违规"的判断，不写 DB、不发通知、不改状态。
+ * 通过 {@link IBusinessHoursCalculator} 接口获取业务时间计算能力，符合依赖倒置原则。
+ *
+ * <p>三个 SLA 指标（WAIT / FRT / HANDLE）各自独立检测，通过
+ * {@link #resolveStage} 统一处理 WARNING / BREACH 判定，避免重复逻辑。
+ */
 @Component
 @RequiredArgsConstructor
 public class SlaBreachEvaluator {
 
+    /** 百分比计算除数，避免魔法数字 */
     private static final int PCT_DIVISOR = 100;
 
     private final IBusinessHoursCalculator businessHoursCalculator;
 
+    /**
+     * 评估会话是否触发 SLA 违规。
+     *
+     * <p>同一次调用可能同时返回多个候选（如 WAIT + FRT 同时达阈值），
+     * 由调用方统一持久化并聚合推送，本方法不做任何 I/O。
+     *
+     * @param session 待检测的活跃会话
+     * @param policy  命中的 SLA 策略（由 SlaPolicyMatcher 筛选，调用方保证非 null）
+     * @param now     检测基准时间，由调用方传入以保证同批次时间一致
+     * @return 本次检测产生的违规候选列表，无违规则返回空列表（不返回 null）
+     */
     public List<BreachCandidate> evaluate(ConversationEntity session,
-                                          SlaPolicy policy, OffsetDateTime now) {
+                                          SlaPolicy policy,
+                                          OffsetDateTime now) {
         List<BreachCandidate> results = new ArrayList<>();
-        int pct = policy.getWarningThresholdPct();
-
-        // WAIT
-        if (session.getStatus() == SessionStatus.WAITING) {
-            long elapsed = calcElapsed(session.getStartedAt(), now, policy.getTimeMode());
-            int  target  = policy.getWaitTimeTargetSec();
-            int  warnAt  = target * pct / PCT_DIVISOR;
-            if      (elapsed >= target) results.add(candidate(session, WAIT, BREACH,  target, warnAt, elapsed, now));
-            else if (elapsed >= warnAt) results.add(candidate(session, WAIT, WARNING, target, warnAt, elapsed, now));
-        }
-
-        // FRT
-        if (session.getStatus() == SessionStatus.ACTIVE
-                && session.getAcceptedAt() != null
-                && session.getFirstReplyAt() == null) {
-            long elapsed = calcElapsed(session.getAcceptedAt(), now, policy.getTimeMode());
-            int  target  = policy.getFrtTargetSec();
-            int  warnAt  = target * pct / PCT_DIVISOR;
-            if      (elapsed >= target) results.add(candidate(session, FRT, BREACH,  target, warnAt, elapsed, now));
-            else if (elapsed >= warnAt) results.add(candidate(session, FRT, WARNING, target, warnAt, elapsed, now));
-        }
-
-        // HANDLE
-        if (session.getStatus() == SessionStatus.ACTIVE
-                && session.getAcceptedAt() != null) {
-            long elapsed = calcElapsed(session.getAcceptedAt(), now, policy.getTimeMode());
-            int  target  = policy.getHandleTimeTargetSec();
-            int  warnAt  = target * pct / PCT_DIVISOR;
-            if      (elapsed >= target) results.add(candidate(session, HANDLE, BREACH,  target, warnAt, elapsed, now));
-            else if (elapsed >= warnAt) results.add(candidate(session, HANDLE, WARNING, target, warnAt, elapsed, now));
-        }
-
+        evaluateWait(session, policy, now).ifPresent(results::add);
+        evaluateFrt(session, policy, now).ifPresent(results::add);
+        evaluateHandle(session, policy, now).ifPresent(results::add);
         return results;
     }
 
+    // ── 三个指标的独立检测方法 ─────────────────────────────────────────────────
+
+    /**
+     * 检测排队等待时长（WAIT）。
+     * 仅对 {@code status = WAITING} 的会话生效，计时起点为 {@code started_at}。
+     */
+    private Optional<BreachCandidate> evaluateWait(ConversationEntity session,
+                                                    SlaPolicy policy,
+                                                    OffsetDateTime now) {
+        if (session.getStatus() != SessionStatus.WAITING) {
+            return Optional.empty();
+        }
+        long elapsed = calcElapsed(session.getStartedAt(), now, policy.getTimeMode());
+        return resolveStage(elapsed, policy.getWaitTimeTargetSec(),
+                            policy.getWarningThresholdPct(), WAIT, session, now);
+    }
+
+    /**
+     * 检测首次响应时长（FRT）。
+     * 仅对 {@code status = ACTIVE} 且坐席尚未首响（{@code first_reply_at = null}）的会话生效，
+     * 计时起点为 {@code accepted_at}。
+     */
+    private Optional<BreachCandidate> evaluateFrt(ConversationEntity session,
+                                                   SlaPolicy policy,
+                                                   OffsetDateTime now) {
+        if (session.getStatus() != SessionStatus.ACTIVE
+                || session.getAcceptedAt() == null
+                || session.getFirstReplyAt() != null) {
+            return Optional.empty();
+        }
+        long elapsed = calcElapsed(session.getAcceptedAt(), now, policy.getTimeMode());
+        return resolveStage(elapsed, policy.getFrtTargetSec(),
+                            policy.getWarningThresholdPct(), FRT, session, now);
+    }
+
+    /**
+     * 检测总处理时长（HANDLE）。
+     * 仅对 {@code status = ACTIVE} 且已接受（{@code accepted_at != null}）的会话生效，
+     * 计时起点为 {@code accepted_at}。
+     * FRT 和 HANDLE 共享相同的前置条件子集，但语义不同：FRT 关注"是否首响"，HANDLE 关注"总时长"。
+     */
+    private Optional<BreachCandidate> evaluateHandle(ConversationEntity session,
+                                                      SlaPolicy policy,
+                                                      OffsetDateTime now) {
+        if (session.getStatus() != SessionStatus.ACTIVE
+                || session.getAcceptedAt() == null) {
+            return Optional.empty();
+        }
+        long elapsed = calcElapsed(session.getAcceptedAt(), now, policy.getTimeMode());
+        return resolveStage(elapsed, policy.getHandleTimeTargetSec(),
+                            policy.getWarningThresholdPct(), HANDLE, session, now);
+    }
+
+    // ── 通用辅助方法 ──────────────────────────────────────────────────────────
+
+    /**
+     * 根据已用时与阈值比较，决定产生 WARNING、BREACH 还是无违规。
+     *
+     * <pre>
+     *   elapsed >= targetSec          → BREACH
+     *   elapsed >= warnAtSec (target × pct / 100) → WARNING
+     *   else                          → empty（未达预警线，不产生候选）
+     * </pre>
+     *
+     * 该方法是三个指标检测逻辑的唯一出口，阈值判断收口于此，避免分散。
+     */
+    private Optional<BreachCandidate> resolveStage(long elapsed, int targetSec,
+                                                    int warningPct, BreachType type,
+                                                    ConversationEntity session,
+                                                    OffsetDateTime now) {
+        int warnAtSec = targetSec * warningPct / PCT_DIVISOR;
+        if (elapsed >= targetSec) {
+            return Optional.of(buildCandidate(session, type, BREACH, targetSec, warnAtSec, elapsed, now));
+        }
+        if (elapsed >= warnAtSec) {
+            return Optional.of(buildCandidate(session, type, WARNING, targetSec, warnAtSec, elapsed, now));
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * 根据 {@code time_mode} 计算已用时（秒）。
+     * <ul>
+     *   <li>{@code BUSINESS_HOURS}：跳过非服务时段，只累计业务时间内的秒数</li>
+     *   <li>{@code CALENDAR}：直接计算挂钟时间差</li>
+     * </ul>
+     */
     private long calcElapsed(OffsetDateTime start, OffsetDateTime now, TimeMode mode) {
         return mode == TimeMode.BUSINESS_HOURS
             ? businessHoursCalculator.calcBusinessSeconds(start, now)
             : ChronoUnit.SECONDS.between(start, now);
+    }
+
+    /**
+     * 构造 {@link BreachCandidate}，统一入口防止字段遗漏。
+     * {@code actualSec} 使用 {@code long} 入参，强转前已由调用方保证不超 {@code Integer.MAX_VALUE}
+     * （SLA 阈值通常为分钟级，单次会话不会超过 24h = 86400s）。
+     */
+    private BreachCandidate buildCandidate(ConversationEntity session,
+                                            BreachType type, BreachStage stage,
+                                            int targetSec, int warnAtSec,
+                                            long actualSec, OffsetDateTime detectedAt) {
+        return new BreachCandidate(
+            session.getSessionId(), type, stage,
+            targetSec, warnAtSec, (int) actualSec, detectedAt
+        );
     }
 }
 ```
