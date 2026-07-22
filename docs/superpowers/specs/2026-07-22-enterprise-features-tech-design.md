@@ -93,12 +93,29 @@ ai-conversation/conversation-service/
 ```sql
 CREATE TABLE cs_sla_policy (
     id                     BIGINT      NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    name                   VARCHAR(50) NOT NULL                 COMMENT '策略名称',
-    is_enabled             TINYINT(1)  NOT NULL DEFAULT 1       COMMENT '是否启用',
-    wait_time_target_sec   INT         NOT NULL DEFAULT 120     COMMENT '排队等待超时（秒）',
-    frt_target_sec         INT         NOT NULL DEFAULT 60      COMMENT '首次响应超时（秒）',
-    handle_time_target_sec INT         NOT NULL DEFAULT 1800    COMMENT '处理总时长超时（秒）',
-    actions                JSON        NOT NULL                 COMMENT '违规行为配置',
+    name                   VARCHAR(50) NOT NULL                    COMMENT '策略名称',
+    is_enabled             TINYINT(1)  NOT NULL DEFAULT 1          COMMENT '是否启用',
+    priority               INT         NOT NULL DEFAULT 0          COMMENT '优先级，越大越优先；同优先级按 id ASC',
+
+    -- 匹配条件（两个条件同时满足才命中；空数组 = 不限制）
+    match_visitor_tags     JSON                                    COMMENT '访客标签白名单，如["VIP","高价值"]，空=不限',
+    match_transfer_tags    JSON                                    COMMENT '转人工原因标签，如["投诉"]，空=不限',
+
+    -- 时间计算模式
+    time_mode              VARCHAR(15) NOT NULL DEFAULT 'CALENDAR'
+                           COMMENT 'CALENDAR=日历时间 7×24 | BUSINESS_HOURS=只计业务时间',
+
+    -- 各指标阈值
+    wait_time_target_sec   INT         NOT NULL DEFAULT 120        COMMENT '排队等待超时（秒）',
+    frt_target_sec         INT         NOT NULL DEFAULT 60         COMMENT '首次响应超时（秒）',
+    handle_time_target_sec INT         NOT NULL DEFAULT 1800       COMMENT '处理总时长超时（秒）',
+
+    -- 预警阈值（对三个指标统一生效）
+    warning_threshold_pct  TINYINT     NOT NULL DEFAULT 80         COMMENT '预警百分比，达到目标时长的该比例时发 WARNING',
+
+    -- 违规行为
+    actions                JSON        NOT NULL                    COMMENT '违规触发行为配置',
+
     created_at             DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) COMMENT='SLA 策略';
@@ -109,11 +126,36 @@ CREATE TABLE cs_sla_policy (
 ```json
 {
   "recordBreachOnly": true,       // 始终 true，违规必记录
-  "sseAlert": true,               // 违规时 SSE 推送给所有在线坐席/管理员
-  "autoEscalate": false,          // 自动转给指定坐席
+  "sseAlert": true,               // WARNING 和 BREACH 阶段都推送 SSE
+  "autoEscalate": false,          // 自动转给指定坐席（仅 BREACH 阶段触发，WARNING 不触发）
   "escalateToUserId": null        // autoEscalate=true 时的目标坐席 userId
 }
 ```
+
+**策略匹配规则（多策略按优先级排列，取第一个命中）：**
+
+```
+SlaPolicyMatcher.findPolicy(session):
+
+  取 is_enabled=1 的全部策略，按 priority DESC, id ASC 排序
+
+  for each policy:
+    ① match_visitor_tags 为空 OR 访客至少有一个 visitor_tag 在列表中 → ✓
+    ② match_transfer_tags 为空 OR session.tag 在列表中 → ✓
+    两个条件同时 ✓ → 命中，返回该策略，停止匹配
+
+  全部不命中 → 返回 null（该会话不受 SLA 监控）
+```
+
+配置示例：
+
+| priority | name | match_visitor_tags | match_transfer_tags | wait_time_target_sec |
+|---|---|---|---|---|
+| 100 | VIP-SLA | `["VIP","高价值"]` | `[]` | 60 |
+| 90 | 投诉优先-SLA | `[]` | `["投诉"]` | 90 |
+| 0 | 默认-SLA | `[]` | `[]` | 120 |
+
+访客带 VIP 标签且转人工原因为"投诉" → 命中 priority=100 的 VIP-SLA（第一个匹配即止）。
 
 #### `cs_sla_breach` — 违规记录
 
@@ -123,27 +165,44 @@ CREATE TABLE cs_sla_breach (
     session_id   VARCHAR(64) NOT NULL COMMENT '关联 sessionId',
     policy_id    BIGINT      NOT NULL COMMENT '触发策略 ID（快照，防策略变更影响历史）',
     breach_type  VARCHAR(10) NOT NULL COMMENT 'WAIT | FRT | HANDLE',
+    stage        VARCHAR(10) NOT NULL DEFAULT 'BREACH' COMMENT 'WARNING（预警）| BREACH（已违规）',
     target_sec   INT         NOT NULL COMMENT '阈值快照（秒）',
-    actual_sec   INT         NOT NULL COMMENT '实际耗时（秒）',
-    breach_at    DATETIME    NOT NULL COMMENT '违规时间',
+    warn_at_sec  INT         NOT NULL COMMENT '预警阈值快照（秒）= target_sec × warning_threshold_pct / 100',
+    actual_sec   INT         NOT NULL COMMENT '检测时实际耗时（秒）',
+    breach_at    DATETIME    NOT NULL COMMENT '记录时间',
     alerted_at   DATETIME             COMMENT 'SSE 告警时间，null=未推送',
-    escalated_at DATETIME             COMMENT '自动升级时间，null=未触发',
+    escalated_at DATETIME             COMMENT '自动升级时间，null=未触发（WARNING 阶段不填）',
     INDEX idx_session_id (session_id),
-    INDEX idx_breach_at  (breach_at)
+    INDEX idx_breach_at  (breach_at),
+    UNIQUE KEY uk_session_type_stage (session_id, breach_type, stage)
 ) COMMENT='SLA 违规记录';
 ```
 
+同一会话同一类型的生命周期：`无 → WARNING（80% 时）→ BREACH（100% 时）`，最多产生两条记录，联合唯一索引保证幂等。
+
 ### 3.2 检测逻辑
 
-三种违规类型：
+三种违规类型，每种检测 WARNING 和 BREACH 两个阶段：
 
-| 类型 | 判断条件 | 计算公式 |
-|---|---|---|
-| `WAIT` | `status = WAITING` | `now − started_at > wait_time_target_sec` |
-| `FRT` | `status = ACTIVE` 且 `first_reply_at IS NULL` | `now − accepted_at > frt_target_sec` |
-| `HANDLE` | `status = ACTIVE` | `now − accepted_at > handle_time_target_sec` |
+| 类型 | 前提条件 | 计算基准 | 时间模式 |
+|---|---|---|---|
+| `WAIT` | `status = WAITING` | `now − started_at` | 受 `time_mode` 控制 |
+| `FRT` | `status = ACTIVE` 且 `first_reply_at IS NULL` | `now − accepted_at` | 受 `time_mode` 控制 |
+| `HANDLE` | `status = ACTIVE` | `now − accepted_at` | 受 `time_mode` 控制 |
 
-**幂等保护：** 写入前查 `cs_sla_breach(session_id, breach_type)` 是否已存在，存在则跳过，不重复告警。
+**`time_mode` 计算说明：**
+
+```
+CALENDAR（默认）：直接用 ChronoUnit.SECONDS.between(start, now)
+BUSINESS_HOURS ：调用 BusinessHoursService.calcBusinessSeconds(start, now)
+                  只累计业务时间内的秒数，非服务时间段跳过
+```
+
+例：`wait_time_target_sec=120`，`warning_threshold_pct=80`，则：
+- `elapsed ≥ 96s`（120 × 80%）→ 产生 `WARNING` 候选
+- `elapsed ≥ 120s` → 产生 `BREACH` 候选
+
+**幂等保护：** 联合唯一索引 `(session_id, breach_type, stage)` 防止重复写入；写入前用 `INSERT IGNORE` 或先查再写均可。
 
 ### 3.3 分布式分片调度器
 
@@ -207,8 +266,13 @@ SlaBreachScanScheduler   ← 调度入口，分片锁逻辑
 **`BreachCandidate`**（值对象，package-private）：
 ```java
 record BreachCandidate(
-    String sessionId, BreachType type,
-    int targetSec, int actualSec, OffsetDateTime detectedAt
+    String sessionId,
+    BreachType type,
+    BreachStage stage,          // WARNING | BREACH
+    int targetSec,
+    int warnAtSec,              // = targetSec × warningThresholdPct / 100
+    int actualSec,
+    OffsetDateTime detectedAt
 ) {}
 ```
 
@@ -218,7 +282,46 @@ record BreachCandidate(
 public class SlaBreachEvaluator {
     public List<BreachCandidate> evaluate(ConversationEntity session,
                                           SlaPolicy policy, OffsetDateTime now) {
-        // 返回所有命中的违规候选，无 I/O
+        List<BreachCandidate> results = new ArrayList<>();
+        int pct = policy.getWarningThresholdPct();
+
+        // WAIT
+        if (session.getStatus() == SessionStatus.WAITING) {
+            long elapsed = calcElapsed(session.getStartedAt(), now, policy.getTimeMode());
+            int  target  = policy.getWaitTimeTargetSec();
+            int  warnAt  = target * pct / 100;
+            if      (elapsed >= target) results.add(candidate(session, WAIT, BREACH,  target, warnAt, elapsed, now));
+            else if (elapsed >= warnAt) results.add(candidate(session, WAIT, WARNING, target, warnAt, elapsed, now));
+        }
+
+        // FRT
+        if (session.getStatus() == SessionStatus.ACTIVE
+                && session.getAcceptedAt() != null
+                && session.getFirstReplyAt() == null) {
+            long elapsed = calcElapsed(session.getAcceptedAt(), now, policy.getTimeMode());
+            int  target  = policy.getFrtTargetSec();
+            int  warnAt  = target * pct / 100;
+            if      (elapsed >= target) results.add(candidate(session, FRT, BREACH,  target, warnAt, elapsed, now));
+            else if (elapsed >= warnAt) results.add(candidate(session, FRT, WARNING, target, warnAt, elapsed, now));
+        }
+
+        // HANDLE
+        if (session.getStatus() == SessionStatus.ACTIVE
+                && session.getAcceptedAt() != null) {
+            long elapsed = calcElapsed(session.getAcceptedAt(), now, policy.getTimeMode());
+            int  target  = policy.getHandleTimeTargetSec();
+            int  warnAt  = target * pct / 100;
+            if      (elapsed >= target) results.add(candidate(session, HANDLE, BREACH,  target, warnAt, elapsed, now));
+            else if (elapsed >= warnAt) results.add(candidate(session, HANDLE, WARNING, target, warnAt, elapsed, now));
+        }
+
+        return results;
+    }
+
+    private long calcElapsed(OffsetDateTime start, OffsetDateTime now, TimeMode mode) {
+        return mode == TimeMode.BUSINESS_HOURS
+            ? businessHoursService.calcBusinessSeconds(start, now)
+            : ChronoUnit.SECONDS.between(start, now);
     }
 }
 ```
@@ -226,31 +329,48 @@ public class SlaBreachEvaluator {
 **`SlaBreachDetector`**（薄编排，自身无业务逻辑）：
 ```java
 public void check(ConversationEntity session) {
-    SlaPolicy policy = slaPolicyCache.getActivePolicy();
-    if (policy == null || !policy.isEnabled()) return;
+    SlaPolicy policy = slaPolicyMatcher.findPolicy(session);  // 按优先级匹配，null=不监控
+    if (policy == null) return;
 
-    evaluator.evaluate(session, policy, OffsetDateTime.now())
-             .forEach(candidate ->
-                 recorder.record(candidate, policy.getId())
-                         .ifPresent(breach ->
-                             notifier.notify(breach, policy.getActions(), session, policy)));
+    List<BreachCandidate> candidates =
+        evaluator.evaluate(session, policy, OffsetDateTime.now());
+
+    List<SlaBreachEntity> newBreaches = candidates.stream()
+        .map(c -> recorder.record(c, policy.getId()))
+        .filter(Optional::isPresent)
+        .map(Optional::get)
+        .collect(toList());
+
+    if (!newBreaches.isEmpty()) {
+        // 本轮同一 session 的所有新增违规（WARNING + BREACH 混合）聚合为一条 SSE，避免告警疲劳
+        notifier.notifyBatch(newBreaches, policy, session);
+    }
 }
 ```
 
 ### 3.5 SSE 告警事件
 
-复用现有 `/api/v1/sessions/events` 通道，新增事件类型：
+复用现有 `/api/v1/sessions/events` 通道，新增事件类型 `SLA_BREACH`。
+
+同一扫描周期内，同一 session 可能同时产生多条违规（如 WAIT BREACH + FRT WARNING），**聚合为一条 SSE** 推送，避免告警疲劳：
 
 ```json
 {
   "type": "SLA_BREACH",
-  "item": { /* 完整 SessionQueueItem */ },
-  "breachType": "WAIT",
-  "targetSec": 120,
-  "actualSec": 185,
-  "policyName": "默认 SLA"
+  "sessionId": "abc123",
+  "visitorName": "张三",
+  "agentId": "user_001",
+  "policyName": "VIP-SLA",
+  "breaches": [
+    {"breachType": "WAIT",  "stage": "BREACH",  "targetSec": 60,  "actualSec": 95},
+    {"breachType": "FRT",   "stage": "WARNING", "targetSec": 60,  "actualSec": 51}
+  ]
 }
 ```
+
+`stage` 说明：
+- `WARNING`：已达预警阈值（默认 80%），需关注但未违规
+- `BREACH`：已超目标时长，正式违规；`autoEscalate` 仅在有 BREACH 时触发
 
 ### 3.6 故障场景
 
@@ -756,19 +876,26 @@ public enum SessionEventType {
 -- V5__add_sla_tables.sql
 CREATE TABLE cs_sla_policy (
     id                     BIGINT      NOT NULL AUTO_INCREMENT PRIMARY KEY,
-    name                   VARCHAR(50) NOT NULL                  COMMENT '策略名称',
-    is_enabled             TINYINT(1)  NOT NULL DEFAULT 1        COMMENT '是否启用',
-    wait_time_target_sec   INT         NOT NULL DEFAULT 120      COMMENT '排队等待超时（秒）',
-    frt_target_sec         INT         NOT NULL DEFAULT 60       COMMENT '首次响应超时（秒）',
-    handle_time_target_sec INT         NOT NULL DEFAULT 1800     COMMENT '处理总时长超时（秒）',
-    actions                JSON        NOT NULL                  COMMENT '违规行为配置',
+    name                   VARCHAR(50) NOT NULL                    COMMENT '策略名称',
+    is_enabled             TINYINT(1)  NOT NULL DEFAULT 1          COMMENT '是否启用',
+    priority               INT         NOT NULL DEFAULT 0          COMMENT '优先级，越大越优先；同优先级按 id ASC',
+    match_visitor_tags     JSON                                    COMMENT '访客标签白名单，空=不限',
+    match_transfer_tags    JSON                                    COMMENT '转人工原因标签，空=不限',
+    time_mode              VARCHAR(15) NOT NULL DEFAULT 'CALENDAR' COMMENT 'CALENDAR | BUSINESS_HOURS',
+    wait_time_target_sec   INT         NOT NULL DEFAULT 120        COMMENT '排队等待超时（秒）',
+    frt_target_sec         INT         NOT NULL DEFAULT 60         COMMENT '首次响应超时（秒）',
+    handle_time_target_sec INT         NOT NULL DEFAULT 1800       COMMENT '处理总时长超时（秒）',
+    warning_threshold_pct  TINYINT     NOT NULL DEFAULT 80         COMMENT '预警百分比阈值',
+    actions                JSON        NOT NULL                    COMMENT '违规行为配置',
     created_at             DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at             DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) COMMENT='SLA 策略';
 
-INSERT INTO cs_sla_policy (name, is_enabled, wait_time_target_sec, frt_target_sec,
-    handle_time_target_sec, actions)
-VALUES ('默认 SLA', 1, 120, 60, 1800,
+-- 默认兜底策略，priority=0，无匹配条件限制，所有会话都会命中
+INSERT INTO cs_sla_policy (name, is_enabled, priority, match_visitor_tags, match_transfer_tags,
+    time_mode, wait_time_target_sec, frt_target_sec, handle_time_target_sec,
+    warning_threshold_pct, actions)
+VALUES ('默认 SLA', 1, 0, '[]', '[]', 'CALENDAR', 120, 60, 1800, 80,
     '{"recordBreachOnly":true,"sseAlert":true,"autoEscalate":false,"escalateToUserId":null}');
 
 CREATE TABLE cs_sla_breach (
@@ -776,13 +903,16 @@ CREATE TABLE cs_sla_breach (
     session_id   VARCHAR(64) NOT NULL COMMENT '关联 sessionId',
     policy_id    BIGINT      NOT NULL COMMENT '触发策略 ID（快照）',
     breach_type  VARCHAR(10) NOT NULL COMMENT 'WAIT | FRT | HANDLE',
+    stage        VARCHAR(10) NOT NULL DEFAULT 'BREACH' COMMENT 'WARNING | BREACH',
     target_sec   INT         NOT NULL COMMENT '阈值快照（秒）',
-    actual_sec   INT         NOT NULL COMMENT '实际耗时（秒）',
-    breach_at    DATETIME    NOT NULL COMMENT '违规时间',
+    warn_at_sec  INT         NOT NULL COMMENT '预警阈值快照（秒）',
+    actual_sec   INT         NOT NULL COMMENT '检测时实际耗时（秒）',
+    breach_at    DATETIME    NOT NULL COMMENT '记录时间',
     alerted_at   DATETIME             COMMENT 'SSE 告警时间',
-    escalated_at DATETIME             COMMENT '自动升级时间',
+    escalated_at DATETIME             COMMENT '自动升级时间（WARNING 阶段不填）',
     INDEX idx_session_id (session_id),
-    INDEX idx_breach_at  (breach_at)
+    INDEX idx_breach_at  (breach_at),
+    UNIQUE KEY uk_session_type_stage (session_id, breach_type, stage)
 ) COMMENT='SLA 违规记录';
 ```
 
