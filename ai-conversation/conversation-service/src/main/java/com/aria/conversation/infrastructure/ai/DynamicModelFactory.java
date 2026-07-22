@@ -189,12 +189,16 @@ public class DynamicModelFactory {
      * @return SHA-256 hash 字符串
      */
     private String configHash(AiModelConfig cfg) {
+        // apiKey 必须用原始值参与 hash，不可脱敏；
+        // 脱敏（首尾各 4 位）会使中间部分不同的两个 Key 产生相同 hash，
+        // 导致切换账号时命中缓存并持续使用旧 Key 对应的模型实例。
         String input = String.join("|",
                 cfg.baseUrl() != null ? cfg.baseUrl() : "",
                 cfg.modelName() != null ? cfg.modelName() : "",
                 cfg.apiProtocol() != null ? cfg.apiProtocol() : "",
                 String.valueOf(cfg.timeoutSec()),
-                maskApiKey(cfg.apiKey()));
+                String.valueOf(cfg.timeoutSec()),
+                cfg.apiKey() != null ? cfg.apiKey() : "");
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
             byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
@@ -208,8 +212,10 @@ public class DynamicModelFactory {
     }
 
     /**
-     * 脱敏 apiKey：只保留首尾各 4 个字符，中间用 "***" 替代。
+     * 脱敏 apiKey（仅用于日志）：保留首尾各 4 个字符，中间用 "***" 替代。
      * 长度不足 8 的 apiKey 直接返回原值（通常为测试占位符）。
+     *
+     * <p>⚠️ 禁止用于缓存 key 计算，缓存 key 必须使用 {@link #configHash} 中的原始值。
      */
     private static String maskApiKey(String apiKey) {
         if (apiKey == null) {

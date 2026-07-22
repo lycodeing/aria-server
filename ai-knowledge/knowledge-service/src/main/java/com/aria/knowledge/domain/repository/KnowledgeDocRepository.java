@@ -48,9 +48,26 @@ public interface KnowledgeDocRepository {
      */
     int updateStatusIfDraft(String docId, DocStatus newStatus);
 
-    default void atomicSwap(String oldDocId, String newDocId) {
-        updateStatusBatch(List.of(oldDocId), DocStatus.DEPRECATED);
-        updateStatusBatch(List.of(newDocId), DocStatus.PUBLISHED);
-    }
+    /**
+     * 带条件的状态更新：仅当文档当前状态匹配 expectedStatus 时才更新为 newStatus。
+     * 用于消除 findById + update 两步操作的 TOCTOU 竞态。
+     *
+     * @return 影响行数，0 表示文档不存在或状态已变更
+     */
+    int updateStatusIf(String docId, DocStatus expectedStatus, DocStatus newStatus);
+
+    /**
+     * 带条件的审核状态更新：仅当文档当前状态匹配 expectedStatus 时才写入审核结果。
+     * 用于消除 review() 中读-校验-写的并发竞态。
+     *
+     * @return 影响行数，0 表示文档不存在或状态已变更
+     */
+    int updateReviewIfStatus(String docId, DocStatus expectedStatus, DocStatus newStatus, String reviewerId);
+
+    /**
+     * 原子替换文档版本：将旧文档下线（DEPRECATED）、新文档上线（PUBLISHED）。
+     * 必须在同一事务内完成，实现类负责事务保证。
+     */
+    void atomicSwap(String oldDocId, String newDocId);
 }
 

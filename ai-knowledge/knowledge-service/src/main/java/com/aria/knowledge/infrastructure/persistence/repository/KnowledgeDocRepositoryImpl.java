@@ -117,4 +117,45 @@ public class KnowledgeDocRepositoryImpl implements KnowledgeDocRepository {
             .set(KnowledgeDocEntity::getStatus, newStatus.name())
         );
     }
+
+    /**
+     * 带条件的原子状态更新：仅当文档当前状态匹配 expectedStatus 时才更新为 newStatus。
+     * 消除 findById + update 两步的 TOCTOU 竞态，由 DB WHERE 子句保证原子性。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int updateStatusIf(String docId, DocStatus expectedStatus, DocStatus newStatus) {
+        return docMapper.update(null, new LambdaUpdateWrapper<KnowledgeDocEntity>()
+            .eq(KnowledgeDocEntity::getId,     docId)
+            .eq(KnowledgeDocEntity::getStatus, expectedStatus.name())
+            .set(KnowledgeDocEntity::getStatus, newStatus.name())
+        );
+    }
+
+    /**
+     * 带条件的审核状态更新：仅当文档当前状态匹配 expectedStatus 时才写入审核结果。
+     * 消除 review() 中读-校验-写的并发竞态。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int updateReviewIfStatus(String docId, DocStatus expectedStatus,
+                                     DocStatus newStatus, String reviewerId) {
+        return docMapper.update(null, new LambdaUpdateWrapper<KnowledgeDocEntity>()
+            .eq(KnowledgeDocEntity::getId,     docId)
+            .eq(KnowledgeDocEntity::getStatus, expectedStatus.name())
+            .set(KnowledgeDocEntity::getStatus, newStatus.name())
+            .set(KnowledgeDocEntity::getReviewerId, reviewerId)
+        );
+    }
+
+    /**
+     * 原子替换文档版本：旧文档 → DEPRECATED，新文档 → PUBLISHED，两步在同一事务内完成。
+     * 任意一步失败，整个操作回滚，避免"旧文档已下线但新文档未上线"的不一致状态。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void atomicSwap(String oldDocId, String newDocId) {
+        updateStatusBatch(List.of(oldDocId), DocStatus.DEPRECATED);
+        updateStatusBatch(List.of(newDocId), DocStatus.PUBLISHED);
+    }
 }
