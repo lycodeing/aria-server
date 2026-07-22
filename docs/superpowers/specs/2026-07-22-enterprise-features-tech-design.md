@@ -222,6 +222,16 @@ BUSINESS_HOURS ：调用 BusinessHoursService.calcBusinessSeconds(start, now)
 
 **幂等保护：** 联合唯一索引 `(session_id, breach_type, stage)` 防止重复写入；写入前用 `INSERT IGNORE` 或先查再写均可。
 
+**I-NEW-6 — WAITING→ACTIVE 状态转换时 SLA 监控语义：**
+
+| 转换 | SLA 变化 | 说明 |
+|---|---|---|
+| `WAITING → ACTIVE` | WAIT 监控自动停止，FRT/HANDLE 开始 | `evaluateWait()` 前置判断 `status = WAITING`，ACTIVE 后不再命中，逻辑由状态检查隐式处理 |
+| 已有 WAIT WARNING 记录 | 保留不删除 | 历史记录用于 Dashboard 统计分析，不影响后续 FRT/HANDLE 检测 |
+| `accepted_at = null` 且 `status = ACTIVE` | FRT/HANDLE 均跳过 | `evaluateFrt()` 和 `evaluateHandle()` 均检查 `acceptedAt != null`，静默跳过并记录 WARN 日志，**不触发告警也不抛异常** |
+
+> ⚠️ 最后一行（`accepted_at = null` + `status = ACTIVE`）属于数据异常，应在测试用例中覆盖，并在 `SlaBreachScanScheduler` 的 catch 块中记录 WARN 日志，便于排查。
+
 ### 3.3 分布式分片调度器
 
 多 Pod 部署下，单一分布式锁只让一台机器跑所有数据，资源浪费且扩容无效。采用**固定 N 分片 + Redisson tryLock**方案：
@@ -265,8 +275,9 @@ Pod 宕机后分片锁 25s TTL 自动释放，其他 Pod 下轮接管，**不漏
 
 ```yaml
 sla:
-  shard-count: 4          # 建议 ≥ Pod 数
-  scan-interval-ms: 30000 # M6修复：@Scheduled 中使用 ${sla.scan-interval-ms:30000}，与此键保持一致
+  shard-count: 4           # 建议 ≥ Pod 数
+  scan-interval-ms: 30000  # M6修复：@Scheduled 中使用 ${sla.scan-interval-ms:30000}，与此键保持一致
+  initial-delay-ms: 10000  # M-NEW-6修复：Pod 启动后延迟 10s 再开始扫描，等待 Spring 容器就绪
 ```
 
 > **M6修复 — 配置键对齐：** `@Scheduled` 注解中写 `fixedDelayString = "${sla.scan-interval-ms:30000}"`（连字符），`SlaProperties` 中字段 `scanIntervalMs` 对应 Spring Boot kebab-case 绑定键 `sla.scan-interval-ms`，两者必须一致，否则 `SlaProperties.scanIntervalMs` 修改对调度器无效。
@@ -283,7 +294,7 @@ SlaBreachScanScheduler   ← 调度入口，分片锁逻辑
     └── SlaBreachNotifier    ← SSE 告警；autoEscalate 通过发布领域事件解耦 SessionQueueService
 ```
 
-**`BreachCandidate`**（值对象，位于 `infrastructure/scheduler/` 包，包内共享）：
+**`BreachCandidate`**（值对象，位于 `domain/model/` 包下 — I-NEW-4修复：含领域枚举 BreachType/BreachStage，本质是领域值对象，应在 domain 层，SlaBreachEvaluator 作为 domain service 才能无层次违规地引用它）：
 ```java
 record BreachCandidate(
     String sessionId,
@@ -415,6 +426,11 @@ public class SlaBreachEvaluator {
      * </pre>
      *
      * 该方法是三个指标检测逻辑的唯一出口，阈值判断收口于此，避免分散。
+     *
+     * <p>M-NEW-5注意：{@code targetSec * warningPct} 的溢出风险：
+     * {@code warningPct} 为 TINYINT（最大 127），若 {@code targetSec} 超过约 16,900,000 秒（约 196 天），
+     * 乘积溢出 int。DDL 未对 target_sec 加 CHECK 约束，建议在 application 层 入参校验
+     * {@code targetSec <= 86400}（24h），或将乘法改为 {@code (long) targetSec * warningPct / PCT_DIVISOR}。
      */
     private Optional<BreachCandidate> resolveStage(long elapsed, int targetSec,
                                                     int warningPct, BreachType type,
@@ -445,8 +461,12 @@ public class SlaBreachEvaluator {
 
     /**
      * 构造 {@link BreachCandidate}，统一入口防止字段遗漏。
-     * {@code actualSec} 使用 {@code long} 入参，强转前已由调用方保证不超 {@code Integer.MAX_VALUE}
-     * （SLA 阈值通常为分钟级，单次会话不会超过 24h = 86400s）。
+     *
+     * <p>M-NEW-4修复：{@code actualSec} 强转 {@code (int)} 安全边界说明：
+     * {@code Integer.MAX_VALUE} ≈ 2,147,483,647 秒 ≈ 68 年，实践中不会溢出。
+     * 若 HANDLE 类型会话因异常长期滞留 ACTIVE（如坐席忘记关闭），
+     * {@code actual_sec} 值远超 {@code handle_time_target_sec} 阈值，
+     * 违规已在第一轮检测时记录，后续扫描因幂等跳过，不会重复触发。
      */
     private BreachCandidate buildCandidate(ConversationEntity session,
                                             BreachType type, BreachStage stage,
@@ -462,12 +482,16 @@ public class SlaBreachEvaluator {
 
 **`SlaBreachDetector`**（薄编排，自身无业务逻辑）：
 ```java
-public void check(ConversationEntity session) {
+/**
+ * I-NEW-2修复：now 由 SlaBreachScanScheduler 在分片入口统一捕获后传入，
+ * 保证同一批次所有会话使用相同的检测基准时间，避免逐会话调用 now() 产生时间漂移。
+ */
+public void check(ConversationEntity session, OffsetDateTime now) {
     SlaPolicy policy = slaPolicyMatcher.findPolicy(session);  // 按优先级匹配，null=不监控
     if (policy == null) return;
 
     List<BreachCandidate> candidates =
-        evaluator.evaluate(session, policy, OffsetDateTime.now());
+        evaluator.evaluate(session, policy, now);
 
     List<SlaBreachEntity> newBreaches = candidates.stream()
         .map(c -> recorder.record(c, policy.getId()))
@@ -575,6 +599,10 @@ public class SlaBreachNotifier {
 }
 
 // application 层事件处理器
+// I-NEW-3修复：SlaEscalationRequestedEvent 事件类放在 domain/model/event/ 包下，
+// 供 infrastructure 层（SlaBreachNotifier）发布 和 application 层（SlaEscalationHandler）订阅，
+// 避免 application 反向依赖 infrastructure。
+@Slf4j
 @Component
 @RequiredArgsConstructor
 public class SlaEscalationHandler {
@@ -670,7 +698,8 @@ CREATE TABLE cs_business_hours_schedule (
     is_open      TINYINT(1)  NOT NULL DEFAULT 1   COMMENT '当天是否营业',
     time_ranges  JSON        NOT NULL              COMMENT '多时段数组（JacksonTypeHandler 反序列化为 List<TimeRange>）',
     timezone     VARCHAR(50) NOT NULL DEFAULT 'Asia/Shanghai',
-    updated_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    create_time  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) COMMENT='每周排班配置（7条固定记录，只允许 UPDATE 不允许 DELETE）';
 ```
 
@@ -882,7 +911,13 @@ CREATE TABLE cs_tag (
 ```
 
 > **I4修复 — `usage_count` 并发安全：** 坐席打标签时，`usage_count` 自增使用 MyBatis-Plus 的 `update("usage_count = usage_count + 1")` 方式，让 DB 做原子操作，不允许先 SELECT 再 UPDATE 的非原子写法。
-```
+
+> **I-NEW-5修复 — `TagAppService.addTag()` 事务边界：** 打标签涉及三步操作（查/创建 `cs_tag` → INSERT 关联表 → `usage_count` 原子自增），必须在同一事务保护下执行，否则中间步骤失败时数据不一致：
+> ```java
+> @Transactional(rollbackFor = Exception.class)
+> public TagVO addTag(String sessionId, AddTagRequest req) { ... }
+> ```
+> 移除标签同理，需加 `@Transactional`：删除关联记录 + `usage_count` 自减在同一事务内。
 
 预置 5 个标签（Flyway 初始化，`source=PRESET`）：
 
@@ -928,8 +963,8 @@ CREATE TABLE cs_conversation_note (
     session_id  VARCHAR(64) NOT NULL COMMENT 'FK → cs_conversation.session_id',
     content     TEXT        NOT NULL COMMENT '备注内容（对访客不可见）',
     created_by  VARCHAR(64) NOT NULL COMMENT '坐席 userId',
-    created_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    create_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_session_id (session_id)
 ) COMMENT='会话内部备注';
 ```
@@ -1034,6 +1069,9 @@ PUT    /api/v1/admin/tags/{id}
 DELETE /api/v1/admin/tags/{id}                     # usage_count>0 需前端二次确认
 
 # 访客持久标签（坐席操作）
+# M-NEW-3决策说明：保留 /sessions/{sessionId}/visitor/tags 路径（而非 /visitors/{visitorId}/tags）
+# 原因：坐席操作入口是会话上下文，通过 sessionId 可直接取到 visitorId 并做权限鉴权（只有当前会话的
+# 坐席才能打标），语义清晰且鉴权简单；独立 /visitors 资源路径需要额外的访客资源鉴权逻辑。
 GET    /api/v1/sessions/{sessionId}/visitor/tags
 POST   /api/v1/sessions/{sessionId}/visitor/tags   # body: { tagId } 或 { tagName }
 DELETE /api/v1/sessions/{sessionId}/visitor/tags/{tagId}
@@ -1224,10 +1262,11 @@ CREATE TABLE cs_sla_breach (
 CREATE TABLE cs_business_hours_schedule (
     day_of_week  TINYINT     NOT NULL PRIMARY KEY COMMENT '1=周一 … 7=周日',
     is_open      TINYINT(1)  NOT NULL DEFAULT 1   COMMENT '当天是否营业',
-    time_ranges  JSON        NOT NULL              COMMENT '[{"start":"HH:mm","end":"HH:mm"}]',
+    time_ranges  JSON        NOT NULL              COMMENT '[{"start":"HH:mm","end":"HH:mm"}]（JacksonTypeHandler 反序列化为 List<TimeRange>）',
     timezone     VARCHAR(50) NOT NULL DEFAULT 'Asia/Shanghai',
-    updated_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) COMMENT='每周排班配置';
+    create_time  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    update_time  DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) COMMENT='每周排班配置（7条固定记录，只允许 UPDATE 不允许 DELETE）';
 
 INSERT INTO cs_business_hours_schedule (day_of_week, is_open, time_ranges) VALUES
     (1, 1, '[{"start":"09:00","end":"18:00"}]'),
@@ -1242,7 +1281,7 @@ CREATE TABLE cs_business_hours_holiday (
     id          BIGINT      NOT NULL AUTO_INCREMENT PRIMARY KEY,
     date        DATE        NOT NULL COMMENT '具体日期',
     type        VARCHAR(10) NOT NULL COMMENT 'CLOSED | CUSTOM | WORKDAY',
-    time_ranges JSON                 COMMENT 'type=CUSTOM 时有效',
+    time_ranges JSON                 COMMENT 'CUSTOM/WORKDAY 类型必填，指定当天服务时段；CLOSED 时为 null',
     remark      VARCHAR(100)         COMMENT '备注',
     source      VARCHAR(10) NOT NULL DEFAULT 'MANUAL' COMMENT 'AUTO | MANUAL',
     create_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
