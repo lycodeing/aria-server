@@ -48,11 +48,16 @@ Aria 客服系统已具备 AI 对话、人工坐席队列、知识库检索、CS
 ai-conversation/conversation-service/
 ├── domain/
 │   ├── model/          ← 新增：SlaPolicy, BreachType, BreachStage, Tag 领域枚举/值对象
+│   │                      + BreachCandidate（值对象）
+│   │                      + event/SlaEscalationRequestedEvent（领域事件）
 │   └── service/        ← 新增：SlaPolicyMatcher（领域服务，按优先级匹配策略）
+│                          + IBusinessHoursCalculator（接口，由 infrastructure 实现）
 ├── application/
 │   └── service/        ← 新增：BusinessHoursService, TagAppService, NoteAppService
+│                          + SlaEscalationHandler（@EventListener，响应 SlaEscalationRequestedEvent）
 ├── infrastructure/
 │   ├── scheduler/      ← 新增：SlaBreachScanScheduler + 四个子组件
+│   │                      （SlaBreachDetector / Evaluator / Recorder / Notifier）
 │   ├── persistence/
 │   │   ├── entity/     ← 新增：SlaPolicy, SlaBreach, Tag, VisitorTag 等实体
 │   │   └── mapper/     ← 新增：对应 MyBatis-Plus Mapper
@@ -228,9 +233,23 @@ BUSINESS_HOURS ：调用 BusinessHoursService.calcBusinessSeconds(start, now)
 |---|---|---|
 | `WAITING → ACTIVE` | WAIT 监控自动停止，FRT/HANDLE 开始 | `evaluateWait()` 前置判断 `status = WAITING`，ACTIVE 后不再命中，逻辑由状态检查隐式处理 |
 | 已有 WAIT WARNING 记录 | 保留不删除 | 历史记录用于 Dashboard 统计分析，不影响后续 FRT/HANDLE 检测 |
-| `accepted_at = null` 且 `status = ACTIVE` | FRT/HANDLE 均跳过 | `evaluateFrt()` 和 `evaluateHandle()` 均检查 `acceptedAt != null`，静默跳过并记录 WARN 日志，**不触发告警也不抛异常** |
+| `accepted_at = null` 且 `status = ACTIVE` | FRT/HANDLE 均跳过 | 属于数据异常，`evaluateFrt()` / `evaluateHandle()` 前置检查静默返回 `empty`；**WARN 日志应在 Evaluator 内部发出**（而非 catch 块，catch 只捕获异常），见下方代码说明 |
 
-> ⚠️ 最后一行（`accepted_at = null` + `status = ACTIVE`）属于数据异常，应在测试用例中覆盖，并在 `SlaBreachScanScheduler` 的 catch 块中记录 WARN 日志，便于排查。
+> ⚠️ **I-R3-3修复 — `accepted_at = null` + `status = ACTIVE` 的 WARN 日志位置：**
+> 此场景是"条件不满足"而非"异常"，catch 块不会触发。正确做法是在 `evaluateFrt()` 和 `evaluateHandle()` 内部，区分"正常未到阶段"和"数据异常"：
+> ```java
+> private Optional<BreachCandidate> evaluateHandle(ConversationEntity session, ...) {
+>     if (session.getStatus() != SessionStatus.ACTIVE) return Optional.empty();
+>     if (session.getAcceptedAt() == null) {
+>         // 数据异常：ACTIVE 但 accepted_at 为 null，正常流程不应出现
+>         log.warn("[SLA] ACTIVE session missing acceptedAt, skipping HANDLE check. sessionId={}",
+>                  session.getSessionId());
+>         return Optional.empty();
+>     }
+>     // 正常检测逻辑...
+> }
+> ```
+> `evaluateFrt()` 同理。测试用例须覆盖此边界。
 
 ### 3.3 分布式分片调度器
 
@@ -292,6 +311,61 @@ SlaBreachScanScheduler   ← 调度入口，分片锁逻辑
     ├── SlaBreachEvaluator   ← 违规计算，依赖 IBusinessHoursCalculator 接口（单测只需 Mock 该接口）
     ├── SlaBreachRecorder    ← 幂等持久化到 DB（按 session_id + breach_type + stage 三维幂等）
     └── SlaBreachNotifier    ← SSE 告警；autoEscalate 通过发布领域事件解耦 SessionQueueService
+```
+
+**`SlaBreachScanScheduler`** — 分片扫描核心骨架（I-R3-1修复：`now` 在分片入口统一捕获）：
+
+```java
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class SlaBreachScanScheduler {
+
+    private static final String LOCK_KEY_PREFIX = "lock:scheduler:sla-scan:shard:";
+    private static final long   LEASE_SECONDS   = 25L;
+
+    private final RedissonClient        redissonClient;
+    private final ConversationMapper    conversationMapper;
+    private final SlaBreachDetector     slaBreachDetector;
+    private final SlaProperties         slaProperties;
+
+    @Scheduled(fixedDelayString     = "${sla.scan-interval-ms:30000}",
+               initialDelayString   = "${sla.initial-delay-ms:10000}")
+    public void scan() {
+        int shardCount = slaProperties.getShardCount();
+        // I-R3-1修复：now 在分片入口统一捕获一次，同批次所有会话使用相同基准时间
+        OffsetDateTime now = OffsetDateTime.now();
+
+        for (int i = 0; i < shardCount; i++) {
+            final int shardIndex = i;
+            RLock lock = redissonClient.getLock(LOCK_KEY_PREFIX + shardIndex);
+            boolean acquired;
+            try {
+                acquired = lock.tryLock(0, LEASE_SECONDS, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (!acquired) continue;
+
+            try {
+                List<ConversationEntity> sessions =
+                    conversationMapper.selectActiveByShardIndex(shardIndex, shardCount);
+                log.debug("[SLA-scan] shard={}/{} sessions={} now={}", shardIndex, shardCount,
+                          sessions.size(), now);
+                sessions.forEach(session -> {
+                    try {
+                        slaBreachDetector.check(session, now);
+                    } catch (Exception e) {
+                        log.error("[SLA-scan] check failed session={}", session.getSessionId(), e);
+                    }
+                });
+            } finally {
+                if (lock.isHeldByCurrentThread()) lock.unlock();
+            }
+        }
+    }
+}
 ```
 
 **`BreachCandidate`**（值对象，位于 `domain/model/` 包下 — I-NEW-4修复：含领域枚举 BreachType/BreachStage，本质是领域值对象，应在 domain 层，SlaBreachEvaluator 作为 domain service 才能无层次违规地引用它）：
@@ -436,7 +510,8 @@ public class SlaBreachEvaluator {
                                                     int warningPct, BreachType type,
                                                     ConversationEntity session,
                                                     OffsetDateTime now) {
-        int warnAtSec = targetSec * warningPct / PCT_DIVISOR;
+        // M-R3-2修复：(long) 强转防止 targetSec × warningPct 整型溢出
+        int warnAtSec = (int) ((long) targetSec * warningPct / PCT_DIVISOR);
         if (elapsed >= targetSec) {
             return Optional.of(buildCandidate(session, type, BREACH, targetSec, warnAtSec, elapsed, now));
         }
@@ -721,7 +796,7 @@ CREATE TABLE cs_business_hours_holiday (
     id          BIGINT      NOT NULL AUTO_INCREMENT PRIMARY KEY,
     date        DATE        NOT NULL COMMENT '具体日期',
     type        VARCHAR(10) NOT NULL COMMENT 'CLOSED | CUSTOM | WORKDAY',
-    time_ranges JSON                 COMMENT 'CUSTOM/WORKDAY 类型有效，指定当天服务时段；CLOSED 时为 null',
+    time_ranges JSON                 COMMENT 'CUSTOM/WORKDAY 类型必填，指定当天服务时段；CLOSED 时为 null',
     remark      VARCHAR(100)         COMMENT '备注，如"国庆节"',
     source      VARCHAR(10) NOT NULL DEFAULT 'MANUAL' COMMENT 'AUTO | MANUAL',
     create_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -936,7 +1011,7 @@ CREATE TABLE cs_visitor_tag (
     visitor_id  VARCHAR(64) NOT NULL COMMENT 'anonymousId（对应 cs_conversation.visitor_id）',
     tag_id      BIGINT      NOT NULL COMMENT 'FK → cs_tag.id',
     tagged_by   VARCHAR(64) NOT NULL COMMENT '操作坐席 userId',
-    tagged_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    create_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (visitor_id, tag_id),
     INDEX idx_visitor_id (visitor_id)
 ) COMMENT='访客持久标签（跨会话）';
@@ -949,7 +1024,7 @@ CREATE TABLE cs_conversation_tag (
     session_id  VARCHAR(64) NOT NULL COMMENT 'FK → cs_conversation.session_id',
     tag_id      BIGINT      NOT NULL COMMENT 'FK → cs_tag.id',
     tagged_by   VARCHAR(64) NOT NULL COMMENT '操作坐席 userId',
-    tagged_at   DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    create_time DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (session_id, tag_id),
     INDEX idx_session_id (session_id)
 ) COMMENT='会话级标签（单次）';
