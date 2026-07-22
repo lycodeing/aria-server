@@ -138,8 +138,13 @@ CRC32 是 MySQL 内置函数，无需额外索引，计算开销极低。`status
 infrastructure/
 └── scheduler/
     ├── SlaBreachScanScheduler.java   ← 调度入口，分片锁逻辑
-    └── SlaBreachDetector.java        ← 单会话 SLA 检测 + 违规处理
+    ├── SlaBreachDetector.java        ← 薄编排层，串联下面三个类
+    ├── SlaBreachEvaluator.java       ← 纯计算：判断是否违规，无任何 I/O
+    ├── SlaBreachRecorder.java        ← 幂等持久化到 DB
+    └── SlaBreachNotifier.java        ← SSE 告警 + 自动升级
 ```
+
+按单一职责拆分，每个类只做一件事。中间通过 `BreachCandidate` 值对象传递检测结果。
 
 遵循现有结构：`DocExpiryScheduler` 在 `knowledge-service/infrastructure/scheduler/`，本次在 `conversation-service` 同层新建。
 
@@ -220,42 +225,52 @@ sla:
 
 ---
 
-### 3.4 `SlaBreachDetector` — 单会话检测逻辑
+### 3.4 `BreachCandidate` — 检测结果值对象
+
+各组件之间的传递对象，package-private，纯数据：
 
 ```java
-@Slf4j
+record BreachCandidate(
+    String sessionId,
+    BreachType type,
+    int targetSec,
+    int actualSec,
+    OffsetDateTime detectedAt
+) {}
+```
+
+---
+
+### 3.5 `SlaBreachEvaluator` — 纯计算，无任何 I/O
+
+只负责判断会话是否违规，返回所有命中的 `BreachCandidate` 列表。无 Spring 依赖注入、无 DB、无 Redis，**单元测试无需任何 Mock**。
+
+```java
 @Component
-@RequiredArgsConstructor
-public class SlaBreachDetector {
+public class SlaBreachEvaluator {
 
-    private final SlaBreachMapper    slaBreachMapper;
-    private final SlaPolicyCache     slaPolicyCache;     // Redis 缓存，TTL 5min
-    private final SessionEventPublisher eventPublisher;  // 复用现有 SSE 发布通道
-    private final SessionQueueService   sessionQueueService;
-
-    public void check(ConversationEntity session) {
-        SlaPolicy policy = slaPolicyCache.getActivePolicy();
-        if (policy == null || !policy.isEnabled()) return;
-
-        OffsetDateTime now = OffsetDateTime.now();
+    public List<BreachCandidate> evaluate(ConversationEntity session,
+                                          SlaPolicy policy,
+                                          OffsetDateTime now) {
+        List<BreachCandidate> results = new ArrayList<>();
 
         // WAIT 违规：排队中超时
         if (session.getStatus() == SessionStatus.WAITING) {
             long waitSec = ChronoUnit.SECONDS.between(session.getStartedAt(), now);
             if (waitSec > policy.getWaitTimeTargetSec()) {
-                handleBreach(session, policy, BreachType.WAIT,
-                             policy.getWaitTimeTargetSec(), (int) waitSec, now);
+                results.add(new BreachCandidate(session.getSessionId(), BreachType.WAIT,
+                    policy.getWaitTimeTargetSec(), (int) waitSec, now));
             }
         }
 
         // FRT 违规：已接受但未首响
         if (session.getStatus() == SessionStatus.ACTIVE
-                && session.getFirstReplyAt() == null
-                && session.getAcceptedAt() != null) {
+                && session.getAcceptedAt() != null
+                && session.getFirstReplyAt() == null) {
             long frtSec = ChronoUnit.SECONDS.between(session.getAcceptedAt(), now);
             if (frtSec > policy.getFrtTargetSec()) {
-                handleBreach(session, policy, BreachType.FRT,
-                             policy.getFrtTargetSec(), (int) frtSec, now);
+                results.add(new BreachCandidate(session.getSessionId(), BreachType.FRT,
+                    policy.getFrtTargetSec(), (int) frtSec, now));
             }
         }
 
@@ -264,52 +279,141 @@ public class SlaBreachDetector {
                 && session.getAcceptedAt() != null) {
             long handleSec = ChronoUnit.SECONDS.between(session.getAcceptedAt(), now);
             if (handleSec > policy.getHandleTimeTargetSec()) {
-                handleBreach(session, policy, BreachType.HANDLE,
-                             policy.getHandleTimeTargetSec(), (int) handleSec, now);
+                results.add(new BreachCandidate(session.getSessionId(), BreachType.HANDLE,
+                    policy.getHandleTimeTargetSec(), (int) handleSec, now));
             }
         }
+
+        return results;
+    }
+}
+```
+
+---
+
+### 3.6 `SlaBreachRecorder` — 幂等持久化
+
+只负责写 DB。已存在的 `(sessionId, breachType)` 直接返回 `Optional.empty()`，防止重复记录。
+
+```java
+@Component
+@RequiredArgsConstructor
+public class SlaBreachRecorder {
+
+    private final SlaBreachMapper slaBreachMapper;
+
+    /**
+     * 幂等写入。已存在则返回 empty，新写入则返回保存后的实体。
+     */
+    public Optional<SlaBreachEntity> record(BreachCandidate candidate, Long policyId) {
+        if (slaBreachMapper.existsBySessionAndType(candidate.sessionId(), candidate.type())) {
+            return Optional.empty();
+        }
+        SlaBreachEntity entity = SlaBreachEntity.builder()
+            .sessionId(candidate.sessionId())
+            .policyId(policyId)
+            .breachType(candidate.type().name())
+            .targetSec(candidate.targetSec())
+            .actualSec(candidate.actualSec())
+            .breachAt(candidate.detectedAt())
+            .build();
+        slaBreachMapper.insert(entity);
+        return Optional.of(entity);
     }
 
-    private void handleBreach(ConversationEntity session, SlaPolicy policy,
-                               BreachType type, int targetSec, int actualSec,
-                               OffsetDateTime now) {
-        // 幂等：同一 (sessionId, breachType) 已记录则跳过
-        if (slaBreachMapper.existsBySessionAndType(session.getSessionId(), type)) return;
+    public void markAlerted(Long breachId, OffsetDateTime at) {
+        slaBreachMapper.updateAlertedAt(breachId, at);
+    }
 
-        SlaBreachEntity breach = SlaBreachEntity.builder()
-            .sessionId(session.getSessionId())
-            .policyId(policy.getId())
-            .breachType(type.name())
-            .targetSec(targetSec)
-            .actualSec(actualSec)
-            .breachAt(now)
-            .build();
+    public void markEscalated(Long breachId, OffsetDateTime at) {
+        slaBreachMapper.updateEscalatedAt(breachId, at);
+    }
+}
+```
 
-        slaBreachMapper.insert(breach);
+---
 
-        SlaBreachActions actions = policy.getActions();
+### 3.7 `SlaBreachNotifier` — SSE 告警 + 自动升级
 
-        // SSE 告警
+只负责对外通知。目标坐席不在线时降级为仅告警，不向上抛出异常。
+
+```java
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class SlaBreachNotifier {
+
+    private final SessionEventPublisher eventPublisher;
+    private final SessionQueueService   sessionQueueService;
+    private final SlaBreachRecorder     recorder;
+
+    public void notify(SlaBreachEntity breach, SlaBreachActions actions,
+                       ConversationEntity session, SlaPolicy policy) {
+        OffsetDateTime now = OffsetDateTime.now();
+
         if (actions.isSseAlert()) {
-            eventPublisher.publishSlaBreachEvent(session, policy, type, targetSec, actualSec);
-            slaBreachMapper.updateAlertedAt(breach.getId(), now);
+            eventPublisher.publishSlaBreachEvent(session, policy,
+                BreachType.valueOf(breach.getBreachType()),
+                breach.getTargetSec(), breach.getActualSec());
+            recorder.markAlerted(breach.getId(), now);
         }
 
-        // 自动升级
         if (actions.isAutoEscalate() && actions.getEscalateToUserId() != null) {
             try {
                 sessionQueueService.transfer(session.getSessionId(),
                                              actions.getEscalateToUserId());
-                slaBreachMapper.updateEscalatedAt(breach.getId(), now);
+                recorder.markEscalated(breach.getId(), now);
             } catch (Exception e) {
-                // 目标坐席不在线时降级为仅告警，不抛出
+                // 目标坐席不在线时降级为仅告警
                 log.warn("[SLA] autoEscalate failed session={} target={}",
-                         session.getSessionId(), actions.getEscalateToUserId(), e);
+                    session.getSessionId(), actions.getEscalateToUserId(), e);
             }
         }
     }
 }
 ```
+
+---
+
+### 3.8 `SlaBreachDetector` — 薄编排层
+
+只负责串联上面三个类，自身不含任何业务逻辑。
+
+```java
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class SlaBreachDetector {
+
+    private final SlaPolicyCache      slaPolicyCache;
+    private final SlaBreachEvaluator  evaluator;
+    private final SlaBreachRecorder   recorder;
+    private final SlaBreachNotifier   notifier;
+
+    public void check(ConversationEntity session) {
+        SlaPolicy policy = slaPolicyCache.getActivePolicy();
+        if (policy == null || !policy.isEnabled()) return;
+
+        List<BreachCandidate> candidates =
+            evaluator.evaluate(session, policy, OffsetDateTime.now());
+
+        for (BreachCandidate candidate : candidates) {
+            recorder.record(candidate, policy.getId()).ifPresent(breach ->
+                notifier.notify(breach, policy.getActions(), session, policy)
+            );
+        }
+    }
+}
+```
+
+**各类职责汇总：**
+
+| 类 | 职责 | 依赖 |
+|---|---|---|
+| `SlaBreachEvaluator` | 计算违规（纯函数） | 无 |
+| `SlaBreachRecorder` | 幂等持久化 | Mapper |
+| `SlaBreachNotifier` | SSE 告警 + 自动升级 | EventPublisher, SessionQueueService |
+| `SlaBreachDetector` | 编排以上三者 | 以上三个 + SlaPolicyCache |
 
 ---
 
