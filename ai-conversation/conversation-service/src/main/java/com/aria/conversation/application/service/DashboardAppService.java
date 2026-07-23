@@ -1,7 +1,12 @@
 package com.aria.conversation.application.service;
 
 import com.aria.conversation.infrastructure.persistence.DashboardStatsRepository;
+import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
+import com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity;
+import com.aria.conversation.infrastructure.persistence.mapper.ConversationMapper;
+import com.aria.conversation.infrastructure.persistence.mapper.SlaBreachMapper;
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.CsatByAgentItemVO;
@@ -18,6 +23,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.DayOfWeek;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.temporal.TemporalAdjusters;
 import java.util.List;
 import java.util.function.DoubleSupplier;
@@ -39,6 +46,8 @@ import java.util.function.LongSupplier;
 public class DashboardAppService {
 
     private final DashboardStatsRepository statsRepository;
+    private final SlaBreachMapper slaBreachMapper;
+    private final ConversationMapper conversationMapper;
 
     /**
      * 获取概览指标（analytics 页面顶部卡片）。
@@ -49,6 +58,22 @@ public class DashboardAppService {
      * @return 概览指标 VO
      */
     public DashboardOverviewVO getOverview() {
+        // 今日 SLA 统计
+        LocalDateTime todayStart = LocalDate.now().atStartOfDay();
+        long slaBreachCount = safeCount(() -> slaBreachMapper.selectCount(
+                Wrappers.<SlaBreachEntity>lambdaQuery()
+                        .eq(SlaBreachEntity::getStage, "BREACH")
+                        .ge(SlaBreachEntity::getBreachAt, todayStart.atOffset(ZoneOffset.UTC))));
+        long distinctBreachedSessions = safeCount(
+                () -> slaBreachMapper.countDistinctBreachedSessionsToday(todayStart));
+        long totalAgentSessions = safeCount(() -> conversationMapper.selectCount(
+                Wrappers.<ConversationEntity>lambdaQuery()
+                        .ge(ConversationEntity::getStartedAt, todayStart.atOffset(ZoneOffset.UTC))
+                        .isNotNull(ConversationEntity::getAcceptedAt)));
+        double slaBreachRate = totalAgentSessions > 0
+                ? Math.round((double) distinctBreachedSessions / totalAgentSessions * 100.0) / 100.0
+                : 0.0;
+
         return DashboardOverviewVO.builder()
                 .todayConversationCount(safeCount(statsRepository::countTodayConversations))
                 .totalConversationCount(safeCount(statsRepository::countTotalConversations))
@@ -64,6 +89,8 @@ public class DashboardAppService {
                 .csatAvgScore(safeDouble(statsRepository::csatAvgScore))
                 .csatResponseRate(safeDouble(statsRepository::csatResponseRate))
                 .csatRatedCount(safeCount(statsRepository::csatRatedCount))
+                .slaBreachCount(slaBreachCount)
+                .slaBreachRate(slaBreachRate)
                 .build();
     }
 
