@@ -24,7 +24,6 @@ public class TagAppService {
     private final TagMapper              tagMapper;
     private final VisitorTagMapper       visitorTagMapper;
     private final ConversationTagMapper  conversationTagMapper;
-    private final ConversationNoteMapper noteMapper;
     private final ConversationMapper     conversationMapper;
     private final StringRedisTemplate    redisTemplate;
 

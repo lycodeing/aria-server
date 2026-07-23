@@ -25,7 +25,6 @@ class TagAppServiceTest {
     @Mock TagMapper              tagMapper;
     @Mock VisitorTagMapper       visitorTagMapper;
     @Mock ConversationTagMapper  conversationTagMapper;
-    @Mock ConversationNoteMapper noteMapper;
     @Mock ConversationMapper     conversationMapper;
     @Mock StringRedisTemplate    redisTemplate;
 
@@ -38,7 +37,7 @@ class TagAppServiceTest {
     @BeforeEach
     void setUp() {
         service = new TagAppService(tagMapper, visitorTagMapper, conversationTagMapper,
-                                    noteMapper, conversationMapper, redisTemplate);
+                                    conversationMapper, redisTemplate);
 
         ConversationEntity conv = new ConversationEntity();
         conv.setSessionId(SESSION_ID);
