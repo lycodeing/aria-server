@@ -23,8 +23,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.DayOfWeek;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
 import java.time.temporal.TemporalAdjusters;
 import java.util.List;
 import java.util.function.DoubleSupplier;
@@ -58,17 +58,19 @@ public class DashboardAppService {
      * @return 概览指标 VO
      */
     public DashboardOverviewVO getOverview() {
-        // 今日 SLA 统计
-        LocalDateTime todayStart = LocalDate.now().atStartOfDay();
+        // 今日 SLA 统计（使用 Asia/Shanghai 时区，避免 UTC 标签误贴）
+        OffsetDateTime todayStart = LocalDate.now(ZoneId.of("Asia/Shanghai"))
+                .atStartOfDay(ZoneId.of("Asia/Shanghai"))
+                .toOffsetDateTime();
         long slaBreachCount = safeCount(() -> slaBreachMapper.selectCount(
                 Wrappers.<SlaBreachEntity>lambdaQuery()
                         .eq(SlaBreachEntity::getStage, "BREACH")
-                        .ge(SlaBreachEntity::getBreachAt, todayStart.atOffset(ZoneOffset.UTC))));
+                        .ge(SlaBreachEntity::getBreachAt, todayStart)));
         long distinctBreachedSessions = safeCount(
                 () -> slaBreachMapper.countDistinctBreachedSessionsToday(todayStart));
         long totalAgentSessions = safeCount(() -> conversationMapper.selectCount(
                 Wrappers.<ConversationEntity>lambdaQuery()
-                        .ge(ConversationEntity::getStartedAt, todayStart.atOffset(ZoneOffset.UTC))
+                        .ge(ConversationEntity::getStartedAt, todayStart)
                         .isNotNull(ConversationEntity::getAcceptedAt)));
         double slaBreachRate = totalAgentSessions > 0
                 ? Math.round((double) distinctBreachedSessions / totalAgentSessions * 100.0) / 100.0

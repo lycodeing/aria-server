@@ -10,7 +10,6 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
-import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 
 /**
@@ -63,5 +62,5 @@ public interface SlaBreachMapper extends BaseMapper<SlaBreachEntity> {
      */
     @Select("SELECT COUNT(DISTINCT session_id) FROM cs_conversation.cs_sla_breach " +
             "WHERE stage = 'BREACH' AND breach_at >= #{todayStart}")
-    long countDistinctBreachedSessionsToday(@Param("todayStart") LocalDateTime todayStart);
+    long countDistinctBreachedSessionsToday(@Param("todayStart") OffsetDateTime todayStart);
 }
