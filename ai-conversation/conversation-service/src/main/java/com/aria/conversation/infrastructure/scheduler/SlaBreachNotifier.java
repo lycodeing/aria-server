@@ -7,6 +7,8 @@ import com.aria.conversation.domain.model.event.SlaEscalationRequestedEvent;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
 import com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity;
 import com.aria.conversation.infrastructure.persistence.entity.SlaPolicyEntity;
+import com.aria.conversation.infrastructure.webhook.SlaBreachContext;
+import com.aria.conversation.infrastructure.webhook.WebhookDispatcher;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -37,16 +39,19 @@ public class SlaBreachNotifier {
     private final RabbitTemplate eventsRabbitTemplate;
     private final ApplicationEventPublisher springEventPublisher;
     private final SlaBreachRecorder recorder;
+    private final WebhookDispatcher webhookDispatcher;
 
     public SlaBreachNotifier(
             @Value("${conversation.events.exchange}") String eventsExchange,
             @Qualifier("eventsRabbitTemplate") RabbitTemplate eventsRabbitTemplate,
             ApplicationEventPublisher springEventPublisher,
-            SlaBreachRecorder recorder) {
+            SlaBreachRecorder recorder,
+            WebhookDispatcher webhookDispatcher) {
         this.eventsExchange = eventsExchange;
         this.eventsRabbitTemplate = eventsRabbitTemplate;
         this.springEventPublisher = springEventPublisher;
         this.recorder = recorder;
+        this.webhookDispatcher = webhookDispatcher;
     }
 
     /**
@@ -104,6 +109,19 @@ public class SlaBreachNotifier {
                             session.getSessionId(),
                             actions.getEscalateToUserId(),
                             breachIds));
+        }
+
+        // Webhook 推送（异步，不阻塞主线程）
+        List<Long> webhookIds = actions.getWebhookIds();
+        if (webhookIds != null && !webhookIds.isEmpty()) {
+            List<Long> allBreachIds = newBreaches.stream()
+                    .map(SlaBreachEntity::getId).toList();
+            SlaBreachContext webhookCtx = new SlaBreachContext(
+                    session.getSessionId(),
+                    session.getVisitorName(),
+                    policy.getName(),
+                    newBreaches);
+            webhookDispatcher.dispatch(webhookIds, webhookCtx, allBreachIds);
         }
     }
 }
