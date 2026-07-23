@@ -1,20 +1,24 @@
 package com.aria.conversation.application.service;
 
 import com.aria.common.core.exception.BusinessException;
+import com.aria.conversation.domain.SessionEventType;
 import com.aria.conversation.infrastructure.persistence.entity.*;
 import com.aria.conversation.infrastructure.persistence.mapper.*;
 import com.aria.conversation.interfaces.rest.vo.TagVO;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class TagAppService {
 
     private static final int    NOT_FOUND            = 40400;
@@ -26,6 +30,25 @@ public class TagAppService {
     private final ConversationTagMapper  conversationTagMapper;
     private final ConversationMapper     conversationMapper;
     private final StringRedisTemplate    redisTemplate;
+    private final RabbitTemplate         eventsRabbitTemplate;
+    private final String                 eventsExchange;
+
+    public TagAppService(
+            TagMapper tagMapper,
+            VisitorTagMapper visitorTagMapper,
+            ConversationTagMapper conversationTagMapper,
+            ConversationMapper conversationMapper,
+            StringRedisTemplate redisTemplate,
+            @Qualifier("eventsRabbitTemplate") RabbitTemplate eventsRabbitTemplate,
+            @Value("${conversation.events.exchange}") String eventsExchange) {
+        this.tagMapper             = tagMapper;
+        this.visitorTagMapper      = visitorTagMapper;
+        this.conversationTagMapper = conversationTagMapper;
+        this.conversationMapper    = conversationMapper;
+        this.redisTemplate         = redisTemplate;
+        this.eventsRabbitTemplate  = eventsRabbitTemplate;
+        this.eventsExchange        = eventsExchange;
+    }
 
     // ── 访客持久标签 ─────────────────────────────────────────────────────────────
 
@@ -50,6 +73,7 @@ public class TagAppService {
             tagMapper.atomicIncrUsageCount(tag.getId());
         }
         evictVisitorCache(visitorId);
+        publishTagUpdatedEvent(sessionId);
         return toVO(tag);
     }
 
@@ -61,6 +85,7 @@ public class TagAppService {
             tagMapper.atomicDecrUsageCount(tagId);
         }
         evictVisitorCache(visitorId);
+        publishTagUpdatedEvent(sessionId);
     }
 
     // ── 会话级标签 ───────────────────────────────────────────────────────────────
@@ -82,6 +107,7 @@ public class TagAppService {
                     .build());
             tagMapper.atomicIncrUsageCount(tag.getId());
         }
+        publishTagUpdatedEvent(sessionId);
         return toVO(tag);
     }
 
@@ -91,9 +117,27 @@ public class TagAppService {
             conversationTagMapper.deleteBySessionIdAndTagId(sessionId, tagId);
             tagMapper.atomicDecrUsageCount(tagId);
         }
+        publishTagUpdatedEvent(sessionId);
     }
 
     // ── 私有辅助方法 ──────────────────────────────────────────────────────────────
+
+    /**
+     * 标签变更后，向 Fanout Exchange 发布 TAG_UPDATED 事件，通知所有在线坐席 SSE 客户端实时刷新。
+     * 失败只记录 WARN，不阻断主流程。
+     */
+    private void publishTagUpdatedEvent(String sessionId) {
+        try {
+            Map<String, Object> event = new LinkedHashMap<>();
+            event.put("type", SessionEventType.TAG_UPDATED.name());
+            event.put("sessionId", sessionId);
+            event.put("visitorTags", listVisitorTags(sessionId));
+            event.put("sessionTags", listSessionTags(sessionId));
+            eventsRabbitTemplate.convertAndSend(eventsExchange, "", event);
+        } catch (Exception e) {
+            log.warn("[TagAppService] TAG_UPDATED 事件发布失败 sessionId={}", sessionId, e);
+        }
+    }
 
     private String requireVisitorId(String sessionId) {
         ConversationEntity conv = conversationMapper.selectBySessionId(sessionId);
