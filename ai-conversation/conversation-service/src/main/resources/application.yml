@@ -181,3 +181,7 @@ sla:
   shard-count: 4          # 分片总数，建议 >= Pod 数
   scan-interval-ms: 30000 # 扫描间隔（毫秒），fixedDelay 语义
   initial-delay-ms: 10000 # 启动后首次触发延迟（毫秒）
+  webhook:
+    core-pool-size: 2
+    max-pool-size: 5
+    queue-capacity: 50
