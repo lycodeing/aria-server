@@ -34,11 +34,12 @@ class SessionQueueEnqueueOfflineTest {
     @BeforeEach
     void setUp() {
         // 构造器参数顺序：queueRepository, agentRegistry, publisher, rabbitTemplate,
-        //   eventsExchange, persistRepository, csatService, visitorNotifier, businessHoursService
+        //   eventsExchange, persistRepository, csatService, visitorNotifier, businessHoursService,
+        //   redisTemplate, objectMapper
         service = new SessionQueueService(
                 queueRepository, null, publisher, rabbitTemplate,
                 "cs.conversation.events", null, null, null,
-                businessHoursService);
+                businessHoursService, null, null);
     }
 
     @Test

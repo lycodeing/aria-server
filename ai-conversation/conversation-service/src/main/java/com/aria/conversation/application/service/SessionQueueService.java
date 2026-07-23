@@ -12,10 +12,14 @@ import com.aria.conversation.infrastructure.persistence.ConversationPersistRepos
 import com.aria.conversation.infrastructure.repository.AgentOnlineRegistry;
 import com.aria.conversation.infrastructure.repository.SessionQueueRepository;
 import com.aria.conversation.infrastructure.websocket.VisitorNotifier;
+import com.aria.conversation.interfaces.rest.vo.TagVO;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -54,6 +58,8 @@ public class SessionQueueService {
     private static final Pattern AGENT_ID_PATTERN =
             Pattern.compile("^[a-zA-Z0-9_\\-]{1,64}$");
 
+    private static final String VISITOR_TAG_CACHE_PREFIX = "visitor:tags:";
+
     private final SessionQueueRepository         queueRepository;
     private final AgentOnlineRegistry            agentRegistry;
     private final ConversationMessagePublisher   publisher;
@@ -63,6 +69,8 @@ public class SessionQueueService {
     private final CsatService                    csatService;
     private final VisitorNotifier                visitorNotifier;
     private final BusinessHoursService           businessHoursService;
+    private final StringRedisTemplate            redisTemplate;
+    private final ObjectMapper                   objectMapper;
 
     public SessionQueueService(
             SessionQueueRepository queueRepository,
@@ -73,7 +81,9 @@ public class SessionQueueService {
             ConversationPersistRepository persistRepository,
             CsatService csatService,
             VisitorNotifier visitorNotifier,
-            BusinessHoursService businessHoursService) {
+            BusinessHoursService businessHoursService,
+            StringRedisTemplate redisTemplate,
+            ObjectMapper objectMapper) {
         this.queueRepository      = queueRepository;
         this.agentRegistry        = agentRegistry;
         this.publisher            = publisher;
@@ -83,6 +93,8 @@ public class SessionQueueService {
         this.csatService          = csatService;
         this.visitorNotifier      = visitorNotifier;
         this.businessHoursService = businessHoursService;
+        this.redisTemplate        = redisTemplate;
+        this.objectMapper         = objectMapper;
     }
 
     // ---- 队列操作 ----
@@ -135,7 +147,8 @@ public class SessionQueueService {
                         e.getTag(),
                         e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
                         SessionStatus.ACTIVE,
-                        e.getAgentId()))
+                        e.getAgentId(),
+                        loadVisitorTagsFromCache(e.getVisitorId())))
                 .toList();
     }
 
@@ -165,7 +178,8 @@ public class SessionQueueService {
                         e.getTag(),
                         e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
                         SessionStatus.AI_CHAT,
-                        e.getAgentId()))
+                        e.getAgentId(),
+                        loadVisitorTagsFromCache(e.getVisitorId())))
                 .forEach(result::add);
 
         // WAITING：Redis 队列
@@ -180,7 +194,8 @@ public class SessionQueueService {
                         e.getTag(),
                         e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
                         SessionStatus.ACTIVE,
-                        e.getAgentId()))
+                        e.getAgentId(),
+                        loadVisitorTagsFromCache(e.getVisitorId())))
                 .forEach(result::add);
 
         // CLOSED：DB 最近 closedLimit 条
@@ -194,7 +209,8 @@ public class SessionQueueService {
                         e.getUpdatedAt() != null ? e.getUpdatedAt().toEpochSecond()
                                 : e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
                         e.getStatus(),
-                        e.getAgentId()))
+                        e.getAgentId(),
+                        loadVisitorTagsFromCache(e.getVisitorId())))
                 .forEach(result::add);
 
         return result;
@@ -217,7 +233,8 @@ public class SessionQueueService {
                         e.getUpdatedAt() != null ? e.getUpdatedAt().toEpochSecond()
                                 : e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
                         e.getStatus(),
-                        e.getAgentId()))
+                        e.getAgentId(),
+                        loadVisitorTagsFromCache(e.getVisitorId())))
                 .toList();
     }
 
@@ -433,6 +450,18 @@ public class SessionQueueService {
     }
 
     // ---- 内部：事件广播 ----
+
+    private List<TagVO> loadVisitorTagsFromCache(String visitorId) {
+        if (visitorId == null || visitorId.isBlank()) return null;
+        try {
+            String cached = redisTemplate.opsForValue().get(VISITOR_TAG_CACHE_PREFIX + visitorId);
+            if (cached == null) return null;
+            return objectMapper.readValue(cached, new TypeReference<List<TagVO>>() {});
+        } catch (Exception e) {
+            log.warn("[SessionQueue] failed to load visitor tags from cache for visitor={}", visitorId, e);
+            return null;
+        }
+    }
 
     private void publishEvent(SessionEvent event) {
         try {

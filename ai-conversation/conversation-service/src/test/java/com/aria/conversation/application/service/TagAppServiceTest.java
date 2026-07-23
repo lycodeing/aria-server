@@ -16,8 +16,12 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
@@ -73,6 +77,9 @@ class TagAppServiceTest {
 
         verify(tagMapper).atomicIncrUsageCount(1L);
         verify(redisTemplate).delete("visitor:tags:" + VISITOR_ID);
+
+        // Verify TAG_UPDATED event was published
+        verify(eventsRabbitTemplate).convertAndSend(eq("test.events"), eq(""), any(Map.class));
     }
 
     @Test
