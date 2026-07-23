@@ -1,5 +1,6 @@
 package com.aria.conversation.application.service;
 
+import com.aria.conversation.application.exception.ServiceOfflineException;
 import com.aria.conversation.application.exception.SessionEnqueueException;
 import com.aria.conversation.domain.SessionAlreadyAcceptedException;
 import com.aria.conversation.domain.SessionEventType;
@@ -20,6 +21,8 @@ import org.springframework.stereotype.Service;
 
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -59,6 +62,7 @@ public class SessionQueueService {
     private final ConversationPersistRepository  persistRepository;
     private final CsatService                    csatService;
     private final VisitorNotifier                visitorNotifier;
+    private final BusinessHoursService           businessHoursService;
 
     public SessionQueueService(
             SessionQueueRepository queueRepository,
@@ -68,15 +72,17 @@ public class SessionQueueService {
             @Value("${conversation.events.exchange}") String eventsExchange,
             ConversationPersistRepository persistRepository,
             CsatService csatService,
-            VisitorNotifier visitorNotifier) {
-        this.queueRepository   = queueRepository;
-        this.agentRegistry     = agentRegistry;
-        this.publisher         = publisher;
-        this.rabbitTemplate    = rabbitTemplate;
-        this.eventsExchange    = eventsExchange;
-        this.persistRepository = persistRepository;
-        this.csatService       = csatService;
-        this.visitorNotifier   = visitorNotifier;
+            VisitorNotifier visitorNotifier,
+            BusinessHoursService businessHoursService) {
+        this.queueRepository      = queueRepository;
+        this.agentRegistry        = agentRegistry;
+        this.publisher            = publisher;
+        this.rabbitTemplate       = rabbitTemplate;
+        this.eventsExchange       = eventsExchange;
+        this.persistRepository    = persistRepository;
+        this.csatService          = csatService;
+        this.visitorNotifier      = visitorNotifier;
+        this.businessHoursService = businessHoursService;
     }
 
     // ---- 队列操作 ----
@@ -87,6 +93,13 @@ public class SessionQueueService {
      */
     public SessionQueueItem enqueue(String sessionId, String userName,
                                     String transferReason, String tag) {
+        // 业务时间检查：非服务时间拒绝入队
+        ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Shanghai"));
+        if (!businessHoursService.isOpen(now)) {
+            String nextOpen = businessHoursService.nextOpenTime(now);
+            String msg = "当前不在服务时间，我们将在 " + nextOpen + " 恢复服务，感谢您的耐心等待。";
+            throw new ServiceOfflineException(msg, nextOpen);
+        }
         SessionQueueItem item = new SessionQueueItem(
                 sessionId, userName, transferReason, tag,
                 Instant.now().getEpochSecond(), SessionStatus.WAITING, null
