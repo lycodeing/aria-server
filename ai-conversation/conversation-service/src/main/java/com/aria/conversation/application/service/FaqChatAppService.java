@@ -1,5 +1,6 @@
 package com.aria.conversation.application.service;
 
+import com.aria.conversation.application.exception.ServiceOfflineException;
 import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.domain.model.IntentResult;
@@ -120,6 +121,9 @@ public class FaqChatAppService {
     public Flux<ChatEvent> handleTransfer(String sessionId, IntentResult intent) {
         try {
             sessionQueueService.enqueue(sessionId, "访客", TRANSFER_AUTO_REASON, TRANSFER_DEFAULT_TAG);
+        } catch (ServiceOfflineException e) {
+            log.info("[FAQ] auto-transfer blocked by business hours, session={}", sessionId);
+            return Flux.just(ChatEvent.offline(e.getOfflineMessage(), e.getNextOpenTime(), objectMapper));
         } catch (Exception e) {
             log.warn("[FAQ] 自动转人工入队失败 sessionId={}", sessionId, e);
         }
