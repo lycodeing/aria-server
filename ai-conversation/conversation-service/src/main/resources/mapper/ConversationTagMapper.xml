@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aria.conversation.infrastructure.persistence.mapper.ConversationTagMapper">
+
+    <select id="selectTagsBySessionId"
+            resultType="com.aria.conversation.infrastructure.persistence.entity.TagEntity">
+        SELECT t.id,
+               t.name,
+               t.color,
+               t.source,
+               t.usage_count,
+               t.created_by,
+               t.create_time,
+               t.update_time
+        FROM cs_conversation.cs_conversation_tag ct
+                 JOIN cs_conversation.cs_tag t ON t.id = ct.tag_id
+        WHERE ct.session_id = #{sessionId}
+        ORDER BY ct.create_time DESC
+    </select>
+
+</mapper>

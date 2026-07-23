@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aria.conversation.infrastructure.persistence.mapper.VisitorTagMapper">
+
+    <select id="selectTagsByVisitorId"
+            resultType="com.aria.conversation.infrastructure.persistence.entity.TagEntity">
+        SELECT t.id,
+               t.name,
+               t.color,
+               t.source,
+               t.usage_count,
+               t.created_by,
+               t.create_time,
+               t.update_time
+        FROM cs_conversation.cs_visitor_tag vt
+                 JOIN cs_conversation.cs_tag t ON t.id = vt.tag_id
+        WHERE vt.visitor_id = #{visitorId}
+        ORDER BY vt.create_time DESC
+    </select>
+
+</mapper>
