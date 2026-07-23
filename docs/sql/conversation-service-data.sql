@@ -180,3 +180,12 @@ VALUES ('agent.offlineMessage',
         '您好，当前不在服务时间，我们将在 {nextOpenTime} 恢复服务，感谢您的耐心等待。',
         'CUSTOMER_SERVICE', '非服务时间离线自动回复消息')
 ON CONFLICT (config_key) DO NOTHING;
+
+-- 预置标签
+INSERT INTO cs_conversation.cs_tag (name, color, source) VALUES
+('VIP',    '#F59E0B', 'PRESET'),
+('潜在客户', '#10B981', 'PRESET'),
+('投诉用户', '#EF4444', 'PRESET'),
+('高价值',  '#6366F1', 'PRESET'),
+('需跟进',  '#F97316', 'PRESET')
+ON CONFLICT (name) DO NOTHING;
