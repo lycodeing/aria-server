@@ -29,5 +29,10 @@ public enum SessionEventType {
     /**
      * 标签变更（访客标签或会话标签），多坐席协作时实时同步
      */
-    TAG_UPDATED
+    TAG_UPDATED,
+
+    /**
+     * SLA 违规告警（WARNING 预警或 BREACH 超时），聚合推送给座席 SSE
+     */
+    SLA_BREACH
 }
