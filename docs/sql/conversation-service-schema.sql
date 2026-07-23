@@ -1042,3 +1042,82 @@ COMMENT ON COLUMN cs_conversation.cs_business_hours_holiday.type        IS 'CLOS
 COMMENT ON COLUMN cs_conversation.cs_business_hours_holiday.time_ranges IS 'CUSTOM/WORKDAY 必填，指定当天服务时段；CLOSED 时为 null';
 COMMENT ON COLUMN cs_conversation.cs_business_hours_holiday.remark      IS '备注';
 COMMENT ON COLUMN cs_conversation.cs_business_hours_holiday.source      IS 'AUTO | MANUAL';
+
+-- ============================================================
+-- P1 Tags & Notes
+-- ============================================================
+
+-- 标签字典
+CREATE TABLE IF NOT EXISTS cs_conversation.cs_tag (
+    id           BIGSERIAL    NOT NULL,
+    name         VARCHAR(50)  NOT NULL,
+    color        VARCHAR(7)   NOT NULL DEFAULT '#6B7280',
+    source       VARCHAR(10)  NOT NULL DEFAULT 'PRESET',
+    usage_count  INT          NOT NULL DEFAULT 0,
+    created_by   VARCHAR(64),
+    create_time  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    update_time  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id),
+    CONSTRAINT uk_tag_name UNIQUE (name)
+);
+COMMENT ON TABLE  cs_conversation.cs_tag              IS '标签字典';
+COMMENT ON COLUMN cs_conversation.cs_tag.name         IS '标签名';
+COMMENT ON COLUMN cs_conversation.cs_tag.color        IS '十六进制色值';
+COMMENT ON COLUMN cs_conversation.cs_tag.source       IS 'PRESET | CUSTOM';
+COMMENT ON COLUMN cs_conversation.cs_tag.usage_count  IS '使用次数（原子更新）';
+COMMENT ON COLUMN cs_conversation.cs_tag.created_by   IS '创建人 userId';
+
+CREATE TRIGGER trg_cs_tag_update_time
+    BEFORE UPDATE ON cs_conversation.cs_tag
+    FOR EACH ROW EXECUTE FUNCTION cs_conversation.set_update_time();
+
+-- 访客持久标签（跨会话）
+CREATE TABLE IF NOT EXISTS cs_conversation.cs_visitor_tag (
+    visitor_id   VARCHAR(64)  NOT NULL,
+    tag_id       BIGINT       NOT NULL,
+    tagged_by    VARCHAR(64),
+    create_time  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (visitor_id, tag_id)
+);
+COMMENT ON TABLE  cs_conversation.cs_visitor_tag             IS '访客持久标签';
+COMMENT ON COLUMN cs_conversation.cs_visitor_tag.visitor_id  IS 'anonymousId';
+COMMENT ON COLUMN cs_conversation.cs_visitor_tag.tag_id      IS 'FK → cs_tag.id';
+COMMENT ON COLUMN cs_conversation.cs_visitor_tag.tagged_by   IS '操作坐席 userId';
+
+CREATE INDEX idx_visitor_tag_visitor_id ON cs_conversation.cs_visitor_tag (visitor_id);
+
+-- 会话级标签
+CREATE TABLE IF NOT EXISTS cs_conversation.cs_conversation_tag (
+    session_id   VARCHAR(64)  NOT NULL,
+    tag_id       BIGINT       NOT NULL,
+    tagged_by    VARCHAR(64),
+    create_time  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (session_id, tag_id)
+);
+COMMENT ON TABLE  cs_conversation.cs_conversation_tag              IS '会话级标签';
+COMMENT ON COLUMN cs_conversation.cs_conversation_tag.session_id   IS 'sessionId';
+COMMENT ON COLUMN cs_conversation.cs_conversation_tag.tag_id       IS 'FK → cs_tag.id';
+COMMENT ON COLUMN cs_conversation.cs_conversation_tag.tagged_by    IS '操作坐席 userId';
+
+CREATE INDEX idx_conversation_tag_session_id ON cs_conversation.cs_conversation_tag (session_id);
+
+-- 会话内部备注（对访客不可见）
+CREATE TABLE IF NOT EXISTS cs_conversation.cs_conversation_note (
+    id           BIGSERIAL    NOT NULL,
+    session_id   VARCHAR(64)  NOT NULL,
+    content      TEXT         NOT NULL,
+    created_by   VARCHAR(64),
+    create_time  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    update_time  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id)
+);
+COMMENT ON TABLE  cs_conversation.cs_conversation_note              IS '会话内部备注';
+COMMENT ON COLUMN cs_conversation.cs_conversation_note.session_id   IS 'sessionId';
+COMMENT ON COLUMN cs_conversation.cs_conversation_note.content      IS '备注内容';
+COMMENT ON COLUMN cs_conversation.cs_conversation_note.created_by   IS '坐席 userId';
+
+CREATE INDEX idx_conversation_note_session_id ON cs_conversation.cs_conversation_note (session_id);
+
+CREATE TRIGGER trg_cs_conversation_note_update_time
+    BEFORE UPDATE ON cs_conversation.cs_conversation_note
+    FOR EACH ROW EXECUTE FUNCTION cs_conversation.set_update_time();
