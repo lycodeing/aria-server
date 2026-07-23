@@ -24,5 +24,10 @@ public enum SessionEventType {
     /**
      * 会话转交给其他座席
      */
-    TRANSFER
+    TRANSFER,
+
+    /**
+     * 标签变更（访客标签或会话标签），多坐席协作时实时同步
+     */
+    TAG_UPDATED
 }

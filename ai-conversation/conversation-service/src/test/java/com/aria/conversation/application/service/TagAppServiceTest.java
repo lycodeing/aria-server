@@ -13,6 +13,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.data.redis.core.StringRedisTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -27,6 +28,7 @@ class TagAppServiceTest {
     @Mock ConversationTagMapper  conversationTagMapper;
     @Mock ConversationMapper     conversationMapper;
     @Mock StringRedisTemplate    redisTemplate;
+    @Mock RabbitTemplate         eventsRabbitTemplate;
 
     TagAppService service;
 
@@ -37,13 +39,17 @@ class TagAppServiceTest {
     @BeforeEach
     void setUp() {
         service = new TagAppService(tagMapper, visitorTagMapper, conversationTagMapper,
-                                    conversationMapper, redisTemplate);
+                                    conversationMapper, redisTemplate,
+                                    eventsRabbitTemplate, "test.events");
 
         ConversationEntity conv = new ConversationEntity();
         conv.setSessionId(SESSION_ID);
         conv.setVisitorId(VISITOR_ID);
-        // lenient: addSessionTag does not call requireVisitorId, so this stub is only needed by visitor-tag tests
+        // lenient: addSessionTag does not call requireVisitorId directly, but publishTagUpdatedEvent
+        // calls listVisitorTags which does; stub for all tests using SESSION_ID.
         lenient().when(conversationMapper.selectBySessionId(SESSION_ID)).thenReturn(conv);
+        // default: visitorTagMapper.selectTagsByVisitorId and conversationTagMapper.selectTagsBySessionId
+        // return empty lists (Mockito default), so publishTagUpdatedEvent publishes silently.
     }
 
     @Test
