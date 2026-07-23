@@ -1,11 +1,9 @@
 package com.aria.conversation.interfaces.rest;
 
 import cn.dev33.satoken.annotation.SaCheckPermission;
-import com.aria.common.core.exception.BusinessException;
 import com.aria.common.web.response.R;
+import com.aria.conversation.application.service.TagAppService;
 import com.aria.conversation.infrastructure.persistence.entity.TagEntity;
-import com.aria.conversation.infrastructure.persistence.mapper.TagMapper;
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -16,6 +14,12 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 
+/**
+ * 标签字典管理 Controller（管理端）。
+ *
+ * <p>所有操作委托给 {@link TagAppService}，不直接访问 Mapper，
+ * 符合 interfaces → application → infrastructure 的 DDD 分层规范。
+ */
 @Slf4j
 @Validated
 @RestController
@@ -23,53 +27,44 @@ import java.util.List;
 @RequiredArgsConstructor
 public class TagAdminController {
 
-    private static final int CONFLICT  = 40900;
-    private static final int NOT_FOUND = 40400;
+    private final TagAppService tagAppService;
 
-    private final TagMapper tagMapper;
-
+    /** 标签字典列表，可按 source（PRESET/CUSTOM）过滤，按 name ASC 排序。 */
     @GetMapping
     @SaCheckPermission("system:tag:manage")
     public R<List<TagEntity>> list(
             @RequestParam(required = false) String source) {
-        var wrapper = Wrappers.<TagEntity>lambdaQuery();
-        if (source != null) wrapper.eq(TagEntity::getSource, source);
-        return R.ok(tagMapper.selectList(wrapper.orderByAsc(TagEntity::getName)));
+        return R.ok(tagAppService.listTags(source));
     }
 
+    /** 新建预定义标签；标签名重复返回 409。 */
     @PostMapping
     @SaCheckPermission("system:tag:manage")
     public R<TagEntity> create(@RequestBody @Validated CreateTagReq req) {
-        if (tagMapper.selectByName(req.getName()) != null) {
-            throw new BusinessException(CONFLICT, "标签名已存在: " + req.getName());
-        }
-        TagEntity entity = TagEntity.builder()
-                .name(req.getName()).color(req.getColor())
-                .source("PRESET").build();
-        tagMapper.insert(entity);
-        return R.ok(entity);
+        return R.ok(tagAppService.createPresetTag(req.getName(), req.getColor()));
     }
 
+    /** 修改标签名称、颜色或来源；标签不存在返回 404。 */
     @PutMapping("/{id}")
     @SaCheckPermission("system:tag:manage")
     public R<Void> update(@PathVariable Long id,
                            @RequestBody @Validated UpdateTagReq req) {
-        TagEntity existing = tagMapper.selectById(id);
-        if (existing == null) throw new BusinessException(NOT_FOUND, "标签不存在");
-        existing.setName(req.getName());
-        existing.setColor(req.getColor());
-        existing.setSource(req.getSource());
-        tagMapper.updateById(existing);
+        tagAppService.updateTag(id, req.getName(), req.getColor(), req.getSource());
         return R.ok();
     }
 
+    /**
+     * 删除标签。
+     * usage_count > 0 时前端已做二次确认，后端直接执行删除。
+     */
     @DeleteMapping("/{id}")
     @SaCheckPermission("system:tag:manage")
     public R<Void> delete(@PathVariable Long id) {
-        // usage_count > 0 时前端已二次确认，后端直接执行
-        tagMapper.deleteById(id);
+        tagAppService.deleteTag(id);
         return R.ok();
     }
+
+    // ── 请求 DTO ──────────────────────────────────────────────────────────────────
 
     @Data
     public static class CreateTagReq {
