@@ -223,6 +223,18 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
     }
 
     /**
+     * 按 sessionId 精确查询会话（用于从会话 ID 获取 visitorId 等信息）。
+     *
+     * @param sessionId 会话唯一标识
+     * @return 会话实体，不存在时返回 null
+     */
+    default ConversationEntity selectBySessionId(@Param("sessionId") String sessionId) {
+        return selectOne(Wrappers.lambdaQuery(ConversationEntity.class)
+                .eq(ConversationEntity::getSessionId, sessionId)
+        );
+    }
+
+    /**
      * 按 visitor_id 查询历史会话，排除指定 sessionId，按 started_at 倒序。
      *
      * @param visitorId        访客唯一标识
