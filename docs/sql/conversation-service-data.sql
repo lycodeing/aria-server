@@ -189,3 +189,12 @@ INSERT INTO cs_conversation.cs_tag (name, color, source) VALUES
 ('高价值',  '#6366F1', 'PRESET'),
 ('需跟进',  '#F97316', 'PRESET')
 ON CONFLICT (name) DO NOTHING;
+
+-- 默认 SLA 兜底策略（priority=0，匹配所有会话）
+INSERT INTO cs_conversation.cs_sla_policy
+    (name, is_enabled, priority, match_visitor_tags, match_transfer_tags,
+     time_mode, wait_time_target_sec, frt_target_sec, handle_time_target_sec,
+     warning_threshold_pct, actions)
+VALUES ('默认 SLA', 1, 0, '[]', '[]', 'CALENDAR', 120, 60, 1800, 80,
+    '{"recordBreachOnly":true,"sseAlert":true,"autoEscalate":false,"escalateToUserId":null}')
+ON CONFLICT DO NOTHING;
