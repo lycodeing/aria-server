@@ -57,7 +57,7 @@ public interface SlaBreachMapper extends BaseMapper<SlaBreachEntity> {
      * 统计今日（从 todayStart 至今）发生过正式违规（stage=BREACH）的不重复会话数，
      * 用于仪表盘 SLA 健康度指标。
      *
-     * @param todayStart 今日零点（本地时间）
+     * @param todayStart 今日零点（Asia/Shanghai 偏移时间，OffsetDateTime）
      * @return 发生违规的不重复会话数
      */
     @Select("SELECT COUNT(DISTINCT session_id) FROM cs_conversation.cs_sla_breach " +
