@@ -1197,3 +1197,38 @@ COMMENT ON COLUMN cs_conversation.cs_sla_breach.escalated_at IS '自动升级时
 
 CREATE INDEX idx_sla_breach_session_id ON cs_conversation.cs_sla_breach (session_id);
 CREATE INDEX idx_sla_breach_breach_at  ON cs_conversation.cs_sla_breach (breach_at);
+
+-- Webhook 通知配置
+CREATE TABLE IF NOT EXISTS cs_conversation.cs_webhook_config (
+    id               BIGSERIAL     NOT NULL,
+    name             VARCHAR(50)   NOT NULL,
+    type             VARCHAR(10)   NOT NULL,
+    url              VARCHAR(500)  NOT NULL,
+    secret           VARCHAR(200),
+    custom_headers   JSONB,
+    message_template TEXT,
+    is_enabled       SMALLINT      NOT NULL DEFAULT 1,
+    create_time      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    update_time      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id),
+    CONSTRAINT uk_webhook_name UNIQUE (name)
+);
+COMMENT ON TABLE  cs_conversation.cs_webhook_config             IS 'SLA Webhook 通知配置';
+COMMENT ON COLUMN cs_conversation.cs_webhook_config.name        IS '配置名称，全局唯一';
+COMMENT ON COLUMN cs_conversation.cs_webhook_config.type        IS 'FEISHU | DINGTALK | WECOM | CUSTOM';
+COMMENT ON COLUMN cs_conversation.cs_webhook_config.url         IS 'Webhook 请求地址';
+COMMENT ON COLUMN cs_conversation.cs_webhook_config.secret      IS '签名密钥（飞书/钉钉需要），明文存储';
+COMMENT ON COLUMN cs_conversation.cs_webhook_config.custom_headers IS 'CUSTOM 类型自定义请求头 JSON';
+COMMENT ON COLUMN cs_conversation.cs_webhook_config.message_template IS '自定义消息模板，支持 ${变量}，空则用默认模板';
+COMMENT ON COLUMN cs_conversation.cs_webhook_config.is_enabled   IS '是否启用';
+COMMENT ON COLUMN cs_conversation.cs_webhook_config.create_time  IS '创建时间';
+COMMENT ON COLUMN cs_conversation.cs_webhook_config.update_time  IS '更新时间';
+
+CREATE TRIGGER trg_cs_webhook_config_update_time
+    BEFORE UPDATE ON cs_conversation.cs_webhook_config
+    FOR EACH ROW EXECUTE FUNCTION cs_conversation.set_update_time();
+
+-- cs_sla_breach 追加 webhook_notified_at 列
+ALTER TABLE cs_conversation.cs_sla_breach
+    ADD COLUMN IF NOT EXISTS webhook_notified_at TIMESTAMPTZ;
+COMMENT ON COLUMN cs_conversation.cs_sla_breach.webhook_notified_at IS 'Webhook 推送时间，null=未推送';

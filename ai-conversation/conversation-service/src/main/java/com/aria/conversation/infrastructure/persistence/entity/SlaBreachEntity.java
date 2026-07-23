@@ -59,6 +59,9 @@ public class SlaBreachEntity {
     /** 升级执行时间（null 表示未升级） */
     private OffsetDateTime escalatedAt;
 
+    /** Webhook 推送时间（null 表示未推送） */
+    private OffsetDateTime webhookNotifiedAt;
+
     /** 记录创建时间 */
     private LocalDateTime createTime;
 }

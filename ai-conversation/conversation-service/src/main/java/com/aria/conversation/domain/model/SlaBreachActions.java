@@ -2,6 +2,8 @@ package com.aria.conversation.domain.model;
 
 import lombok.Data;
 
+import java.util.List;
+
 /**
  * SLA 违规行为配置（对应 cs_sla_policy.actions JSON 字段）。
  *
@@ -22,4 +24,7 @@ public class SlaBreachActions {
 
     /** 自动升级的目标座席 ID（autoEscalate=true 时有效） */
     private String escalateToUserId;
+
+    /** 违规时推送的 Webhook 配置 ID 列表，空列表表示不推送 */
+    private List<Long> webhookIds;
 }
