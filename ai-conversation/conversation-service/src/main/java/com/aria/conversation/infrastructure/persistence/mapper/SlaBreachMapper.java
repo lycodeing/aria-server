@@ -11,6 +11,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 
 /**
  * SLA 违规记录 Mapper。
@@ -52,6 +53,19 @@ public interface SlaBreachMapper extends BaseMapper<SlaBreachEntity> {
      */
     @Update("UPDATE cs_conversation.cs_sla_breach SET escalated_at = #{at} WHERE id = #{id}")
     void updateEscalatedAt(@Param("id") Long id, @Param("at") OffsetDateTime at);
+
+    /**
+     * 批量记录 Webhook 推送时间（幂等，已推送的记录会被覆盖写入相同值）。
+     *
+     * @param ids 违规记录主键列表
+     * @param at  推送执行时间
+     */
+    @Update("<script>UPDATE cs_conversation.cs_sla_breach " +
+            "SET webhook_notified_at = #{at} " +
+            "WHERE id IN <foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>" +
+            "</script>")
+    void updateWebhookNotifiedAt(@Param("ids") List<Long> ids,
+                                 @Param("at") OffsetDateTime at);
 
     /**
      * 统计今日（从 todayStart 至今）发生过正式违规（stage=BREACH）的不重复会话数，
