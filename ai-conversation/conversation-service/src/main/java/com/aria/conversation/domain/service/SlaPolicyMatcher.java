@@ -1,6 +1,5 @@
 package com.aria.conversation.domain.service;
 
-import com.aria.conversation.infrastructure.cache.SlaPolicyCache;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
 import com.aria.conversation.infrastructure.persistence.entity.SlaPolicyEntity;
 import lombok.RequiredArgsConstructor;
@@ -18,12 +17,15 @@ import java.util.List;
  * </ol>
  *
  * <p>两个条件同时满足（AND 逻辑）才命中。返回 {@code null} 表示该会话不受任何 SLA 策略监控。
+ *
+ * <p>通过 {@link SlaPolicyRepository} 接口获取策略列表（依赖倒置），
+ * 不直接依赖 infrastructure 层的具体缓存实现。
  */
 @Component
 @RequiredArgsConstructor
 public class SlaPolicyMatcher {
 
-    private final SlaPolicyCache slaPolicyCache;
+    private final SlaPolicyRepository slaPolicyRepository;
 
     /**
      * 按优先级匹配会话对应的 SLA 策略。
@@ -33,7 +35,7 @@ public class SlaPolicyMatcher {
      * @return 第一个命中的策略，{@code null} 表示不受 SLA 监控
      */
     public SlaPolicyEntity findPolicy(ConversationEntity session, List<String> visitorTagNames) {
-        List<SlaPolicyEntity> policies = slaPolicyCache.getAllEnabled();
+        List<SlaPolicyEntity> policies = slaPolicyRepository.findAllEnabled();
         for (SlaPolicyEntity policy : policies) {
             if (matchesTags(policy, session, visitorTagNames)) {
                 return policy;
@@ -67,3 +69,4 @@ public class SlaPolicyMatcher {
         return visitorMatch && transferMatch;
     }
 }
+

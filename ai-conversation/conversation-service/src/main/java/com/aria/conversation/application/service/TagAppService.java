@@ -120,6 +120,61 @@ public class TagAppService {
         publishTagUpdatedEvent(sessionId);
     }
 
+    // ── 标签字典管理（供 TagAdminController 使用）──────────────────────────────────
+
+    /**
+     * 查询标签字典列表，可按 source 过滤。
+     *
+     * @param source 来源过滤（PRESET/CUSTOM），null 表示查全部
+     * @return 标签列表，按 name ASC 排序
+     */
+    public List<TagEntity> listTags(String source) {
+        var wrapper = com.baomidou.mybatisplus.core.toolkit.Wrappers.<TagEntity>lambdaQuery();
+        if (source != null) wrapper.eq(TagEntity::getSource, source);
+        return tagMapper.selectList(wrapper.orderByAsc(TagEntity::getName));
+    }
+
+    /**
+     * 新建预定义（PRESET）标签。
+     *
+     * @throws BusinessException(40900) 若标签名已存在
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public TagEntity createPresetTag(String name, String color) {
+        if (tagMapper.selectByName(name) != null) {
+            throw new BusinessException(40900, "标签名已存在: " + name);
+        }
+        TagEntity entity = TagEntity.builder()
+                .name(name).color(color).source("PRESET").build();
+        tagMapper.insert(entity);
+        return entity;
+    }
+
+    /**
+     * 修改标签名称、颜色或来源。
+     *
+     * @throws BusinessException(40400) 若标签不存在
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void updateTag(Long id, String name, String color, String source) {
+        TagEntity existing = tagMapper.selectById(id);
+        if (existing == null) {
+            throw new BusinessException(NOT_FOUND, "标签不存在: " + id);
+        }
+        existing.setName(name);
+        existing.setColor(color);
+        existing.setSource(source);
+        tagMapper.updateById(existing);
+    }
+
+    /**
+     * 删除标签（前端已对 usage_count>0 做二次确认，后端直接删除）。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void deleteTag(Long id) {
+        tagMapper.deleteById(id);
+    }
+
     // ── 私有辅助方法 ──────────────────────────────────────────────────────────────
 
     /**
