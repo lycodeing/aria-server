@@ -32,6 +32,7 @@ class WebhookDispatcherTest {
         when(feishuSender.supportedType()).thenReturn("FEISHU");
         dispatcher = new WebhookDispatcher(
                 List.of(feishuSender), webhookConfigMapper, slaBreachMapper);
+        dispatcher.retryBaseMs = 0L;  // disable sleep in tests
         // supportedType() was called during construction to build the router map;
         // clear that recorded interaction so verifyNoInteractions() in tests is accurate.
         clearInvocations(feishuSender);
@@ -78,6 +79,6 @@ class WebhookDispatcherTest {
     @DisplayName("webhookIds 为空时不调用任何 sender")
     void dispatch_emptyIds_doesNothing() {
         dispatcher.dispatch(List.of(), new SlaBreachContext("s1", "张三", "SLA", List.of()), List.of());
-        verifyNoInteractions(webhookConfigMapper, feishuSender);
+        verifyNoInteractions(webhookConfigMapper, slaBreachMapper, feishuSender);
     }
 }

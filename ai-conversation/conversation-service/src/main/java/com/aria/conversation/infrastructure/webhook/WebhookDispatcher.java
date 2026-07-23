@@ -30,6 +30,9 @@ public class WebhookDispatcher {
     private final WebhookConfigMapper          webhookConfigMapper;
     private final SlaBreachMapper              slaBreachMapper;
 
+    /** Package-visible for testing — override to 0 in unit tests */
+    long retryBaseMs = 1_000L;
+
     /** Spring 自动注入所有 WebhookSender 实现，按 supportedType() 建立路由表 */
     public WebhookDispatcher(List<WebhookSender> senderList,
                               WebhookConfigMapper webhookConfigMapper,
@@ -93,7 +96,7 @@ public class WebhookDispatcher {
                 lastEx = e;
                 log.warn("[Webhook] 第 {}/3 次发送失败 id={}: {}", attempt, config.getId(), e.getMessage());
                 if (attempt < 3) {
-                    try { Thread.sleep(delaySec * 1000); } catch (InterruptedException ie) {
+                    try { Thread.sleep(delaySec * retryBaseMs); } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
                         throw new RuntimeException("interrupted during retry", ie);
                     }
