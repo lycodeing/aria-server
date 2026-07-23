@@ -64,6 +64,9 @@ public abstract class AbstractWebhookSender implements WebhookSender {
 
     /** 从 SlaBreachContext 构造模板变量 Map（取第一条违规的信息） */
     protected Map<String, String> buildVariables(SlaBreachContext ctx) {
+        if (ctx.breaches() == null || ctx.breaches().isEmpty()) {
+            throw new IllegalArgumentException("SlaBreachContext breaches 列表不能为空");
+        }
         var breach = ctx.breaches().get(0);
         String label = switch (breach.getBreachType()) {
             case "WAIT"   -> "排队等待超时";
