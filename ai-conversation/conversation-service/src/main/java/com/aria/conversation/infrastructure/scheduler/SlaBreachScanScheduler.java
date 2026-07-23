@@ -56,8 +56,7 @@ public class SlaBreachScanScheduler {
         // now 在分片遍历前统一捕获，保证同批次所有会话的检测基准时间一致
         OffsetDateTime now = OffsetDateTime.now();
 
-        for (int i = 0; i < shardCount; i++) {
-            final int shardIndex = i;
+        for (int shardIndex = 0; shardIndex < shardCount; shardIndex++) {
             RLock lock = redissonClient.getLock(LOCK_KEY_PREFIX + shardIndex);
             boolean acquired;
             try {
