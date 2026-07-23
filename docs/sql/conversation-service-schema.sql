@@ -1142,7 +1142,8 @@ CREATE TABLE IF NOT EXISTS cs_conversation.cs_sla_policy (
     actions                JSONB        NOT NULL,
     create_time            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     update_time            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (id)
+    PRIMARY KEY (id),
+    CONSTRAINT uk_sla_policy_name UNIQUE (name)
 );
 COMMENT ON TABLE  cs_conversation.cs_sla_policy                        IS 'SLA 策略';
 COMMENT ON COLUMN cs_conversation.cs_sla_policy.name                   IS '策略名称';
@@ -1156,6 +1157,8 @@ COMMENT ON COLUMN cs_conversation.cs_sla_policy.frt_target_sec         IS '首�
 COMMENT ON COLUMN cs_conversation.cs_sla_policy.handle_time_target_sec IS '处理总时长超时（秒）';
 COMMENT ON COLUMN cs_conversation.cs_sla_policy.warning_threshold_pct  IS '预警百分比阈值';
 COMMENT ON COLUMN cs_conversation.cs_sla_policy.actions                IS '违规行为配置';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.create_time            IS '创建时间';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.update_time            IS '更新时间';
 
 CREATE INDEX idx_sla_policy_priority ON cs_conversation.cs_sla_policy (is_enabled, priority DESC);
 

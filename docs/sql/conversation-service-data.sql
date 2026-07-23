@@ -197,4 +197,4 @@ INSERT INTO cs_conversation.cs_sla_policy
      warning_threshold_pct, actions)
 VALUES ('默认 SLA', 1, 0, '[]', '[]', 'CALENDAR', 120, 60, 1800, 80,
     '{"recordBreachOnly":true,"sseAlert":true,"autoEscalate":false,"escalateToUserId":null}')
-ON CONFLICT DO NOTHING;
+ON CONFLICT (name) DO NOTHING;
