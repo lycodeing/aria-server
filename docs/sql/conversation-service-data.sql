@@ -174,8 +174,8 @@ INSERT INTO cs_conversation.cs_business_hours_schedule (day_of_week, is_open, ti
 (7, 0, '[]')
 ON CONFLICT (day_of_week) DO NOTHING;
 
--- 离线回复消息（system_config 表属于独立配置服务，执行前请确认目标 schema）
-INSERT INTO system_config (config_key, config_value, config_type, remark)
+-- 离线回复消息（写入 cs_auth.system_config，与 agent.welcomeMessage 等配置保持一致）
+INSERT INTO cs_auth.system_config (config_key, config_value, config_type, remark)
 VALUES ('agent.offlineMessage',
         '您好，当前不在服务时间，我们将在 {nextOpenTime} 恢复服务，感谢您的耐心等待。',
         'CUSTOMER_SERVICE', '非服务时间离线自动回复消息')
