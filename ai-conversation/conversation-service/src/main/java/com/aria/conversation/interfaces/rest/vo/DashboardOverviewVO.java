@@ -72,4 +72,10 @@ public class DashboardOverviewVO {
 
     /** 近 30 天已评价总数 */
     private long csatRatedCount;
+
+    /** 今日 SLA 正式违规记录数（stage=BREACH） */
+    private long slaBreachCount;
+
+    /** 今日 SLA 违规会话占比（发生违规的不重复会话数 / 今日总人工会话数，保留 2 位小数） */
+    private double slaBreachRate;
 }
