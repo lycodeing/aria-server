@@ -5,11 +5,14 @@ import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEnti
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@ExtendWith(MockitoExtension.class)
 class FeishuWebhookSenderTest {
 
     FeishuWebhookSender sender;
