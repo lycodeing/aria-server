@@ -116,11 +116,13 @@ public class BusinessHoursController {
         return R.ok();
     }
 
-    /** 修改节假日。 */
+    /** 修改节假日。若日期被修改，同时失效旧日期和新日期的缓存。 */
     @PutMapping("/holidays/{id}")
     @SaCheckPermission("system:biz-hours:manage")
     public R<Void> updateHoliday(@PathVariable Long id,
                                   @RequestBody @Validated HolidayReq req) {
+        // 取旧记录以获取原日期，防止日期被修改时旧缓存残留
+        BusinessHoursHolidayEntity existing = holidayMapper.selectById(id);
         var entity = BusinessHoursHolidayEntity.builder()
                 .id(id)
                 .date(req.getDate())
@@ -129,7 +131,12 @@ public class BusinessHoursController {
                 .remark(req.getRemark())
                 .build();
         holidayMapper.updateById(entity);
+        // 失效新日期缓存
         businessHoursService.evictCache(req.getDate());
+        // 若日期发生变更，同时失效旧日期缓存
+        if (existing != null && !existing.getDate().equals(req.getDate())) {
+            businessHoursService.evictCache(existing.getDate());
+        }
         return R.ok();
     }
 
