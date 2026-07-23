@@ -1121,3 +1121,76 @@ CREATE INDEX idx_conversation_note_session_id ON cs_conversation.cs_conversation
 CREATE TRIGGER trg_cs_conversation_note_update_time
     BEFORE UPDATE ON cs_conversation.cs_conversation_note
     FOR EACH ROW EXECUTE FUNCTION cs_conversation.set_update_time();
+
+-- ============================================================
+-- P2 SLA Management
+-- ============================================================
+
+-- SLA 策略
+CREATE TABLE IF NOT EXISTS cs_conversation.cs_sla_policy (
+    id                     BIGSERIAL    NOT NULL,
+    name                   VARCHAR(50)  NOT NULL,
+    is_enabled             SMALLINT     NOT NULL DEFAULT 1,
+    priority               INT          NOT NULL DEFAULT 0,
+    match_visitor_tags     JSONB,
+    match_transfer_tags    JSONB,
+    time_mode              VARCHAR(15)  NOT NULL DEFAULT 'CALENDAR',
+    wait_time_target_sec   INT          NOT NULL DEFAULT 120,
+    frt_target_sec         INT          NOT NULL DEFAULT 60,
+    handle_time_target_sec INT          NOT NULL DEFAULT 1800,
+    warning_threshold_pct  SMALLINT     NOT NULL DEFAULT 80,
+    actions                JSONB        NOT NULL,
+    create_time            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    update_time            TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id)
+);
+COMMENT ON TABLE  cs_conversation.cs_sla_policy                        IS 'SLA 策略';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.name                   IS '策略名称';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.is_enabled             IS '是否启用';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.priority               IS '优先级，越大越优先；同优先级按 id ASC';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.match_visitor_tags     IS '访客标签白名单，空=不限';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.match_transfer_tags    IS '转人工原因标签，空=不限';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.time_mode              IS 'CALENDAR | BUSINESS_HOURS';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.wait_time_target_sec   IS '排队等待超时（秒）';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.frt_target_sec         IS '首次响应超时（秒）';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.handle_time_target_sec IS '处理总时长超时（秒）';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.warning_threshold_pct  IS '预警百分比阈值';
+COMMENT ON COLUMN cs_conversation.cs_sla_policy.actions                IS '违规行为配置';
+
+CREATE INDEX idx_sla_policy_priority ON cs_conversation.cs_sla_policy (is_enabled, priority DESC);
+
+CREATE TRIGGER trg_cs_sla_policy_update_time
+    BEFORE UPDATE ON cs_conversation.cs_sla_policy
+    FOR EACH ROW EXECUTE FUNCTION cs_conversation.set_update_time();
+
+-- SLA 违规记录
+CREATE TABLE IF NOT EXISTS cs_conversation.cs_sla_breach (
+    id           BIGSERIAL    NOT NULL,
+    session_id   VARCHAR(64)  NOT NULL,
+    policy_id    BIGINT       NOT NULL,
+    breach_type  VARCHAR(10)  NOT NULL,
+    stage        VARCHAR(10)  NOT NULL DEFAULT 'BREACH',
+    target_sec   INT          NOT NULL,
+    warn_at_sec  INT          NOT NULL,
+    actual_sec   INT          NOT NULL,
+    breach_at    TIMESTAMPTZ  NOT NULL,
+    alerted_at   TIMESTAMPTZ,
+    escalated_at TIMESTAMPTZ,
+    create_time  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id),
+    CONSTRAINT uk_sla_breach_session_type_stage UNIQUE (session_id, breach_type, stage)
+);
+COMMENT ON TABLE  cs_conversation.cs_sla_breach              IS 'SLA 违规记录';
+COMMENT ON COLUMN cs_conversation.cs_sla_breach.session_id   IS '关联 sessionId';
+COMMENT ON COLUMN cs_conversation.cs_sla_breach.policy_id    IS '触发策略 ID（快照）';
+COMMENT ON COLUMN cs_conversation.cs_sla_breach.breach_type  IS 'WAIT | FRT | HANDLE';
+COMMENT ON COLUMN cs_conversation.cs_sla_breach.stage        IS 'WARNING | BREACH';
+COMMENT ON COLUMN cs_conversation.cs_sla_breach.target_sec   IS '阈值快照（秒）';
+COMMENT ON COLUMN cs_conversation.cs_sla_breach.warn_at_sec  IS '预警阈值快照（秒）';
+COMMENT ON COLUMN cs_conversation.cs_sla_breach.actual_sec   IS '检测时实际耗时（秒）';
+COMMENT ON COLUMN cs_conversation.cs_sla_breach.breach_at    IS '记录时间';
+COMMENT ON COLUMN cs_conversation.cs_sla_breach.alerted_at   IS 'SSE 告警时间';
+COMMENT ON COLUMN cs_conversation.cs_sla_breach.escalated_at IS '自动升级时间（WARNING 阶段不填）';
+
+CREATE INDEX idx_sla_breach_session_id ON cs_conversation.cs_sla_breach (session_id);
+CREATE INDEX idx_sla_breach_breach_at  ON cs_conversation.cs_sla_breach (breach_at);
