@@ -996,3 +996,49 @@ COMMENT ON COLUMN cs_conversation.cs_conversation.visitor_device
 CREATE INDEX IF NOT EXISTS idx_cs_conv_visitor_id
     ON cs_conversation.cs_conversation (visitor_id, status)
     WHERE visitor_id IS NOT NULL;
+
+-- 每周排班配置（7条固定记录，只允许 UPDATE 不允许 DELETE）
+CREATE TABLE IF NOT EXISTS cs_conversation.cs_business_hours_schedule (
+    day_of_week  SMALLINT     NOT NULL,
+    is_open      SMALLINT     NOT NULL DEFAULT 1,
+    time_ranges  JSONB        NOT NULL,
+    timezone     VARCHAR(50)  NOT NULL DEFAULT 'Asia/Shanghai',
+    create_time  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    update_time  TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (day_of_week)
+);
+COMMENT ON TABLE  cs_conversation.cs_business_hours_schedule             IS '每周排班配置';
+COMMENT ON COLUMN cs_conversation.cs_business_hours_schedule.day_of_week IS '1=周一 … 7=周日';
+COMMENT ON COLUMN cs_conversation.cs_business_hours_schedule.is_open     IS '当天是否营业';
+COMMENT ON COLUMN cs_conversation.cs_business_hours_schedule.time_ranges IS '[{"start":"HH:mm","end":"HH:mm"}]';
+
+CREATE OR REPLACE FUNCTION cs_conversation.set_update_time()
+    RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    NEW.update_time = NOW();
+    RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER trg_biz_hours_schedule_update_time
+    BEFORE UPDATE ON cs_conversation.cs_business_hours_schedule
+    FOR EACH ROW EXECUTE FUNCTION cs_conversation.set_update_time();
+
+-- 节假日例外配置
+CREATE TABLE IF NOT EXISTS cs_conversation.cs_business_hours_holiday (
+    id          BIGSERIAL    NOT NULL,
+    date        DATE         NOT NULL,
+    type        VARCHAR(10)  NOT NULL,
+    time_ranges JSONB,
+    remark      VARCHAR(100),
+    source      VARCHAR(10)  NOT NULL DEFAULT 'MANUAL',
+    create_time TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (id),
+    CONSTRAINT uk_biz_holiday_date UNIQUE (date)
+);
+COMMENT ON TABLE  cs_conversation.cs_business_hours_holiday             IS '节假日例外配置';
+COMMENT ON COLUMN cs_conversation.cs_business_hours_holiday.date        IS '具体日期';
+COMMENT ON COLUMN cs_conversation.cs_business_hours_holiday.type        IS 'CLOSED | CUSTOM | WORKDAY';
+COMMENT ON COLUMN cs_conversation.cs_business_hours_holiday.time_ranges IS 'CUSTOM/WORKDAY 必填，指定当天服务时段；CLOSED 时为 null';
+COMMENT ON COLUMN cs_conversation.cs_business_hours_holiday.remark      IS '备注';
+COMMENT ON COLUMN cs_conversation.cs_business_hours_holiday.source      IS 'AUTO | MANUAL';
