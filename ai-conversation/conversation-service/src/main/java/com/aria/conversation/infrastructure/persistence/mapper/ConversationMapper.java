@@ -253,4 +253,19 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
                 .last("LIMIT " + limit)
         );
     }
+
+    /**
+     * 按 HASHTEXT(session_id) 分片查询活跃会话（WAITING + ACTIVE）。
+     *
+     * <p>用于 SLA 扫描调度器的水平分片：每个 Pod 只处理属于自己分片的会话，
+     * 避免所有实例重复扫描全量数据。
+     * SQL 实现见 resources/mapper/ConversationMapper.xml。
+     *
+     * @param shardIndex 当前分片索引（0 .. shardCount-1）
+     * @param shardCount 分片总数
+     * @return 属于该分片的 WAITING / ACTIVE 会话列表
+     */
+    List<ConversationEntity> selectActiveByShardIndex(
+            @Param("shardIndex") int shardIndex,
+            @Param("shardCount") int shardCount);
 }

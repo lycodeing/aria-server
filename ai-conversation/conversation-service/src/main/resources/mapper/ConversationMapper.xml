@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aria.conversation.infrastructure.persistence.mapper.ConversationMapper">
+
+    <!--
+        按 HASHTEXT(session_id) 分片查询 WAITING / ACTIVE 会话。
+        HASHTEXT 是 PostgreSQL 内置整型哈希函数，分布均匀且无需扩展。
+        ABS() 处理负值，确保 MOD 结果始终在 [0, shardCount-1] 范围内。
+    -->
+    <select id="selectActiveByShardIndex"
+            resultType="com.aria.conversation.infrastructure.persistence.entity.ConversationEntity">
+        SELECT *
+        FROM cs_conversation.cs_conversation
+        WHERE status IN ('WAITING', 'ACTIVE')
+          AND MOD(ABS(HASHTEXT(session_id)), #{shardCount}) = #{shardIndex}
+    </select>
+
+</mapper>
