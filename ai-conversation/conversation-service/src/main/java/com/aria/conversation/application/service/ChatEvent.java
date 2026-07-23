@@ -88,6 +88,13 @@ public record ChatEvent(String eventType, String data) {
          */
         public static final String AUTH_REQUIRED = "auth_required";
 
+        /**
+         * 非服务时间转人工被拦截信号，data 为 JSON：
+         * {"message":"当前非服务时间...","nextOpenTime":"09:00"}。
+         * 前端收到后展示离线提示，告知用户下次开放时间。
+         */
+        public static final String OFFLINE = "offline";
+
         private EventType() { /* 工具类，不允许实例化 */ }
     }
 
@@ -169,5 +176,19 @@ public record ChatEvent(String eventType, String data) {
      */
     public static ChatEvent authRequired(String reason, ObjectMapper mapper) {
         return new ChatEvent(EventType.AUTH_REQUIRED, SseJson.encode(mapper, new AuthRequiredPayload(reason)));
+    }
+
+    /**
+     * 非服务时间转人工被拦截信号。data 为 JSON：
+     * {"message":"当前非服务时间...","nextOpenTime":"09:00"}。
+     *
+     * @param offlineMessage 离线提示文案（来自业务小时配置）
+     * @param nextOpenTime   下次开放时间字符串，如 "09:00"
+     * @param mapper         Jackson ObjectMapper
+     */
+    public static ChatEvent offline(String offlineMessage, String nextOpenTime, ObjectMapper mapper) {
+        return new ChatEvent(EventType.OFFLINE, SseJson.encode(mapper, java.util.Map.of(
+                "message",      offlineMessage != null ? offlineMessage : "",
+                "nextOpenTime", nextOpenTime   != null ? nextOpenTime   : "")));
     }
 }

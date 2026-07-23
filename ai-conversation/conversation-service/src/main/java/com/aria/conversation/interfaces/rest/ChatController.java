@@ -1,6 +1,7 @@
 package com.aria.conversation.interfaces.rest;
 
 import com.aria.common.web.response.R;
+import com.aria.conversation.application.exception.ServiceOfflineException;
 import com.aria.conversation.application.service.ChatAppService;
 import com.aria.conversation.application.service.ChatEvent;
 import com.aria.conversation.application.service.MessageFeedbackService;
@@ -13,6 +14,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Pattern;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
@@ -37,6 +39,7 @@ import java.util.Map;
  *   <li>其余接口（历史查询/转人工）由网关层统一管控 CORS，不单独放行</li>
  * </ul>
  */
+@Slf4j
 @RestController
 @RequestMapping("/api/v1/chat")
 @RequiredArgsConstructor
@@ -45,6 +48,7 @@ public class ChatController {
     // ---- 常量定义 ----
     private static final String DEFAULT_TRANSFER_REASON = "用户主动请求转人工";
     private static final String DEFAULT_TAG = "咨询";
+    private static final int BUSINESS_HOURS_CLOSED = 40301;
 
     /**
      * sessionId 格式校验：与 ChatWebSocketHandler.SESSION_ID_PATTERN 保持一致。
@@ -169,7 +173,12 @@ public class ChatController {
     public R<SessionQueueItem> transfer(@RequestBody @Valid TransferRequest req) {
         String reason = req.getTransferReason() != null ? req.getTransferReason() : DEFAULT_TRANSFER_REASON;
         String tag = req.getTag() != null ? req.getTag() : DEFAULT_TAG;
-        return R.ok(chatService.requestTransfer(req.getSessionId(), req.getUserName(), reason, tag));
+        try {
+            return R.ok(chatService.requestTransfer(req.getSessionId(), req.getUserName(), reason, tag));
+        } catch (ServiceOfflineException e) {
+            log.info("[Chat] transfer blocked by business hours, session={}", req.getSessionId());
+            return R.fail(BUSINESS_HOURS_CLOSED, e.getOfflineMessage());
+        }
     }
 
     /**
