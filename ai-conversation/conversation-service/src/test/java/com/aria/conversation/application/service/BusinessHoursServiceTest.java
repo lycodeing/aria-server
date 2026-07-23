@@ -4,6 +4,7 @@ import com.aria.conversation.infrastructure.persistence.entity.BusinessHoursHoli
 import com.aria.conversation.infrastructure.persistence.entity.BusinessHoursScheduleEntity;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursHolidayMapper;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursScheduleMapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -11,27 +12,33 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ValueOperations;
 
 import java.time.*;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.when;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class BusinessHoursServiceTest {
 
-    @Mock BusinessHoursScheduleMapper scheduleMapper;
-    @Mock BusinessHoursHolidayMapper  holidayMapper;
-    @Mock StringRedisTemplate         redisTemplate;
+    @Mock BusinessHoursScheduleMapper     scheduleMapper;
+    @Mock BusinessHoursHolidayMapper      holidayMapper;
+    @Mock StringRedisTemplate             redisTemplate;
+    @Mock ValueOperations<String, String> valueOps;
 
     BusinessHoursService service;
 
     @BeforeEach
     void setUp() {
-        service = new BusinessHoursService(scheduleMapper, holidayMapper, redisTemplate);
-        when(holidayMapper.selectByDate(any())).thenReturn(null);
+        when(redisTemplate.opsForValue()).thenReturn(valueOps);
+        // default: no cache hit — lenient so tests that short-circuit via cache don't fail
+        lenient().when(valueOps.get(any())).thenReturn(null);
+        lenient().when(holidayMapper.selectByDate(any())).thenReturn(null);
+        service = new BusinessHoursService(scheduleMapper, holidayMapper, redisTemplate, new ObjectMapper());
     }
 
     private BusinessHoursScheduleEntity schedule(int dow, boolean open, String start, String end) {
@@ -89,5 +96,20 @@ class BusinessHoursServiceTest {
         ZonedDateTime now = ZonedDateTime.of(2026, 7, 22, 10, 0, 0, 0, ZoneId.of("Asia/Shanghai"));
         when(scheduleMapper.selectByDayOfWeek(3)).thenReturn(null);
         assertThat(service.isOpen(now)).isTrue();
+    }
+
+    @Test
+    @DisplayName("Redis 缓存命中时不走 DB")
+    void isOpen_cacheHit_doesNotCallDb() {
+        ZonedDateTime now = ZonedDateTime.of(2026, 7, 22, 10, 0, 0, 0, ZoneId.of("Asia/Shanghai"));
+        // Simulate cache hit: open 09:00-18:00
+        when(valueOps.get("business_hours:schedule:2026-07-22"))
+                .thenReturn("[{\"start\":\"09:00\",\"end\":\"18:00\"}]");
+
+        boolean result = service.isOpen(now);
+
+        assertThat(result).isTrue();
+        verify(scheduleMapper, never()).selectByDayOfWeek(anyInt());
+        verify(holidayMapper, never()).selectByDate(any());
     }
 }

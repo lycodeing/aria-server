@@ -5,6 +5,8 @@ import com.aria.conversation.infrastructure.persistence.entity.BusinessHoursHoli
 import com.aria.conversation.infrastructure.persistence.entity.BusinessHoursScheduleEntity;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursHolidayMapper;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursScheduleMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -12,8 +14,10 @@ import org.springframework.stereotype.Service;
 
 import java.time.*;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
@@ -28,6 +32,7 @@ public class BusinessHoursService implements IBusinessHoursCalculator {
     private final BusinessHoursScheduleMapper scheduleMapper;
     private final BusinessHoursHolidayMapper  holidayMapper;
     private final StringRedisTemplate         redisTemplate;
+    private final ObjectMapper                objectMapper;
 
     /**
      * 判断当前时刻是否在服务时间内。
@@ -86,20 +91,56 @@ public class BusinessHoursService implements IBusinessHoursCalculator {
     // ── 私有：加载当天生效时间段（含节假日覆盖） ──────────────────
 
     private List<BusinessHoursScheduleEntity.TimeRange> loadTodayRanges(LocalDate date) {
-        // 1. 节假日覆盖
+        String cacheKey = CACHE_KEY_PREFIX + date;
+
+        // 1. Redis 缓存命中
+        try {
+            String cached = redisTemplate.opsForValue().get(cacheKey);
+            if (cached != null) {
+                if ("null".equals(cached)) return null;
+                if ("[]".equals(cached))   return Collections.emptyList();
+                return objectMapper.readValue(
+                        cached, new TypeReference<List<BusinessHoursScheduleEntity.TimeRange>>() {});
+            }
+        } catch (Exception e) {
+            log.warn("[BusinessHours] Redis read error for key {}: {}", cacheKey, e.getMessage());
+        }
+
+        // 2. 节假日覆盖
+        List<BusinessHoursScheduleEntity.TimeRange> result;
         BusinessHoursHolidayEntity holiday = holidayMapper.selectByDate(date);
         if (holiday != null) {
-            return switch (holiday.getType()) {
-                case "CLOSED"  -> Collections.emptyList();
+            result = switch (holiday.getType()) {
+                case "CLOSED"            -> Collections.emptyList();
                 case "WORKDAY", "CUSTOM" -> holiday.getTimeRanges();
-                default -> null;
+                default                  -> null;
             };
+        } else {
+            // 3. 周排班
+            int dow = date.getDayOfWeek().getValue(); // 1=周一 … 7=周日
+            BusinessHoursScheduleEntity schedule = scheduleMapper.selectByDayOfWeek(dow);
+            if (schedule == null) {
+                result = null;
+            } else if (!Boolean.TRUE.equals(schedule.getIsOpen())) {
+                result = Collections.emptyList();
+            } else {
+                result = schedule.getTimeRanges();
+            }
         }
-        // 2. 周排班
-        int dow = date.getDayOfWeek().getValue(); // 1=周一 … 7=周日
-        BusinessHoursScheduleEntity schedule = scheduleMapper.selectByDayOfWeek(dow);
-        if (schedule == null) return null;
-        if (!Boolean.TRUE.equals(schedule.getIsOpen())) return Collections.emptyList();
-        return schedule.getTimeRanges();
+
+        // 4. 写入缓存，TTL = 当天剩余秒数
+        try {
+            long ttlSeconds = ChronoUnit.SECONDS.between(
+                    ZonedDateTime.now(ZONE),
+                    date.plusDays(1).atStartOfDay(ZONE));
+            if (ttlSeconds > 0) {
+                String value = (result == null) ? "null" : objectMapper.writeValueAsString(result);
+                redisTemplate.opsForValue().set(cacheKey, value, ttlSeconds, TimeUnit.SECONDS);
+            }
+        } catch (Exception e) {
+            log.warn("[BusinessHours] Redis write error for key {}: {}", cacheKey, e.getMessage());
+        }
+
+        return result;
     }
 }
