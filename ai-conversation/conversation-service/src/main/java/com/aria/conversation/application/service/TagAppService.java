@@ -133,6 +133,11 @@ public class TagAppService {
             event.put("sessionId", sessionId);
             event.put("visitorTags", listVisitorTags(sessionId));
             event.put("sessionTags", listSessionTags(sessionId));
+            // NOTE: Event is published within the @Transactional boundary, before the transaction commits.
+            // In the unlikely case of a subsequent rollback, SSE consumers may receive a phantom notification.
+            // To eliminate this risk, use TransactionSynchronizationManager.registerSynchronization with
+            // an afterCommit callback, or switch to @TransactionalEventListener(AFTER_COMMIT).
+            // Accepted tradeoff for simplicity given the low-impact nature of tag change notifications.
             eventsRabbitTemplate.convertAndSend(eventsExchange, "", event);
         } catch (Exception e) {
             log.warn("[TagAppService] TAG_UPDATED 事件发布失败 sessionId={}", sessionId, e);
