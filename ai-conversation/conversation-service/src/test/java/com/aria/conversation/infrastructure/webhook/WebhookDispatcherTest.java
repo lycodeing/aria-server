@@ -30,9 +30,9 @@ class WebhookDispatcherTest {
     @BeforeEach
     void setUp() {
         when(feishuSender.supportedType()).thenReturn("FEISHU");
+        // Pass retryBaseMs=0 directly to skip sleep delays in unit tests
         dispatcher = new WebhookDispatcher(
-                List.of(feishuSender), webhookConfigMapper, slaBreachMapper);
-        dispatcher.retryBaseMs = 0L;  // disable sleep in tests
+                List.of(feishuSender), webhookConfigMapper, slaBreachMapper, 0L);
         // supportedType() was called during construction to build the router map;
         // clear that recorded interaction so verifyNoInteractions() in tests is accurate.
         clearInvocations(feishuSender);
