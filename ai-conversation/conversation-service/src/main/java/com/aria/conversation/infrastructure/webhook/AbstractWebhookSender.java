@@ -11,6 +11,7 @@ import java.util.Map;
 @Slf4j
 public abstract class AbstractWebhookSender implements WebhookSender {
 
+    // TODO: 可通过 sla.webhook.connect-timeout-ms / sla.webhook.read-timeout-ms 外部化配置
     private static final int CONNECT_TIMEOUT_MS = 5_000;
     private static final int READ_TIMEOUT_MS    = 10_000;
 

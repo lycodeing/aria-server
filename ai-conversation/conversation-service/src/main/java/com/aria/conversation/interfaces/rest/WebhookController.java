@@ -6,6 +6,7 @@ import com.aria.conversation.application.service.WebhookAppService;
 import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEntity;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -74,7 +75,11 @@ public class WebhookController {
     public static class WebhookReq {
         @NotBlank @Size(max = 50) private String name;
         @NotBlank private String type;           // FEISHU | DINGTALK | WECOM | CUSTOM
-        @NotBlank private String url;
+        // TODO: 生产环境建议增加 ConstraintValidator 过滤 RFC-1918 私有地址段（10.x/172.16.x/192.168.x）
+        @NotBlank
+        @Pattern(regexp = "^https://.*", message = "Webhook URL 必须使用 HTTPS 协议")
+        @Size(max = 500)
+        private String url;
         private String secret;                   // 飞书/钉钉签名密钥，可空
         private Map<String, String> customHeaders; // CUSTOM 类型专用
         private String messageTemplate;          // 自定义模板，空则用默认

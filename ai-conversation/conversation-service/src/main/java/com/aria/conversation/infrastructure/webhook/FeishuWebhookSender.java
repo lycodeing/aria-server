@@ -1,6 +1,8 @@
 package com.aria.conversation.infrastructure.webhook;
 
 import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEntity;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -8,6 +10,7 @@ import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -71,9 +74,17 @@ public class FeishuWebhookSender extends AbstractWebhookSender {
     }
 
     private String injectSignature(String body, long timestamp, String sign) {
-        // 在 JSON 根对象中注入 timestamp 和 sign 字段
-        return body.trim().replaceFirst("^\\{", "{"
-                + "\"timestamp\":\"" + timestamp + "\","
-                + "\"sign\":\"" + sign + "\",");
+        try {
+            ObjectMapper mapper = new ObjectMapper();
+            Map<String, Object> node = mapper.readValue(body, new TypeReference<Map<String, Object>>() {});
+            // Feishu requires timestamp and sign at root level, prepended before other fields
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("timestamp", String.valueOf(timestamp));
+            result.put("sign", sign);
+            result.putAll(node);
+            return mapper.writeValueAsString(result);
+        } catch (Exception e) {
+            throw new RuntimeException("飞书签名注入失败: " + e.getMessage(), e);
+        }
     }
 }

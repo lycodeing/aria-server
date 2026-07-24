@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -38,7 +39,8 @@ public class WebhookConfigEntity {
     /** Webhook 请求地址 */
     private String url;
 
-    /** 签名密钥（飞书/钉钉需要），明文存储 */
+    /** 签名密钥（飞书/钉钉需要），明文存储。响应中不序列化，避免泄露 */
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private String secret;
 
     /** CUSTOM 类型的自定义请求头，key=header名，value=header值 */
