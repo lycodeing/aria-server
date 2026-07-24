@@ -6,6 +6,7 @@ import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.CsatByAgentItemVO;
 import com.aria.conversation.interfaces.rest.vo.CsatDistributionItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatOverviewVO;
 import com.aria.conversation.interfaces.rest.vo.CsatTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
@@ -191,5 +192,15 @@ public class DashboardStatsRepository {
 
     public List<CsatByAgentItemVO> getCsatByAgent(int limit, int offset) {
         return statsMapper.getCsatByAgent(limit, offset);
+    }
+
+    /**
+     * CSAT 概览统计（支持时间范围）。
+     *
+     * @param startDate 开始日期（含）
+     * @param endDate   结束日期（含）
+     */
+    public CsatOverviewVO getCsatOverview(LocalDate startDate, LocalDate endDate) {
+        return statsMapper.getCsatOverview(startDate, endDate);
     }
 }

@@ -7,6 +7,7 @@ import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.CsatByAgentItemVO;
 import com.aria.conversation.interfaces.rest.vo.CsatDistributionItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatOverviewVO;
 import com.aria.conversation.interfaces.rest.vo.CsatTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.DashboardOverviewVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
@@ -130,5 +131,21 @@ public class DashboardController {
             @RequestParam(defaultValue = "1")  int page,
             @RequestParam(defaultValue = "20") int size) {
         return R.ok(dashboardAppService.getCsatByAgent(page, size));
+    }
+
+    /**
+     * CSAT 概览统计（支持时间范围）。
+     *
+     * <p>一次性返回指定范围内的 CSAT 核心指标：
+     * 平均分、响应率、好评率、各状态计数（RATED / PENDING / EXPIRED / SKIPPED）。
+     *
+     * @param rangeType 时间范围类型：month（默认）/ week / custom
+     * @param days      仅 rangeType=custom 时生效，往前推 N 天（默认 7）
+     */
+    @GetMapping("/csat-overview")
+    public R<CsatOverviewVO> getCsatOverview(
+            @RequestParam(defaultValue = "month") String rangeType,
+            @RequestParam(required = false)        Integer days) {
+        return R.ok(dashboardAppService.getCsatOverview(rangeType, days));
     }
 }
