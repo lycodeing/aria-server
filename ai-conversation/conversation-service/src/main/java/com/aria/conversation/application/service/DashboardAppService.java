@@ -11,6 +11,7 @@ import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.CsatByAgentItemVO;
 import com.aria.conversation.interfaces.rest.vo.CsatDistributionItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatOverviewVO;
 import com.aria.conversation.interfaces.rest.vo.CsatTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.DashboardOverviewVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
@@ -234,6 +235,26 @@ public class DashboardAppService {
         int safeSize = Math.min(Math.max(size, 1), 100);
         int offset = Math.max(page - 1, 0) * safeSize;
         return statsRepository.getCsatByAgent(safeSize, offset);
+    }
+
+    /**
+     * CSAT 概览统计（支持时间范围）。
+     *
+     * <p>一次性返回指定范围内的所有 CSAT 核心指标：平均分、响应率、好评率、
+     * 各状态计数等。查询异常时各 double 字段返回 0.0，各 long 字段返回 0。
+     *
+     * @param rangeType 时间范围类型：month / week / custom
+     * @param days      仅 rangeType=custom 时生效，往前推 N 天
+     * @return CSAT 概览 VO
+     */
+    public CsatOverviewVO getCsatOverview(String rangeType, Integer days) {
+        LocalDate[] range = resolveRange(rangeType, days);
+        CsatOverviewVO vo = statsRepository.getCsatOverview(range[0], range[1]);
+        // MyBatis 在全为 NULL 聚合时仍会映射对象，此处做兜底防御
+        if (vo == null) {
+            return CsatOverviewVO.builder().build();
+        }
+        return vo;
     }
 
     /**

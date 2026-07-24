@@ -5,6 +5,7 @@ import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.CsatByAgentItemVO;
 import com.aria.conversation.interfaces.rest.vo.CsatDistributionItemVO;
+import com.aria.conversation.interfaces.rest.vo.CsatOverviewVO;
 import com.aria.conversation.interfaces.rest.vo.CsatTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
@@ -408,4 +409,62 @@ public interface DashboardStatsMapper {
     })
     List<CsatByAgentItemVO> getCsatByAgent(@Param("limit")  int limit,
                                             @Param("offset") int offset);
+
+    /**
+     * CSAT 概览统计（支持时间范围，按 requested_at 过滤）。
+     *
+     * <p>一次性返回指定范围内所有状态的汇总指标：
+     * <ul>
+     *   <li>avgScore        — 已评价记录的平均分（RATED），无数据时为 0.0</li>
+     *   <li>responseRate    — RATED / (RATED+EXPIRED+SKIPPED)，无邀请时为 0.0</li>
+     *   <li>satisfactionRate— score≥4 / RATED（好评率），无评价时为 0.0</li>
+     *   <li>ratedCount      — RATED 条数</li>
+     *   <li>totalInvitations— RATED+EXPIRED+SKIPPED 条数（已完结邀请）</li>
+     *   <li>pendingCount    — PENDING 条数（含未过期）</li>
+     *   <li>expiredCount    — EXPIRED 条数</li>
+     *   <li>skippedCount    — SKIPPED 条数</li>
+     * </ul>
+     *
+     * @param startDate 开始日期（含）
+     * @param endDate   结束日期（含）
+     */
+    @Select("""
+        SELECT
+            COALESCE(
+                AVG(CASE WHEN status = 'RATED' THEN score::double precision END),
+                0.0
+            )                                                                          AS avg_score,
+            CASE
+                WHEN COUNT(*) FILTER (WHERE status IN ('RATED','EXPIRED','SKIPPED')) = 0
+                    THEN 0.0
+                ELSE COUNT(*) FILTER (WHERE status = 'RATED')::double precision
+                     / COUNT(*) FILTER (WHERE status IN ('RATED','EXPIRED','SKIPPED'))
+            END                                                                        AS response_rate,
+            CASE
+                WHEN COUNT(*) FILTER (WHERE status = 'RATED') = 0
+                    THEN 0.0
+                ELSE COUNT(*) FILTER (WHERE status = 'RATED' AND score >= 4)::double precision
+                     / COUNT(*) FILTER (WHERE status = 'RATED')
+            END                                                                        AS satisfaction_rate,
+            COUNT(*) FILTER (WHERE status = 'RATED')                                  AS rated_count,
+            COUNT(*) FILTER (WHERE status IN ('RATED','EXPIRED','SKIPPED'))            AS total_invitations,
+            COUNT(*) FILTER (WHERE status = 'PENDING')                                AS pending_count,
+            COUNT(*) FILTER (WHERE status = 'EXPIRED')                                AS expired_count,
+            COUNT(*) FILTER (WHERE status = 'SKIPPED')                                AS skipped_count
+        FROM cs_conversation.cs_csat_rating
+        WHERE requested_at >= #{startDate}::date
+          AND requested_at  < #{endDate}::date + INTERVAL '1 day'
+        """)
+    @Results({
+        @Result(column = "avg_score",          property = "avgScore"),
+        @Result(column = "response_rate",      property = "responseRate"),
+        @Result(column = "satisfaction_rate",  property = "satisfactionRate"),
+        @Result(column = "rated_count",        property = "ratedCount"),
+        @Result(column = "total_invitations",  property = "totalInvitations"),
+        @Result(column = "pending_count",      property = "pendingCount"),
+        @Result(column = "expired_count",      property = "expiredCount"),
+        @Result(column = "skipped_count",      property = "skippedCount")
+    })
+    CsatOverviewVO getCsatOverview(@Param("startDate") LocalDate startDate,
+                                   @Param("endDate")   LocalDate endDate);
 }

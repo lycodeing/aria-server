@@ -148,7 +148,8 @@ public class SessionQueueService {
                         e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
                         SessionStatus.ACTIVE,
                         e.getAgentId(),
-                        loadVisitorTagsFromCache(e.getVisitorId())))
+                        loadVisitorTagsFromCache(e.getVisitorId()),
+                        e.getAcceptedAt() != null ? e.getAcceptedAt().toEpochSecond() : null))
                 .toList();
     }
 
@@ -179,7 +180,8 @@ public class SessionQueueService {
                         e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
                         SessionStatus.AI_CHAT,
                         e.getAgentId(),
-                        loadVisitorTagsFromCache(e.getVisitorId())))
+                        loadVisitorTagsFromCache(e.getVisitorId()),
+                        null))
                 .forEach(result::add);
 
         // WAITING：Redis 队列
@@ -195,7 +197,8 @@ public class SessionQueueService {
                         e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
                         SessionStatus.ACTIVE,
                         e.getAgentId(),
-                        loadVisitorTagsFromCache(e.getVisitorId())))
+                        loadVisitorTagsFromCache(e.getVisitorId()),
+                        e.getAcceptedAt() != null ? e.getAcceptedAt().toEpochSecond() : null))
                 .forEach(result::add);
 
         // CLOSED：DB 最近 closedLimit 条
@@ -210,7 +213,8 @@ public class SessionQueueService {
                                 : e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
                         e.getStatus(),
                         e.getAgentId(),
-                        loadVisitorTagsFromCache(e.getVisitorId())))
+                        loadVisitorTagsFromCache(e.getVisitorId()),
+                        e.getAcceptedAt() != null ? e.getAcceptedAt().toEpochSecond() : null))
                 .forEach(result::add);
 
         return result;
@@ -234,7 +238,8 @@ public class SessionQueueService {
                                 : e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
                         e.getStatus(),
                         e.getAgentId(),
-                        loadVisitorTagsFromCache(e.getVisitorId())))
+                        loadVisitorTagsFromCache(e.getVisitorId()),
+                        e.getAcceptedAt() != null ? e.getAcceptedAt().toEpochSecond() : null))
                 .toList();
     }
 
@@ -255,9 +260,10 @@ public class SessionQueueService {
             throw new SessionAlreadyAcceptedException(sessionId);
         }
 
+        long acceptedAt = Instant.now().getEpochSecond();
         SessionQueueItem updated = new SessionQueueItem(
                 old.sessionId(), old.userName(), old.transferReason(),
-                old.tag(), old.waitSince(), newStatus, agentId
+                old.tag(), old.waitSince(), newStatus, agentId, null, acceptedAt
         );
         boolean ok = queueRepository.compareAndSetStatus(sessionId, updated);
         if (!ok) {
@@ -265,7 +271,7 @@ public class SessionQueueService {
         }
 
         publishEvent(new SessionEvent(SessionEventType.ACCEPTED, updated));
-        publishSessionAccept(sessionId, agentId, Instant.now().getEpochSecond());
+        publishSessionAccept(sessionId, agentId, acceptedAt);
         log.info("[SessionQueue] accept 成功 sessionId={}", sessionId);
         return updated;
     }
@@ -286,7 +292,8 @@ public class SessionQueueService {
                     SessionStatus newStatus = old.status().transitionTo(SessionStatus.CLOSED);
                     SessionQueueItem closed = new SessionQueueItem(
                             old.sessionId(), old.userName(), old.transferReason(),
-                            old.tag(), old.waitSince(), newStatus, old.agentId()
+                            old.tag(), old.waitSince(), newStatus, old.agentId(),
+                            null, old.acceptedAt()
                     );
                     publishEvent(new SessionEvent(SessionEventType.CLOSED, closed));
                 },
@@ -368,7 +375,8 @@ public class SessionQueueService {
 
         SessionQueueItem transferred = new SessionQueueItem(
                 old.sessionId(), old.userName(), old.transferReason(),
-                old.tag(), old.waitSince(), SessionStatus.ACTIVE, targetAgentId
+                old.tag(), old.waitSince(), SessionStatus.ACTIVE, targetAgentId,
+                null, old.acceptedAt()
         );
         boolean ok = queueRepository.compareAndSetAgentId(sessionId, fromAgentId, transferred);
         if (!ok) {
