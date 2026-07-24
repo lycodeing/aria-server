@@ -1,5 +1,6 @@
 package com.aria.conversation.application.service;
 
+import com.aria.common.core.exception.BusinessException;
 import com.aria.conversation.application.exception.ServiceOfflineException;
 import com.aria.conversation.application.exception.SessionEnqueueException;
 import com.aria.conversation.domain.SessionAlreadyAcceptedException;
@@ -250,7 +251,7 @@ public class SessionQueueService {
      */
     public SessionQueueItem accept(String sessionId, String agentId) {
         SessionQueueItem old = queueRepository.findById(sessionId)
-                .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
+                .orElseThrow(() -> new BusinessException(404, "会话不存在: " + sessionId));
 
         SessionStatus newStatus;
         try {
@@ -358,19 +359,19 @@ public class SessionQueueService {
      */
     public void transfer(String sessionId, String fromAgentId, String targetAgentId) {
         if (fromAgentId == null || !AGENT_ID_PATTERN.matcher(fromAgentId).matches()) {
-            throw new IllegalArgumentException("fromAgentId 格式非法: " + fromAgentId);
+            throw new BusinessException(400, "fromAgentId 格式非法: " + fromAgentId);
         }
         if (targetAgentId == null || !AGENT_ID_PATTERN.matcher(targetAgentId).matches()) {
-            throw new IllegalArgumentException("targetAgentId 格式非法: " + targetAgentId);
+            throw new BusinessException(400, "targetAgentId 格式非法: " + targetAgentId);
         }
         if (!agentRegistry.isOnline(targetAgentId)) {
-            throw new IllegalArgumentException("目标座席不在线: " + targetAgentId);
+            throw new BusinessException(400, "目标座席不在线: " + targetAgentId);
         }
 
         SessionQueueItem old = queueRepository.findById(sessionId)
-                .orElseThrow(() -> new IllegalArgumentException("会话不存在: " + sessionId));
+                .orElseThrow(() -> new BusinessException(404, "会话不存在: " + sessionId));
         if (old.status() != SessionStatus.ACTIVE) {
-            throw new IllegalStateException("只有 ACTIVE 状态的会话才能转交，当前状态: " + old.status());
+            throw new BusinessException(409, "只有 ACTIVE 状态的会话才能转交，当前状态: " + old.status());
         }
 
         SessionQueueItem transferred = new SessionQueueItem(
@@ -380,7 +381,7 @@ public class SessionQueueService {
         );
         boolean ok = queueRepository.compareAndSetAgentId(sessionId, fromAgentId, transferred);
         if (!ok) {
-            throw new IllegalStateException("会话归属已变更，无法转交: " + sessionId);
+            throw new BusinessException(409, "会话归属已变更，无法转交: " + sessionId);
         }
 
         publishEvent(new SessionEvent(SessionEventType.TRANSFER, transferred, fromAgentId, targetAgentId));
