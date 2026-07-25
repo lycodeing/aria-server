@@ -16,6 +16,10 @@ spring:
     hikari:
       maximum-pool-size: 10
       minimum-idle: 2
+      # 防止开发环境休眠后连接失效：定期发送 keepalive 查询
+      keepalive-time: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
   data:
     redis:
       host: ${REDIS_HOST:localhost}

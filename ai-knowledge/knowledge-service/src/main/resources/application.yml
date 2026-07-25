@@ -14,6 +14,10 @@ spring:
       maximum-pool-size: 10
       minimum-idle: 2
       connection-timeout: 30000
+      # 防止开发环境休眠后连接失效：定期发送 keepalive 查询
+      keepalive-time: 30000
+      idle-timeout: 600000
+      max-lifetime: 1800000
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -30,6 +34,9 @@ spring:
     port: ${RABBITMQ_PORT:5672}
     username: ${RABBITMQ_USERNAME:guest}
     password: ${RABBITMQ_PASSWORD:guest}
+    # 心跳间隔：每 60s 发送心跳，防止 NAT/OS 因 TCP 空闲杀掉连接
+    # 直接效果：消除 "Socket closed" + "Failed to check/redeclare auto-delete queue(s)" 日志
+    requested-heartbeat: 60
     # Publisher Confirms — Broker 持久化确认后才返回，保障发布端可靠性
     publisher-confirm-type: correlated
     publisher-returns: true
