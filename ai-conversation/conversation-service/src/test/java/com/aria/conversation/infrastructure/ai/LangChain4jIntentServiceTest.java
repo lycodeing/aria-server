@@ -63,7 +63,7 @@ class LangChain4jIntentServiceTest {
     }
 
     @Test
-    @DisplayName("classify: LLM 返回非法意图字符串 → 映射为 FAQ_QUERY")
+    @DisplayName("classify: LLM 返回未知意图字符串 → UNKNOWN（N1修复：LLM 幻觉不映射为 FAQ_QUERY）")
     void classify_invalidIntentString_returnsUnknown() {
         ChatModel mock = ChatModelMock.thatAlwaysResponds("{\"intent\":\"BANANA\",\"confidence\":0.8}");
         when(modelFactory.getChatModel()).thenReturn(mock);
@@ -75,7 +75,8 @@ class LangChain4jIntentServiceTest {
 
         IntentResult result = service.classify("随便问个问题");
 
-        assertThat(result.intent()).isEqualTo(IntentType.FAQ_QUERY);
+        // N1 修复后：LLM 返回未知枚举 code 应为 UNKNOWN，不再静默映射为 FAQ_QUERY
+        assertThat(result.intent()).isEqualTo(IntentType.UNKNOWN);
     }
 
     @Test
@@ -115,10 +116,12 @@ class LangChain4jIntentServiceTest {
     }
 
     @Test
-    @DisplayName("parseResponse: 自定义 code 映射为 FAQ_QUERY 分叉，intentCode 保留原始值")
-    void parseResponse_customCode_mapToFaqQuery() {
+    @DisplayName("parseResponse: 自定义业务 code（LLM 返回）→ UNKNOWN，intentCode 保留原始值（N1修复）")
+    void parseResponse_customCode_mapToUnknown() {
+        // LLM 返回了不在枚举中的 code（如 "query_order"），视为幻觉，返回 UNKNOWN
+        // 业务路由（Tier1/Tier2）中的自定义 code 使用 fromBusinessCode()，此处是 LLM 输出解析
         IntentResult result = service.parseResponse("{\"intent\":\"query_order\",\"confidence\":0.85}");
-        assertThat(result.intent()).isEqualTo(IntentType.FAQ_QUERY);
+        assertThat(result.intent()).isEqualTo(IntentType.UNKNOWN);
         assertThat(result.intentCode()).isEqualTo("query_order");
     }
 }

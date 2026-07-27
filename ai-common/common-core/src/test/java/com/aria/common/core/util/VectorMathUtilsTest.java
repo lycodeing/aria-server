@@ -83,6 +83,15 @@ class VectorMathUtilsTest {
     }
 
     @Test
+    @DisplayName("cosineSimilarity: 维度不匹配抛 IllegalArgumentException（I3修复验证）")
+    void cosineSimilarity_dimensionMismatch_throwsException() {
+        float[] a = {1.0f, 0.0f};
+        float[] b = {1.0f, 0.0f, 0.0f};
+        assertThrows(IllegalArgumentException.class,
+                () -> VectorMathUtils.cosineSimilarity(a, b));
+    }
+
+    @Test
     @DisplayName("meanAndNormalize: 反向量均值为零向量，不抛异常")
     void meanAndNormalize_oppositeVectors_noException() {
         float[] a = {1.0f, 0.0f};

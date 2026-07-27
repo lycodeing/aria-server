@@ -38,4 +38,27 @@ class IntentTypeFromCodeTest {
     void fromCode_blank_returnsUnknown() {
         assertThat(IntentType.fromCode("   ")).isEqualTo(IntentType.UNKNOWN);
     }
+
+    // ── fromBusinessCode 测试（业务路由语境）────────────────────────────
+
+    @Test
+    @DisplayName("fromBusinessCode: 已知枚举 code 正确解析")
+    void fromBusinessCode_knownCode_resolves() {
+        assertThat(IntentType.fromBusinessCode("COMPLAINT")).isEqualTo(IntentType.COMPLAINT);
+        assertThat(IntentType.fromBusinessCode("chitchat")).isEqualTo(IntentType.CHITCHAT);
+    }
+
+    @Test
+    @DisplayName("fromBusinessCode: 自定义业务意图 code 返回 FAQ_QUERY（走 RAG 路径）")
+    void fromBusinessCode_customBusinessCode_returnsFaqQuery() {
+        // 自定义业务意图如 "query_order"、"claim_apply" 不在枚举中，走通用 FAQ_QUERY 路径
+        assertThat(IntentType.fromBusinessCode("query_order")).isEqualTo(IntentType.FAQ_QUERY);
+        assertThat(IntentType.fromBusinessCode("claim_apply")).isEqualTo(IntentType.FAQ_QUERY);
+    }
+
+    @Test
+    @DisplayName("fromBusinessCode: null 返回 FAQ_QUERY")
+    void fromBusinessCode_null_returnsFaqQuery() {
+        assertThat(IntentType.fromBusinessCode(null)).isEqualTo(IntentType.FAQ_QUERY);
+    }
 }
