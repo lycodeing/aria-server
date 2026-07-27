@@ -62,13 +62,18 @@ public final class VectorMathUtils {
     /**
      * 计算两个已归一化向量的余弦相似度（即点积）。
      *
-     * <p><b>前置条件：</b>入参向量必须已经 L2 归一化，此时余弦相似度等于点积，计算更高效。
+     * <p><b>前置条件：</b>入参向量必须已经 L2 归一化，此时余弦相似度等于点积。
      *
      * @param a 已归一化向量 a
      * @param b 已归一化向量 b
      * @return 余弦相似度，范围 [-1.0, 1.0]
+     * @throws IllegalArgumentException 若两向量维度不匹配（防止模型切换后维度变化时静默计算错误）
      */
     public static double cosineSimilarity(float[] a, float[] b) {
+        if (a.length != b.length) {
+            throw new IllegalArgumentException(
+                    "向量维度不匹配: " + a.length + " vs " + b.length);
+        }
         double dot = 0.0;
         for (int i = 0; i < a.length; i++) {
             dot += (double) a[i] * b[i];
