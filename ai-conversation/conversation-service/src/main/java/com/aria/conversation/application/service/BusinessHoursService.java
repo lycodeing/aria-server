@@ -3,6 +3,7 @@ package com.aria.conversation.application.service;
 import com.aria.conversation.domain.service.IBusinessHoursCalculator;
 import com.aria.conversation.infrastructure.persistence.entity.BusinessHoursHolidayEntity;
 import com.aria.conversation.infrastructure.persistence.entity.BusinessHoursScheduleEntity;
+import com.aria.conversation.domain.HolidayType;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursHolidayMapper;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursScheduleMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -111,9 +112,8 @@ public class BusinessHoursService implements IBusinessHoursCalculator {
         BusinessHoursHolidayEntity holiday = holidayMapper.selectByDate(date);
         if (holiday != null) {
             result = switch (holiday.getType()) {
-                case "CLOSED"            -> Collections.emptyList();
-                case "WORKDAY", "CUSTOM" -> holiday.getTimeRanges();
-                default                  -> null;
+                case CLOSED            -> Collections.emptyList();
+                case WORKDAY, CUSTOM   -> holiday.getTimeRanges();
             };
         } else {
             // 3. 周排班

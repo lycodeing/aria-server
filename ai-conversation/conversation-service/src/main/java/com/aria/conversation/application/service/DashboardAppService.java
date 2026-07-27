@@ -1,12 +1,9 @@
 package com.aria.conversation.application.service;
 
+import com.aria.conversation.domain.MessageRole;
+import com.aria.conversation.domain.SessionStatus;
 import com.aria.conversation.infrastructure.persistence.DashboardStatsRepository;
-import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
-import com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity;
-import com.aria.conversation.infrastructure.persistence.mapper.ConversationMapper;
-import com.aria.conversation.infrastructure.persistence.mapper.SlaBreachMapper;
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.CsatByAgentItemVO;
@@ -47,8 +44,6 @@ import java.util.function.LongSupplier;
 public class DashboardAppService {
 
     private final DashboardStatsRepository statsRepository;
-    private final SlaBreachMapper slaBreachMapper;
-    private final ConversationMapper conversationMapper;
 
     /**
      * 获取概览指标（analytics 页面顶部卡片）。
@@ -63,16 +58,12 @@ public class DashboardAppService {
         OffsetDateTime todayStart = LocalDate.now(ZoneId.of("Asia/Shanghai"))
                 .atStartOfDay(ZoneId.of("Asia/Shanghai"))
                 .toOffsetDateTime();
-        long slaBreachCount = safeCount(() -> slaBreachMapper.selectCount(
-                Wrappers.<SlaBreachEntity>lambdaQuery()
-                        .eq(SlaBreachEntity::getStage, "BREACH")
-                        .ge(SlaBreachEntity::getBreachAt, todayStart)));
+        long slaBreachCount = safeCount(
+                () -> statsRepository.countSlaBreachesToday(todayStart));
         long distinctBreachedSessions = safeCount(
-                () -> slaBreachMapper.countDistinctBreachedSessionsToday(todayStart));
-        long totalAgentSessions = safeCount(() -> conversationMapper.selectCount(
-                Wrappers.<ConversationEntity>lambdaQuery()
-                        .ge(ConversationEntity::getStartedAt, todayStart)
-                        .isNotNull(ConversationEntity::getAcceptedAt)));
+                () -> statsRepository.countDistinctBreachedSessionsToday(todayStart));
+        long totalAgentSessions = safeCount(
+                () -> statsRepository.countAgentSessionsToday(todayStart));
         double slaBreachRate = totalAgentSessions > 0
                 ? Math.round((double) distinctBreachedSessions / totalAgentSessions * 100.0) / 100.0
                 : 0.0;
@@ -80,12 +71,12 @@ public class DashboardAppService {
         return DashboardOverviewVO.builder()
                 .todayConversationCount(safeCount(statsRepository::countTodayConversations))
                 .totalConversationCount(safeCount(statsRepository::countTotalConversations))
-                .activeConversationCount(safeCount(() -> statsRepository.countByStatus("ACTIVE")))
-                .waitingConversationCount(safeCount(() -> statsRepository.countByStatus("WAITING")))
+                .activeConversationCount(safeCount(() -> statsRepository.countByStatus(SessionStatus.ACTIVE)))
+                .waitingConversationCount(safeCount(() -> statsRepository.countByStatus(SessionStatus.WAITING)))
                 .totalUserCount(safeCount(statsRepository::countTotalUsers))
                 .totalMessageCount(safeCount(statsRepository::countTotalMessages))
-                .aiMessageCount(safeCount(() -> statsRepository.countMessagesByRole("assistant")))
-                .agentMessageCount(safeCount(() -> statsRepository.countMessagesByRole("agent")))
+                .aiMessageCount(safeCount(() -> statsRepository.countMessagesByRole(MessageRole.ASSISTANT)))
+                .agentMessageCount(safeCount(() -> statsRepository.countMessagesByRole(MessageRole.AGENT)))
                 .avgWaitSeconds(safeCount(statsRepository::avgWaitSeconds))
                 .avgHandleSeconds(safeCount(statsRepository::avgHandleSeconds))
                 .avgFirstReplySeconds(safeCount(statsRepository::avgFirstReplySeconds))

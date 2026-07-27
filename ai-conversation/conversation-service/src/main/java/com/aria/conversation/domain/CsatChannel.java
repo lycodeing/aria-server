@@ -1,32 +1,40 @@
-package com.aria.conversation.domain.model;
+package com.aria.conversation.domain;
 
 import com.baomidou.mybatisplus.annotation.EnumValue;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 /**
- * SLA 违规阶段。
+ * CSAT 评价来源渠道枚举。
  *
  * <ul>
- *   <li>{@link #WARNING} — 预警阶段（达到 warningThresholdPct% 时触发）</li>
- *   <li>{@link #BREACH}  — 正式违规（超过目标时间）</li>
+ *   <li>{@link #AI}    — AI 对话结束后发出的评价邀请</li>
+ *   <li>{@link #HUMAN} — 人工座席会话结束后发出的评价邀请</li>
  * </ul>
  */
-public enum BreachStage {
-    WARNING("WARNING"),
-    BREACH("BREACH");
+public enum CsatChannel {
+
+    /**
+     * AI 对话渠道
+     */
+    AI("AI"),
+
+    /**
+     * 人工座席渠道
+     */
+    HUMAN("HUMAN");
 
     @EnumValue
     private final String value;
 
-    BreachStage(String value) {
+    CsatChannel(String value) {
         this.value = value;
     }
 
     @JsonCreator
-    public static BreachStage fromValue(String value) {
+    public static CsatChannel fromValue(String value) {
         if (value == null) return null;
-        for (BreachStage s : values()) {
+        for (CsatChannel s : values()) {
             if (s.value.equalsIgnoreCase(value)) return s;
         }
         return null;

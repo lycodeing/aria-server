@@ -4,6 +4,7 @@ import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.TagAppService;
 import com.aria.conversation.infrastructure.persistence.entity.TagEntity;
+import com.aria.conversation.domain.TagSource;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
@@ -76,6 +77,6 @@ public class TagAdminController {
     public static class UpdateTagReq {
         @NotBlank @Size(max = 50) private String name;
         @NotBlank private String color;
-        @NotBlank private String source;
+        @NotBlank private TagSource source;
     }
 }

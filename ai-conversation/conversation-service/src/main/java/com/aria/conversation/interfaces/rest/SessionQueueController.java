@@ -12,6 +12,7 @@ import com.aria.conversation.application.service.SessionQueueService.OnlineAgent
 import com.aria.conversation.application.service.VisitorHistoryService;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.infrastructure.mq.SessionEventSubscriber;
+import com.aria.conversation.domain.ClosedBy;
 import com.aria.conversation.infrastructure.mq.ConversationStreamEvent;
 import com.aria.conversation.interfaces.rest.vo.ReplySuggestionVO;
 import com.aria.conversation.interfaces.rest.vo.VisitorHistoryVO;
@@ -130,7 +131,7 @@ public class SessionQueueController {
             @PathVariable
             @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$", message = "sessionId 格式非法")
             String sessionId) {
-        queueService.close(sessionId, ConversationStreamEvent.CLOSED_BY_AGENT);
+        queueService.close(sessionId, ClosedBy.AGENT);
         visitorNotifier.closeVisitorSessionNormal(sessionId);
         return R.ok();
     }

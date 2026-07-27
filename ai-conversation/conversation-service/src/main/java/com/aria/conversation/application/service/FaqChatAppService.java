@@ -201,7 +201,7 @@ public class FaqChatAppService {
     private Flux<ChatEvent> appendCsatEvent(Flux<ChatEvent> flux, String sessionId) {
         return flux.concatWith(Flux.defer(() -> {
             try {
-                CsatRatingDO csat = csatService.createInvitation(sessionId, null, null, "AI");
+                CsatRatingDO csat = csatService.createInvitation(sessionId, null, null, com.aria.conversation.domain.CsatChannel.AI);
                 String payload = objectMapper.writeValueAsString(
                         com.aria.conversation.application.service.support.CsatInvites.payload(csat));
                 return Flux.just(new ChatEvent(ChatEvent.EventType.CSAT_REQUEST, payload));

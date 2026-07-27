@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aria.conversation.infrastructure.persistence.mapper.SlaBreachMapper">
+
+    <!--
+        统计今日发生过正式违规（stage=BREACH）的不重复会话数。
+        用于仪表盘 SLA 健康度指标。
+        todayStart：当天零点的 OffsetDateTime（Asia/Shanghai 时区）。
+    -->
+    <select id="countDistinctBreachedSessionsToday" resultType="long">
+        SELECT COUNT(DISTINCT session_id)
+        FROM cs_conversation.cs_sla_breach
+        WHERE stage = 'BREACH'
+          AND breach_at &gt;= #{todayStart}
+    </select>
+
+</mapper>

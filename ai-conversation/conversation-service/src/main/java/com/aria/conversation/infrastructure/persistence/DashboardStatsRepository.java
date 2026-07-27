@@ -1,6 +1,13 @@
 package com.aria.conversation.infrastructure.persistence;
 
+import com.aria.conversation.domain.MessageRole;
+import com.aria.conversation.domain.SessionStatus;
+import com.aria.conversation.domain.model.BreachStage;
+import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
+import com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity;
+import com.aria.conversation.infrastructure.persistence.mapper.ConversationMapper;
 import com.aria.conversation.infrastructure.persistence.mapper.DashboardStatsMapper;
+import com.aria.conversation.infrastructure.persistence.mapper.SlaBreachMapper;
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
 import com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO;
@@ -12,16 +19,18 @@ import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
 import com.aria.conversation.interfaces.rest.vo.StatusDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.TagDistributionItemVO;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
 
 import java.time.LocalDate;
+import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
  * Dashboard 统计查询 Repository。
  *
- * <p>屏蔽 {@link DashboardStatsMapper} 的持久化细节，向 Application 层提供语义化统计接口。
+ * <p>屏蔽底层 Mapper 的持久化细节，向 Application 层提供语义化统计接口。
  * 遵循 DDD 分层规范：Application Service 不直接依赖 Mapper（infrastructure 实现细节），
  * 而是通过本 Repository 获取统计数据。
  *
@@ -34,6 +43,8 @@ import java.util.List;
 public class DashboardStatsRepository {
 
     private final DashboardStatsMapper statsMapper;
+    private final SlaBreachMapper      slaBreachMapper;
+    private final ConversationMapper   conversationMapper;
 
     // ---- 概览指标 ----
 
@@ -48,7 +59,7 @@ public class DashboardStatsRepository {
     }
 
     /** 按状态统计会话数 */
-    public long countByStatus(String status) {
+    public long countByStatus(SessionStatus status) {
         return statsMapper.countByStatus(status);
     }
 
@@ -63,32 +74,58 @@ public class DashboardStatsRepository {
     }
 
     /** 按角色统计消息数 */
-    public long countMessagesByRole(String role) {
+    public long countMessagesByRole(MessageRole role) {
         return statsMapper.countMessagesByRole(role);
+    }
+
+    // ---- SLA 统计 ----
+
+    /**
+     * 统计今日发生正式违规（stage=BREACH）的记录数。
+     *
+     * @param todayStart 今日零点（Asia/Shanghai 偏移时间）
+     */
+    public long countSlaBreachesToday(OffsetDateTime todayStart) {
+        return slaBreachMapper.selectCount(
+                Wrappers.<SlaBreachEntity>lambdaQuery()
+                        .eq(SlaBreachEntity::getStage, BreachStage.BREACH)
+                        .ge(SlaBreachEntity::getBreachAt, todayStart));
+    }
+
+    /**
+     * 统计今日发生违规的不重复会话数。
+     *
+     * @param todayStart 今日零点（Asia/Shanghai 偏移时间）
+     */
+    public long countDistinctBreachedSessionsToday(OffsetDateTime todayStart) {
+        return slaBreachMapper.countDistinctBreachedSessionsToday(todayStart);
+    }
+
+    /**
+     * 统计今日已接入的人工会话数（accepted_at IS NOT NULL）。
+     *
+     * @param todayStart 今日零点（Asia/Shanghai 偏移时间）
+     */
+    public long countAgentSessionsToday(OffsetDateTime todayStart) {
+        return conversationMapper.selectCount(
+                Wrappers.<ConversationEntity>lambdaQuery()
+                        .ge(ConversationEntity::getStartedAt, todayStart)
+                        .isNotNull(ConversationEntity::getAcceptedAt));
     }
 
     // ---- 时长类指标 ----
 
-    /**
-     * 平均等待时长（秒）：从入队到座席接入。
-     * 仅统计已接入的会话（accepted_at IS NOT NULL）。
-     */
+    /** 平均等待时长（秒）：从入队到座席接入 */
     public long avgWaitSeconds() {
         return statsMapper.avgWaitSeconds();
     }
 
-    /**
-     * 平均处理时长（秒）：从座席接入到会话结束。
-     * 仅统计已关闭的人工会话（ended_at 和 accepted_at 均不为 NULL）。
-     */
+    /** 平均处理时长（秒）：从座席接入到会话结束 */
     public long avgHandleSeconds() {
         return statsMapper.avgHandleSeconds();
     }
 
-    /**
-     * 平均首次响应时长（秒）：从座席接入到首条座席回复。
-     * 仅统计已有首条回复的会话（first_reply_at 和 accepted_at 均不为 NULL）。
-     */
+    /** 平均首次响应时长（秒）：从座席接入到首条座席回复 */
     public long avgFirstReplySeconds() {
         return statsMapper.avgFirstReplySeconds();
     }
@@ -145,33 +182,14 @@ public class DashboardStatsRepository {
 
     // ---- 按时间范围聚合（按天） ----
 
-    /**
-     * 会话趋势（按天聚合，支持时间范围）。
-     *
-     * @param startDate 开始日期（含）
-     * @param endDate   结束日期（含）
-     */
     public List<ConversationTrendItemVO> getConversationTrendsByRange(LocalDate startDate, LocalDate endDate) {
         return statsMapper.getConversationTrendsByRange(startDate, endDate);
     }
 
-    /**
-     * 消息量趋势（按天聚合，支持时间范围）。
-     *
-     * @param startDate 开始日期（含）
-     * @param endDate   结束日期（含）
-     */
     public List<ConversationTrendItemVO> getMessageTrendsByRange(LocalDate startDate, LocalDate endDate) {
         return statsMapper.getMessageTrendsByRange(startDate, endDate);
     }
 
-    /**
-     * 效率趋势（按天聚合，支持时间范围）。
-     * 返回每天的平均等待/处理/首次回复时长（秒）。
-     *
-     * @param startDate 开始日期（含）
-     * @param endDate   结束日期（含）
-     */
     public List<EfficiencyTrendItemVO> getEfficiencyTrends(LocalDate startDate, LocalDate endDate) {
         return statsMapper.getEfficiencyTrends(startDate, endDate);
     }
@@ -194,12 +212,6 @@ public class DashboardStatsRepository {
         return statsMapper.getCsatByAgent(limit, offset);
     }
 
-    /**
-     * CSAT 概览统计（支持时间范围）。
-     *
-     * @param startDate 开始日期（含）
-     * @param endDate   结束日期（含）
-     */
     public CsatOverviewVO getCsatOverview(LocalDate startDate, LocalDate endDate) {
         return statsMapper.getCsatOverview(startDate, endDate);
     }

@@ -88,7 +88,7 @@ public class CannedResponseController {
                            String scope, Integer useCount) {
         static SearchVO from(CannedResponseDO cr) {
             return new SearchVO(cr.getId(), cr.getTitle(), cr.getContent(),
-                    cr.getScope(), cr.getUseCount());
+                    cr.getScope() != null ? cr.getScope().getValue() : null, cr.getUseCount());
         }
     }
 

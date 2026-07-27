@@ -3,12 +3,19 @@ package com.aria.auth.infrastructure.persistence.role;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
 
+/**
+ * 权限 Mapper。
+ * 跨表 JOIN 查询定义在 PermissionMapper.xml 中。
+ */
 @Mapper
 public interface PermissionMapper extends BaseMapper<PermissionDO> {
-    @Select("SELECT p.* FROM cs_auth.sys_permission p INNER JOIN cs_auth.sys_role_permission rp ON p.id = rp.permission_id INNER JOIN cs_auth.sys_user_role ur ON rp.role_id = ur.role_id WHERE ur.user_id = #{userId}")
+
+    /**
+     * 查询指定用户拥有的所有权限（通过角色关联）。
+     * SQL：sys_permission JOIN sys_role_permission JOIN sys_user_role
+     */
     List<PermissionDO> findPermissionsByUserId(@Param("userId") Long userId);
 }

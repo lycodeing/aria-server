@@ -1,6 +1,8 @@
 package com.aria.conversation.domain;
 
 import com.baomidou.mybatisplus.annotation.EnumValue;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 
 /**
  * 对话消息角色枚举。
@@ -67,6 +69,7 @@ public enum MessageRole {
      *
      * @return 小写角色字符串
      */
+    @JsonValue
     public String getValue() {
         return value;
     }
@@ -78,6 +81,7 @@ public enum MessageRole {
      * @param value 角色字符串
      * @return 对应枚举，未匹配时返回 null
      */
+    @JsonCreator
     public static MessageRole fromValue(String value) {
         if (value == null) {
             return null;

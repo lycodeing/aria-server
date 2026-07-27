@@ -5,6 +5,8 @@ import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.BusinessHoursService;
 import com.aria.conversation.infrastructure.persistence.entity.BusinessHoursHolidayEntity;
 import com.aria.conversation.infrastructure.persistence.entity.BusinessHoursScheduleEntity;
+import com.aria.conversation.domain.HolidaySource;
+import com.aria.conversation.domain.HolidayType;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursHolidayMapper;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursScheduleMapper;
 import com.aria.conversation.infrastructure.scheduler.HolidaySyncScheduler;
@@ -109,7 +111,7 @@ public class BusinessHoursController {
                 .type(req.getType())
                 .timeRanges(req.getTimeRanges())
                 .remark(req.getRemark())
-                .source("MANUAL")
+                .source(HolidaySource.MANUAL)
                 .build();
         holidayMapper.insert(entity);
         businessHoursService.evictCache(req.getDate());
@@ -218,7 +220,7 @@ public class BusinessHoursController {
         private LocalDate date;
         /** CLOSED | CUSTOM | WORKDAY */
         @NotNull
-        private String type;
+        private HolidayType type;
         private List<BusinessHoursScheduleEntity.TimeRange> timeRanges;
         private String remark;
     }

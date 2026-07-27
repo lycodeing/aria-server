@@ -1,6 +1,7 @@
 package com.aria.conversation.application.service;
 
 import com.aria.common.core.exception.BusinessException;
+import com.aria.conversation.domain.CannedResponseScope;
 import com.aria.conversation.infrastructure.canned.*;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
@@ -74,7 +75,7 @@ public class CannedResponseAppService {
         // page 最小为 1，防止 page=0 时 OFFSET 为负数触发 PostgreSQL 异常
         int safePage = Math.max(1, page);
         return cannedMapper.selectList(Wrappers.lambdaQuery(CannedResponseDO.class)
-                .eq(CannedResponseDO::getScope, "PUBLIC")
+                .eq(CannedResponseDO::getScope, CannedResponseScope.PUBLIC)
                 .eq(CannedResponseDO::getDeleted, false)
                 .eq(groupId != null, CannedResponseDO::getGroupId, groupId)
                 .orderByAsc(CannedResponseDO::getSortOrder)
@@ -85,7 +86,7 @@ public class CannedResponseAppService {
     public CannedResponseDO createPublic(String title, String content,
                                           Long groupId, int sortOrder, Long createdBy) {
         CannedResponseDO cr = buildCr(title, content, groupId, sortOrder, createdBy);
-        cr.setScope("PUBLIC");
+        cr.setScope(CannedResponseScope.PUBLIC);
         cannedMapper.insert(cr);
         return cr;
     }
@@ -117,7 +118,7 @@ public class CannedResponseAppService {
     public CannedResponseDO createPrivate(String title, String content,
                                            Long groupId, Long agentId) {
         CannedResponseDO cr = buildCr(title, content, groupId, 0, agentId);
-        cr.setScope("PRIVATE"); cr.setOwnerId(agentId);
+        cr.setScope(CannedResponseScope.PRIVATE); cr.setOwnerId(agentId);
         cannedMapper.insert(cr);
         return cr;
     }
@@ -149,9 +150,9 @@ public class CannedResponseAppService {
         if (q == null || q.isBlank()) {
             return cannedMapper.selectList(Wrappers.lambdaQuery(CannedResponseDO.class)
                     .eq(CannedResponseDO::getDeleted, false)
-                    .and(w -> w.eq(CannedResponseDO::getScope, "PUBLIC")
+                    .and(w -> w.eq(CannedResponseDO::getScope, CannedResponseScope.PUBLIC)
                             .or().and(inner -> inner
-                                    .eq(CannedResponseDO::getScope, "PRIVATE")
+                                    .eq(CannedResponseDO::getScope, CannedResponseScope.PRIVATE)
                                     .eq(CannedResponseDO::getOwnerId, agentId)))
                     .eq(groupId != null, CannedResponseDO::getGroupId, groupId)
                     .orderByDesc(CannedResponseDO::getUseCount)
@@ -192,7 +193,7 @@ public class CannedResponseAppService {
 
     /** 确保快捷回复是公共类型，防止管理员接口误操作 PRIVATE 记录 */
     private void requirePublicScope(CannedResponseDO cr) {
-        if (!"PUBLIC".equals(cr.getScope())) {
+        if (cr.getScope() != CannedResponseScope.PUBLIC) {
             throw new BusinessException(PRECONDITION_FAILED, "该快捷回复不是公共类型");
         }
     }

@@ -1,6 +1,8 @@
 package com.aria.conversation.application.service;
 
 import com.aria.common.core.exception.BusinessException;
+import com.aria.conversation.domain.CsatChannel;
+import com.aria.conversation.domain.CsatStatus;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import com.aria.conversation.infrastructure.csat.CsatRatingMapper;
 import lombok.RequiredArgsConstructor;
@@ -36,20 +38,20 @@ public class CsatService {
      */
     @Transactional(rollbackFor = Exception.class)
     public CsatRatingDO createInvitation(String sessionId, String visitorId,
-                                          Long agentId, String channel) {
+                                          Long agentId, CsatChannel channel) {
         return mapper.findBySessionId(sessionId).orElseGet(() -> {
-            CsatRatingDO do_ = new CsatRatingDO();
-            do_.setSessionId(sessionId);
-            do_.setVisitorId(visitorId);
-            do_.setAgentId(agentId);
-            do_.setChannel(channel != null ? channel : "AI");
-            do_.setStatus("PENDING");
+            CsatRatingDO rating = new CsatRatingDO();
+            rating.setSessionId(sessionId);
+            rating.setVisitorId(visitorId);
+            rating.setAgentId(agentId);
+            rating.setChannel(channel != null ? channel : CsatChannel.AI);
+            rating.setStatus(CsatStatus.PENDING);
             OffsetDateTime now = OffsetDateTime.now();
-            do_.setRequestedAt(now);
-            do_.setExpiredAt(now.plusHours(EXPIRY_HOURS));
-            mapper.insert(do_);
+            rating.setRequestedAt(now);
+            rating.setExpiredAt(now.plusHours(EXPIRY_HOURS));
+            mapper.insert(rating);
             log.info("[CSAT] 评价邀请已创建 sessionId={} channel={}", sessionId, channel);
-            return do_;
+            return rating;
         });
     }
 
@@ -65,16 +67,16 @@ public class CsatService {
         if (score == null || score < 1 || score > 5) {
             throw new BusinessException(INVALID_PARAM, "评分必须在 1–5 之间");
         }
-        CsatRatingDO do_ = requireCsat(csatId);
-        if (!"PENDING".equals(do_.getStatus())) {
+        CsatRatingDO rating = requireCsat(csatId);
+        if (rating.getStatus() != CsatStatus.PENDING) {
             throw new BusinessException(ALREADY_RATED,
-                "已评价或已过期，不可重复提交（status=" + do_.getStatus() + "）");
+                "已评价或已过期，不可重复提交（status=" + rating.getStatus() + "）");
         }
-        do_.setScore(score);
-        do_.setComment(comment);
-        do_.setStatus("RATED");
-        do_.setRatedAt(OffsetDateTime.now());
-        mapper.updateById(do_);
+        rating.setScore(score);
+        rating.setComment(comment);
+        rating.setStatus(CsatStatus.RATED);
+        rating.setRatedAt(OffsetDateTime.now());
+        mapper.updateById(rating);
         log.info("[CSAT] 评价已提交 csatId={} score={}", csatId, score);
     }
 
@@ -85,13 +87,13 @@ public class CsatService {
      */
     @Transactional(rollbackFor = Exception.class)
     public void skip(Long csatId) {
-        CsatRatingDO do_ = requireCsat(csatId);
-        if (!"PENDING".equals(do_.getStatus())) {
+        CsatRatingDO rating = requireCsat(csatId);
+        if (rating.getStatus() != CsatStatus.PENDING) {
             // 幂等：非 PENDING 状态静默忽略
-            log.debug("[CSAT] skip 忽略（已非 PENDING） csatId={} status={}", csatId, do_.getStatus());
+            log.debug("[CSAT] skip 忽略（已非 PENDING） csatId={} status={}", csatId, rating.getStatus());
             return;
         }
-        mapper.updateStatus(csatId, "SKIPPED", null);
+        mapper.updateStatus(csatId, CsatStatus.SKIPPED, null);
         log.info("[CSAT] 评价已跳过 csatId={}", csatId);
     }
 
@@ -108,7 +110,7 @@ public class CsatService {
     public java.util.Optional<CsatRatingDO> findPending(String sessionId) {
         OffsetDateTime now = OffsetDateTime.now(java.time.ZoneOffset.UTC);
         return mapper.findBySessionId(sessionId)
-                .filter(r -> "PENDING".equals(r.getStatus()))
+                .filter(r -> r.getStatus() == CsatStatus.PENDING)
                 .filter(r -> r.getExpiredAt() != null && r.getExpiredAt().isAfter(now));
     }
 
@@ -128,8 +130,8 @@ public class CsatService {
     }
 
     private CsatRatingDO requireCsat(Long id) {
-        CsatRatingDO do_ = mapper.selectById(id);
-        if (do_ == null) throw new BusinessException(NOT_FOUND, "评价记录不存在: " + id);
-        return do_;
+        CsatRatingDO rating = mapper.selectById(id);
+        if (rating == null) throw new BusinessException(NOT_FOUND, "评价记录不存在: " + id);
+        return rating;
     }
 }

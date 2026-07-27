@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.persistence.entity;
 
+import com.aria.conversation.domain.ClosedBy;
 import com.aria.conversation.domain.SessionStatus;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
@@ -74,7 +75,7 @@ public class ConversationEntity {
      * 关闭发起方：agent=座席主动关闭, visitor=访客离开, system=系统超时/自动关闭。
      * CLOSED 时必填，其余状态为 NULL。
      */
-    private String closedBy;
+    private ClosedBy closedBy;
 
     /** 记录创建时间 */
     private OffsetDateTime createdAt;

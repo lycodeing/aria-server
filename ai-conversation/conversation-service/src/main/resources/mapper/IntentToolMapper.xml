@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aria.conversation.infrastructure.dit.mapper.IntentToolMapper">
+
+    <!--
+        查询指定意图下已启用的工具列表，按执行顺序排序。
+        cs_intent_tool JOIN cs_tool，过滤 tool.enabled = TRUE。
+    -->
+    <select id="findByIntentId"
+            resultType="com.aria.conversation.infrastructure.dit.domain.IntentToolDO">
+        SELECT it.*
+        FROM cs_conversation.cs_intent_tool it
+                 JOIN cs_conversation.cs_tool t ON it.tool_id = t.id
+        WHERE it.intent_id = #{intentId}
+          AND t.enabled = TRUE
+        ORDER BY it.execution_order ASC
+    </select>
+
+</mapper>

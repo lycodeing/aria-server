@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.persistence.entity;
 
+import com.aria.conversation.domain.TagSource;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -13,7 +14,7 @@ import java.time.LocalDateTime;
 /**
  * 标签实体（对应 cs_conversation.cs_tag 表）。
  *
- * <p>source 枚举值：PRESET（预置标签）| CUSTOM（自定义标签）
+ * <p>source 枚举值：{@link TagSource#PRESET}（预置标签）| {@link TagSource#CUSTOM}（自定义标签）
  */
 @Data
 @Builder
@@ -33,7 +34,7 @@ public class TagEntity {
     private String color;
 
     /** 来源：PRESET | CUSTOM */
-    private String source;
+    private TagSource source;
 
     /** 使用次数（原子更新，禁止直接 set） */
     private Integer usageCount;

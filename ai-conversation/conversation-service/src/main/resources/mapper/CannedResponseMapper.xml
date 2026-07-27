@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aria.conversation.infrastructure.canned.CannedResponseMapper">
+
+    <!--
+        全文检索快捷回复（PostgreSQL to_tsvector/plainto_tsquery）。
+        - 按 use_count 倒序，限制返回条数。
+        - groupId 为 NULL 时忽略分组过滤（CAST + IS NULL 判断）。
+        - 权限：PUBLIC 全员可见，PRIVATE 仅 owner_id 匹配的坐席可见。
+    -->
+    <select id="searchByKeyword"
+            resultType="com.aria.conversation.infrastructure.canned.CannedResponseDO">
+        SELECT *
+        FROM cs_conversation.cs_canned_response
+        WHERE deleted = FALSE
+          AND to_tsvector('simple', title || ' ' || content) @@
+              plainto_tsquery('simple', #{q})
+          AND (scope = 'PUBLIC' OR (scope = 'PRIVATE' AND owner_id = #{agentId}))
+          AND (#{groupId}::BIGINT IS NULL OR group_id = #{groupId}::BIGINT)
+        ORDER BY use_count DESC
+        LIMIT #{limit}
+    </select>
+
+</mapper>

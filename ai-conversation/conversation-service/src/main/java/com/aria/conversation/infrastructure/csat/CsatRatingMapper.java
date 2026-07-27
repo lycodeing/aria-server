@@ -2,7 +2,9 @@ package com.aria.conversation.infrastructure.csat;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
-import org.apache.ibatis.annotations.*;
+import com.aria.conversation.domain.CsatStatus;
+import org.apache.ibatis.annotations.Mapper;
+
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -18,7 +20,7 @@ public interface CsatRatingMapper extends BaseMapper<CsatRatingDO> {
     }
 
     /** 更新评价状态（RATED / SKIPPED / EXPIRED） */
-    default void updateStatus(Long id, String status, OffsetDateTime ratedAt) {
+    default void updateStatus(Long id, CsatStatus status, OffsetDateTime ratedAt) {
         update(Wrappers.lambdaUpdate(CsatRatingDO.class)
             .set(CsatRatingDO::getStatus, status)
             .set(ratedAt != null, CsatRatingDO::getRatedAt, ratedAt)
@@ -28,13 +30,15 @@ public interface CsatRatingMapper extends BaseMapper<CsatRatingDO> {
     /** 查询所有已过期但仍 PENDING 的记录，供 Scheduler 批量过期 */
     default List<CsatRatingDO> findPendingExpired() {
         return selectList(Wrappers.lambdaQuery(CsatRatingDO.class)
-            .eq(CsatRatingDO::getStatus, "PENDING")
+            .eq(CsatRatingDO::getStatus, CsatStatus.PENDING)
             .lt(CsatRatingDO::getExpiredAt, OffsetDateTime.now()));
     }
 
-    /** 批量将指定 ID 标记为 EXPIRED */
-    @Update("<script>UPDATE cs_conversation.cs_csat_rating SET status='EXPIRED' " +
-            "WHERE id IN <foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>" +
-            "</script>")
-    void batchExpire(@Param("ids") List<Long> ids);
+    /** 批量将指定 ID 标记为 EXPIRED（空列表安全跳过） */
+    default void batchExpire(List<Long> ids) {
+        if (ids == null || ids.isEmpty()) return;
+        update(Wrappers.<CsatRatingDO>lambdaUpdate()
+                .set(CsatRatingDO::getStatus, CsatStatus.EXPIRED)
+                .in(CsatRatingDO::getId, ids));
+    }
 }

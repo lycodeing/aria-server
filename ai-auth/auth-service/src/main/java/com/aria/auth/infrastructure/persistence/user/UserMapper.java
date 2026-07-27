@@ -1,9 +1,8 @@
 package com.aria.auth.infrastructure.persistence.user;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.Select;
 
 /**
  * 用户 Mapper 接口。
@@ -15,9 +14,17 @@ import org.apache.ibatis.annotations.Select;
 @Mapper
 public interface UserMapper extends BaseMapper<UserDO> {
 
-    @Select("SELECT COUNT(*) > 0 FROM cs_auth.sys_user WHERE username = #{username} AND deleted_at IS NULL")
-    boolean existsByUsername(@Param("username") String username);
+    /** 按用户名检查是否存在（未删除） */
+    default boolean existsByUsername(String username) {
+        return exists(Wrappers.<UserDO>lambdaQuery()
+                .eq(UserDO::getUsername, username)
+                .isNull(UserDO::getDeletedAt));
+    }
 
-    @Select("SELECT COUNT(*) > 0 FROM cs_auth.sys_user WHERE email = #{email} AND deleted_at IS NULL")
-    boolean existsByEmail(@Param("email") String email);
+    /** 按邮箱检查是否存在（未删除） */
+    default boolean existsByEmail(String email) {
+        return exists(Wrappers.<UserDO>lambdaQuery()
+                .eq(UserDO::getEmail, email)
+                .isNull(UserDO::getDeletedAt));
+    }
 }

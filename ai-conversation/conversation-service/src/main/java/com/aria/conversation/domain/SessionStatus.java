@@ -1,6 +1,8 @@
 package com.aria.conversation.domain;
 
 import com.baomidou.mybatisplus.annotation.EnumValue;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
 
 /**
  * 会话状态枚举，实现状态机转换规则。
@@ -54,6 +56,7 @@ public enum SessionStatus {
      *
      * @return 大写状态字符串（AI_CHAT / WAITING / ACTIVE / CLOSED）
      */
+    @JsonValue
     public String getValue() {
         return value;
     }
@@ -65,7 +68,17 @@ public enum SessionStatus {
      * @return 新状态
      * @throws IllegalStateException 非法状态转换时抛出
      */
-    public SessionStatus transitionTo(SessionStatus next) {
+
+    @JsonCreator
+    public static SessionStatus fromValue(String value) {
+        if (value == null) return null;
+        for (SessionStatus s : values()) {
+            if (s.value.equalsIgnoreCase(value)) return s;
+        }
+        return null;
+    }
+
+        public SessionStatus transitionTo(SessionStatus next) {
         return switch (this) {
             case WAITING -> {
                 if (next == ACTIVE || next == CLOSED) {

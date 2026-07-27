@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.mq;
 
+import com.aria.conversation.domain.ClosedBy;
 import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.infrastructure.persistence.ConversationPersistRepository;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationMessageEntity;
@@ -126,10 +127,11 @@ public class ConversationMessageConsumer {
      * 处理 SESSION_END：更新会话状态为 CLOSED，记录结束时间和关闭发起方。
      */
     private void handleSessionEnd(Map<String, Object> payload, String sessionId) {
-        String closedBy = str(payload, ConversationStreamEvent.FIELD_CLOSED_BY);
-        if (!ConversationStreamEvent.isValidClosedBy(closedBy)) {
-            log.warn("[MQ Consumer] 非法 closedBy={}，降级为 system sessionId={}", closedBy, sessionId);
-            closedBy = ConversationStreamEvent.CLOSED_BY_SYSTEM;
+        String closedByStr = str(payload, ConversationStreamEvent.FIELD_CLOSED_BY);
+        ClosedBy closedBy = ClosedBy.fromValue(closedByStr);
+        if (closedBy == null) {
+            log.warn("[MQ Consumer] 非法 closedBy={}，降级为 system sessionId={}", closedByStr, sessionId);
+            closedBy = ClosedBy.SYSTEM;
         }
         persistRepository.closeConversation(
                 sessionId,

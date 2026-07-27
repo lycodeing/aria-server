@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.persistence;
 
+import com.aria.conversation.domain.ClosedBy;
 import com.aria.conversation.domain.SessionStatus;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationMessageEntity;
@@ -259,7 +260,7 @@ public class ConversationPersistRepository {
      * @param endedAt   会话结束时间
      * @param closedBy  关闭发起方（agent / visitor / system）
      */
-    public void closeConversation(String sessionId, OffsetDateTime endedAt, String closedBy) {
+    public void closeConversation(String sessionId, OffsetDateTime endedAt, ClosedBy closedBy) {
         int affected = conversationMapper.closeBySessionId(sessionId, endedAt, closedBy);
         if (affected == 0) {
             log.debug("[Persist] 会话不存在或已关闭，忽略 sessionId={}", sessionId);

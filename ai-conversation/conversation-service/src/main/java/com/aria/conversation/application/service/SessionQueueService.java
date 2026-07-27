@@ -6,6 +6,7 @@ import com.aria.conversation.application.exception.SessionEnqueueException;
 import com.aria.conversation.domain.SessionAlreadyAcceptedException;
 import com.aria.conversation.domain.SessionEventType;
 import com.aria.conversation.domain.SessionQueueItem;
+import com.aria.conversation.domain.ClosedBy;
 import com.aria.conversation.domain.SessionStatus;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import com.aria.conversation.infrastructure.mq.ConversationMessagePublisher;
@@ -284,7 +285,7 @@ public class SessionQueueService {
      * @param sessionId 会话唯一标识
      * @param closedBy  关闭发起方（agent / visitor / system）
      */
-    public void close(String sessionId, String closedBy) {
+    public void close(String sessionId, ClosedBy closedBy) {
         try {
             String[] agentIdHolder = {null};
             queueRepository.findById(sessionId).ifPresentOrElse(
@@ -447,7 +448,7 @@ public class SessionQueueService {
             Long agentIdLong = agentId != null && !agentId.isBlank()
                     ? Long.parseLong(agentId) : null;
             CsatRatingDO csat = csatService.createInvitation(
-                    sessionId, null, agentIdLong, "HUMAN");
+                    sessionId, null, agentIdLong, com.aria.conversation.domain.CsatChannel.HUMAN);
             Map<String, Object> frame = new java.util.LinkedHashMap<>(
                     com.aria.conversation.application.service.support.CsatInvites.payload(csat));
             frame.put("type", ChatEvent.EventType.CSAT_REQUEST);
@@ -513,7 +514,7 @@ public class SessionQueueService {
                 "SESSION_TRANSFER", sessionId);
     }
 
-    private void publishSessionEnd(String sessionId, String closedBy) {
+    private void publishSessionEnd(String sessionId, ClosedBy closedBy) {
         publishSafely(() -> publisher.publishSessionEnd(sessionId, closedBy),
                 "SESSION_END", sessionId);
     }
