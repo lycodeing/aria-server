@@ -1357,8 +1357,8 @@ LangChain4jIntentService.classifyMulti(userMessage)
   但不阻止 Tier2 补充规则层未覆盖的语义意图
 
 原则 2: Tier2 按需触发
-  Tier1 已覆盖所有意图 → 跳过 Tier2（节省 30ms 的 embedding 调用）
-  Tier1 未命中 或 Tier1 命中但疑似遗漏 → 触发 Tier2
+  embeddingEnabled=true 时 Tier2 始终执行（即使 Tier1 已命中，也允许 Tier2 补充遗漏的语义意图）
+  embeddingEnabled=false → 跳过 Tier2，直接到 Tier3
 
 原则 3: Tier3 作为最后兜底
   Tier1 + Tier2 总体置信度不足时才触发 LLM
@@ -1555,7 +1555,7 @@ classifyMulti(userMessage)
 ```
 输入: "我要投诉这次服务，同时转接人工"
 Tier1: COMPLAINT(1.0) + TRANSFER_REQUEST(1.0) → merged={complaint, transfer_request}
-shouldFallbackToLlm: hasTransfer=true → 跳过 Tier2/3
+shouldFallbackToLlm: hasTransfer=true → 跳过 Tier3（Tier2 仍正常执行）
 输出: MultiIntentResult{[COMPLAINT(1.0), TRANSFER_REQUEST(1.0)], RULE, <1ms}
 primaryIntent → COMPLAINT（优先级最高）
 requiresTransfer → true（union语义）
