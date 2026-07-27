@@ -122,6 +122,23 @@ public class DomainAgentService {
                 .onErrorResume(e -> Flux.just(ChatEvent.error(e.getMessage(), objectMapper)));
     }
 
+    /**
+     * 多意图重载：携带 intentCodes，Agent 可根据意图列表做精细化回复。
+     *
+     * <p>当前实现代理无意图版本，intentCodes 透传至日志供后续扩展（如动态注入 System Prompt）。
+     *
+     * @param sessionId   会话 ID
+     * @param domainCode  当前活跃域 code
+     * @param userMessage 用户消息文本
+     * @param intentCodes 当前消息的所有意图 code 列表（如 ["query_logistics", "cancel_order"]）
+     * @return AI token 事件与工具事件的合并流
+     */
+    public Flux<ChatEvent> streamChat(String sessionId, String domainCode,
+                                      String userMessage, List<String> intentCodes) {
+        log.debug("[DomainAgent] multi-intent codes={} sessionId={}", intentCodes, sessionId);
+        return streamChat(sessionId, domainCode, userMessage);
+    }
+
     private List<ToolConfig> getToolsForDomain(String domainCode) {
         return domainRepo.findByCode(domainCode)
                 .map(dc -> dc.intents().stream()
