@@ -1,5 +1,7 @@
 package com.aria.conversation.infrastructure.webhook;
 
+import com.aria.conversation.domain.model.BreachType;
+
 import lombok.extern.slf4j.Slf4j;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -70,22 +72,21 @@ public abstract class AbstractWebhookSender implements WebhookSender {
         }
         var breach = ctx.breaches().get(0);
         String label = switch (breach.getBreachType()) {
-            case "WAIT"   -> "排队等待超时";
-            case "FRT"    -> "首响超时";
-            case "HANDLE" -> "处理超时";
-            default       -> breach.getBreachType();
+            case WAIT   -> "排队等待超时";
+            case FRT    -> "首响超时";
+            case HANDLE -> "处理超时";
         };
         return Map.of(
             "sessionId",       ctx.sessionId(),
             "visitorName",     ctx.visitorName() != null ? ctx.visitorName() : "未知访客",
-            "breachType",      breach.getBreachType(),
+            "breachType",      breach.getBreachType() != null ? breach.getBreachType().getValue() : "",
             "breachTypeLabel", label,
             "targetSec",       String.valueOf(breach.getTargetSec()),
             "actualSec",       String.valueOf(breach.getActualSec()),
             "policyName",      ctx.policyName(),
             "breachAt",        breach.getBreachAt() != null
                                ? breach.getBreachAt().toString() : "",
-            "stage",           breach.getStage()
+            "stage",           breach.getStage() != null ? breach.getStage().getValue() : ""
         );
     }
 }

@@ -2,8 +2,8 @@ package com.aria.conversation.infrastructure.dit.mapper;
 
 import com.aria.conversation.infrastructure.dit.domain.DomainDO;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Select;
 
 import java.util.List;
 import java.util.Optional;
@@ -11,12 +11,25 @@ import java.util.Optional;
 @Mapper
 public interface DomainMapper extends BaseMapper<DomainDO> {
 
-    @Select("SELECT * FROM cs_conversation.cs_domain WHERE code = #{code} AND enabled = TRUE LIMIT 1")
-    Optional<DomainDO> findByCode(String code);
+    default Optional<DomainDO> findByCode(String code) {
+        return Optional.ofNullable(selectOne(Wrappers.<DomainDO>lambdaQuery()
+                .eq(DomainDO::getCode, code)
+                .eq(DomainDO::getEnabled, true)
+                .last("LIMIT 1")));
+    }
 
-    @Select("SELECT * FROM cs_conversation.cs_domain WHERE enabled = TRUE ORDER BY id ASC")
-    List<DomainDO> findAllEnabled();
+    default List<DomainDO> findAllEnabled() {
+        return selectList(Wrappers.<DomainDO>lambdaQuery()
+                .eq(DomainDO::getEnabled, true)
+                .orderByAsc(DomainDO::getId));
+    }
 
-    @Select("SELECT id, code, name, description FROM cs_conversation.cs_domain WHERE enabled = TRUE ORDER BY id ASC")
-    List<DomainDO> findAllEnabledSummary();
+    /** 仅返回 id/code/name/description 字段（用于下拉列表等轻量场景）。 */
+    default List<DomainDO> findAllEnabledSummary() {
+        return selectList(Wrappers.<DomainDO>lambdaQuery()
+                .select(DomainDO::getId, DomainDO::getCode,
+                        DomainDO::getName, DomainDO::getDescription)
+                .eq(DomainDO::getEnabled, true)
+                .orderByAsc(DomainDO::getId));
+    }
 }

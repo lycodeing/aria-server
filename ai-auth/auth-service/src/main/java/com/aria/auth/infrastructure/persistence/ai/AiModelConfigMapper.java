@@ -1,9 +1,8 @@
 package com.aria.auth.infrastructure.persistence.ai;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Param;
-import org.apache.ibatis.annotations.Update;
 
 /**
  * AI 模型配置 Mapper。
@@ -16,8 +15,13 @@ public interface AiModelConfigMapper extends BaseMapper<AiModelConfigDO> {
      * CHAT 和 EMBEDDING 互相独立，setDefault 时只清同类型的默认，不影响另一类型。
      *
      * @param modelType 模型类型：CHAT / EMBEDDING
+     * @return 受影响行数
      */
-    @Update("UPDATE cs_auth.ai_model_config SET is_default = FALSE " +
-            "WHERE model_type = #{modelType} AND is_default = TRUE AND deleted_at IS NULL")
-    int clearAllDefaultByType(@Param("modelType") String modelType);
+    default int clearAllDefaultByType(String modelType) {
+        return update(null, Wrappers.<AiModelConfigDO>lambdaUpdate()
+                .set(AiModelConfigDO::getIsDefault, false)
+                .eq(AiModelConfigDO::getModelType, modelType)
+                .eq(AiModelConfigDO::getIsDefault, true)
+                .isNull(AiModelConfigDO::getDeletedAt));
+    }
 }

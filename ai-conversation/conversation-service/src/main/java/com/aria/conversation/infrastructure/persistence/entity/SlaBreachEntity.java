@@ -1,5 +1,7 @@
 package com.aria.conversation.infrastructure.persistence.entity;
 
+import com.aria.conversation.domain.model.BreachStage;
+import com.aria.conversation.domain.model.BreachType;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -14,9 +16,8 @@ import java.time.OffsetDateTime;
 /**
  * SLA 违规记录实体（对应 cs_conversation.cs_sla_breach 表）。
  *
- * <p>{@code breachType} 存储 {@code BreachType.name()}（WAIT / FRT / HANDLE）；
- * {@code stage} 存储 {@code BreachStage.name()}（WARNING / BREACH）。
- * 使用字符串而非枚举，避免 MyBatis-Plus 枚举映射与 autoResultMap 的潜在冲突。
+ * <p>{@code breachType} 使用 {@link BreachType} 枚举，{@link com.baomidou.mybatisplus.annotation.EnumValue} 自动与 DB VARCHAR 映射；
+ * {@code stage} 使用 {@link BreachStage} 枚举，同理。
  */
 @Data
 @Builder
@@ -36,10 +37,10 @@ public class SlaBreachEntity {
     private Long policyId;
 
     /** 违规类型：WAIT / FRT / HANDLE */
-    private String breachType;
+    private BreachType breachType;
 
     /** 违规阶段：WARNING / BREACH */
-    private String stage;
+    private BreachStage stage;
 
     /** 目标时间（秒） */
     private Integer targetSec;

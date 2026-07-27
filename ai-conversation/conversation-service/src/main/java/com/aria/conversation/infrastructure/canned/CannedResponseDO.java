@@ -3,6 +3,7 @@ package com.aria.conversation.infrastructure.canned;
 import com.baomidou.mybatisplus.annotation.*;
 import lombok.Data;
 import java.time.OffsetDateTime;
+import com.aria.conversation.domain.CannedResponseScope;
 
 @Data
 @TableName(schema = "cs_conversation", value = "cs_canned_response")
@@ -13,7 +14,7 @@ public class CannedResponseDO {
     private String title;
     private String content;
     /** PUBLIC / PRIVATE */
-    private String scope;
+    private CannedResponseScope scope;
     /** PRIVATE 时的所属坐席 ID */
     private Long ownerId;
     private Integer useCount;
@@ -21,5 +22,6 @@ public class CannedResponseDO {
     private Long createdBy;
     private OffsetDateTime createdAt;
     private OffsetDateTime updatedAt;
+    @TableLogic
     private Boolean deleted;
 }

@@ -1,5 +1,9 @@
 package com.aria.conversation.domain.model;
 
+import com.baomidou.mybatisplus.annotation.EnumValue;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonValue;
+
 /**
  * SLA 违规类型。
  *
@@ -10,7 +14,33 @@ package com.aria.conversation.domain.model;
  * </ul>
  */
 public enum BreachType {
-    WAIT,
-    FRT,
-    HANDLE
+    WAIT("WAIT"),
+    FRT("FRT"),
+    HANDLE("HANDLE");
+
+    @EnumValue
+    private final String value;
+
+    BreachType(String value) {
+        this.value = value;
+    }
+
+    @JsonCreator
+    public static BreachType fromValue(String value) {
+        if (value == null) return null;
+        for (BreachType t : values()) {
+            if (t.value.equalsIgnoreCase(value)) return t;
+        }
+        return null;
+    }
+
+    @JsonValue
+    public String getValue() {
+        return value;
+    }
+
+    @Override
+    public String toString() {
+        return value;
+    }
 }

@@ -2,6 +2,7 @@ package com.aria.conversation.application.service;
 
 import com.aria.common.core.exception.BusinessException;
 import com.aria.conversation.domain.SessionEventType;
+import com.aria.conversation.domain.TagSource;
 import com.aria.conversation.infrastructure.persistence.entity.*;
 import com.aria.conversation.infrastructure.persistence.mapper.*;
 import com.aria.conversation.interfaces.rest.vo.TagVO;
@@ -145,7 +146,7 @@ public class TagAppService {
             throw new BusinessException(40900, "标签名已存在: " + name);
         }
         TagEntity entity = TagEntity.builder()
-                .name(name).color(color).source("PRESET").build();
+                .name(name).color(color).source(TagSource.PRESET).build();
         tagMapper.insert(entity);
         return entity;
     }
@@ -156,7 +157,7 @@ public class TagAppService {
      * @throws BusinessException(40400) 若标签不存在
      */
     @Transactional(rollbackFor = Exception.class)
-    public void updateTag(Long id, String name, String color, String source) {
+    public void updateTag(Long id, String name, String color, TagSource source) {
         TagEntity existing = tagMapper.selectById(id);
         if (existing == null) {
             throw new BusinessException(NOT_FOUND, "标签不存在: " + id);
@@ -225,7 +226,7 @@ public class TagAppService {
         TagEntity newTag = TagEntity.builder()
                 .name(tagName)
                 .color("#6B7280")
-                .source("CUSTOM")
+                .source(TagSource.CUSTOM)
                 .createdBy(createdBy)
                 .build();
         tagMapper.insert(newTag);
@@ -237,6 +238,7 @@ public class TagAppService {
     }
 
     private TagVO toVO(TagEntity e) {
-        return new TagVO(e.getId(), e.getName(), e.getColor(), e.getSource());
+        return new TagVO(e.getId(), e.getName(), e.getColor(),
+                e.getSource() != null ? e.getSource().getValue() : null);
     }
 }

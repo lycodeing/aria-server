@@ -1,0 +1,354 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aria.conversation.infrastructure.persistence.mapper.DashboardStatsMapper">
+
+    <!-- ============================================================
+         概览指标
+         ============================================================ -->
+
+    <select id="countTodayConversations" resultType="long">
+        SELECT COUNT(*)
+        FROM cs_conversation.cs_conversation
+        WHERE started_at &gt;= CURRENT_DATE
+    </select>
+
+    <select id="countTotalConversations" resultType="long">
+        SELECT COUNT(*)
+        FROM cs_conversation.cs_conversation
+    </select>
+
+    <select id="countByStatus" resultType="long">
+        SELECT COUNT(*)
+        FROM cs_conversation.cs_conversation
+        WHERE status = #{status}
+    </select>
+
+    <select id="countTotalUsers" resultType="long">
+        SELECT COUNT(*)
+        FROM cs_auth.sys_user
+        WHERE deleted_at IS NULL
+    </select>
+
+    <select id="countTotalMessages" resultType="long">
+        SELECT COUNT(*)
+        FROM cs_conversation.cs_conversation_message
+    </select>
+
+    <select id="countMessagesByRole" resultType="long">
+        SELECT COUNT(*)
+        FROM cs_conversation.cs_conversation_message
+        WHERE role = #{role}
+    </select>
+
+    <!-- ============================================================
+         图表数据
+         ============================================================ -->
+
+    <!--
+        会话趋势（按月聚合，区分人工/AI）。
+        tag != 'AI 对话' 为人工会话，tag = 'AI 对话' 为纯 AI 会话。
+        返回最近 12 个月的数据。
+    -->
+    <select id="getMonthlyTrends"
+            resultType="com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO">
+        SELECT TO_CHAR(DATE_TRUNC('month', started_at), 'YYYY-MM')     AS month,
+               COUNT(*) FILTER (WHERE tag != 'AI 对话')                AS "humanCount",
+               COUNT(*) FILTER (WHERE tag = 'AI 对话')                 AS "aiCount"
+        FROM cs_conversation.cs_conversation
+        WHERE started_at &gt;= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '11 months')
+        GROUP BY DATE_TRUNC('month', started_at)
+        ORDER BY month
+    </select>
+
+    <select id="getMonthlyMessageTrends"
+            resultType="com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO">
+        SELECT TO_CHAR(DATE_TRUNC('month', created_at), 'YYYY-MM') AS month,
+               COUNT(*) FILTER (WHERE role = 'agent')               AS "humanCount",
+               COUNT(*) FILTER (WHERE role = 'assistant')           AS "aiCount"
+        FROM cs_conversation.cs_conversation_message
+        WHERE created_at &gt;= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '11 months')
+        GROUP BY DATE_TRUNC('month', created_at)
+        ORDER BY month
+    </select>
+
+    <select id="getStatusDistribution"
+            resultType="com.aria.conversation.interfaces.rest.vo.StatusDistributionItemVO">
+        SELECT status,
+               COUNT(*) AS count
+        FROM cs_conversation.cs_conversation
+        GROUP BY status
+    </select>
+
+    <select id="getTagDistribution"
+            resultType="com.aria.conversation.interfaces.rest.vo.TagDistributionItemVO">
+        SELECT COALESCE(tag, '未分类') AS tag,
+               COUNT(*)               AS count
+        FROM cs_conversation.cs_conversation
+        GROUP BY tag
+        ORDER BY count DESC
+    </select>
+
+    <!-- ============================================================
+         workspace 页面数据
+         ============================================================ -->
+
+    <select id="getRecentSessions"
+            resultType="com.aria.conversation.interfaces.rest.vo.RecentSessionVO">
+        SELECT c.session_id      AS "sessionId",
+               c.visitor_name   AS "visitorName",
+               c.tag             AS "tag",
+               c.transfer_reason AS "transferReason",
+               c.status          AS "status",
+               c.agent_id        AS "agentId",
+               c.started_at      AS "startedAt",
+               c.accepted_at     AS "acceptedAt",
+               c.ended_at        AS "endedAt",
+               c.closed_by       AS "closedBy",
+               COALESCE(
+                   (SELECT COUNT(*)
+                    FROM cs_conversation.cs_conversation_message m
+                    WHERE m.session_id = c.session_id), 0
+               )                 AS "messageCount"
+        FROM cs_conversation.cs_conversation c
+        ORDER BY c.started_at DESC
+        LIMIT #{limit}
+    </select>
+
+    <select id="getAgentWorkload"
+            resultType="com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO">
+        SELECT agent_id                                                  AS "agentId",
+               COUNT(*)                                                  AS "totalSessions",
+               COUNT(*) FILTER (WHERE status = 'ACTIVE')                AS "activeSessions"
+        FROM cs_conversation.cs_conversation
+        WHERE agent_id IS NOT NULL
+        GROUP BY agent_id
+        ORDER BY "totalSessions" DESC
+    </select>
+
+    <!-- ============================================================
+         时长类指标
+         ============================================================ -->
+
+    <select id="avgWaitSeconds" resultType="long">
+        SELECT COALESCE(
+            EXTRACT(EPOCH FROM AVG(accepted_at - started_at))::bigint,
+            0
+        )
+        FROM cs_conversation.cs_conversation
+        WHERE accepted_at IS NOT NULL
+    </select>
+
+    <select id="avgHandleSeconds" resultType="long">
+        SELECT COALESCE(
+            EXTRACT(EPOCH FROM AVG(ended_at - accepted_at))::bigint,
+            0
+        )
+        FROM cs_conversation.cs_conversation
+        WHERE accepted_at IS NOT NULL
+          AND ended_at IS NOT NULL
+    </select>
+
+    <select id="avgFirstReplySeconds" resultType="long">
+        SELECT COALESCE(
+            EXTRACT(EPOCH FROM AVG(first_reply_at - accepted_at))::bigint,
+            0
+        )
+        FROM cs_conversation.cs_conversation
+        WHERE accepted_at IS NOT NULL
+          AND first_reply_at IS NOT NULL
+    </select>
+
+    <!-- ============================================================
+         按时间范围聚合
+         ============================================================ -->
+
+    <select id="getConversationTrendsByRange"
+            resultType="com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO">
+        SELECT TO_CHAR(DATE_TRUNC('day', started_at), 'YYYY-MM-DD')    AS month,
+               COUNT(*) FILTER (WHERE tag != 'AI 对话')                AS "humanCount",
+               COUNT(*) FILTER (WHERE tag = 'AI 对话')                 AS "aiCount"
+        FROM cs_conversation.cs_conversation
+        WHERE started_at &gt;= #{startDate}::date
+          AND started_at &lt; #{endDate}::date + INTERVAL '1 day'
+        GROUP BY DATE_TRUNC('day', started_at)
+        ORDER BY month
+    </select>
+
+    <select id="getMessageTrendsByRange"
+            resultType="com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO">
+        SELECT TO_CHAR(DATE_TRUNC('day', created_at), 'YYYY-MM-DD') AS month,
+               COUNT(*) FILTER (WHERE role = 'agent')               AS "humanCount",
+               COUNT(*) FILTER (WHERE role = 'assistant')           AS "aiCount"
+        FROM cs_conversation.cs_conversation_message
+        WHERE created_at &gt;= #{startDate}::date
+          AND created_at &lt; #{endDate}::date + INTERVAL '1 day'
+        GROUP BY DATE_TRUNC('day', created_at)
+        ORDER BY month
+    </select>
+
+    <select id="getEfficiencyTrends"
+            resultType="com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO">
+        SELECT TO_CHAR(DATE_TRUNC('day', accepted_at), 'YYYY-MM-DD')                                       AS date,
+               COALESCE(EXTRACT(EPOCH FROM AVG(accepted_at - started_at))::bigint,     0) AS "avgWaitSeconds",
+               COALESCE(EXTRACT(EPOCH FROM AVG(ended_at   - accepted_at))::bigint,     0) AS "avgHandleSeconds",
+               COALESCE(EXTRACT(EPOCH FROM AVG(first_reply_at - accepted_at))::bigint, 0) AS "avgFirstReplySeconds"
+        FROM cs_conversation.cs_conversation
+        WHERE accepted_at IS NOT NULL
+          AND accepted_at &gt;= #{startDate}::date
+          AND accepted_at &lt;  #{endDate}::date + INTERVAL '1 day'
+        GROUP BY DATE_TRUNC('day', accepted_at)
+        ORDER BY date
+    </select>
+
+    <select id="getConfigValue" resultType="String">
+        SELECT COALESCE(MAX(config_value), #{defaultValue})
+        FROM cs_auth.system_config
+        WHERE config_key = #{key}
+          AND is_enabled = true
+          AND deleted_at IS NULL
+    </select>
+
+    <select id="getComplexityDistribution"
+            resultType="com.aria.conversation.interfaces.rest.vo.ComplexityDistributionItemVO">
+        SELECT CASE
+                   WHEN msg_count &lt;= #{simpleMax} THEN 'SIMPLE'
+                   WHEN msg_count &lt;= #{mediumMax} THEN 'MEDIUM'
+                   ELSE 'COMPLEX'
+               END           AS complexity,
+               COUNT(*)::int AS count
+        FROM (SELECT c.session_id,
+                     COUNT(m.id) AS msg_count
+              FROM cs_conversation.cs_conversation c
+                       LEFT JOIN cs_conversation.cs_conversation_message m
+                                 ON m.session_id = c.session_id
+              GROUP BY c.session_id) sub
+        GROUP BY complexity
+        ORDER BY complexity
+    </select>
+
+    <!-- ============================================================
+         CSAT 指标
+         ============================================================ -->
+
+    <select id="csatAvgScore" resultType="double">
+        SELECT COALESCE(AVG(score::double precision), 0.0)
+        FROM cs_conversation.cs_csat_rating
+        WHERE status = 'RATED'
+          AND rated_at &gt;= NOW() - INTERVAL '30 days'
+    </select>
+
+    <select id="csatResponseRate" resultType="double">
+        SELECT CASE
+                   WHEN COUNT(*) = 0 THEN 0.0
+                   ELSE COUNT(*) FILTER (WHERE status = 'RATED')::double precision / COUNT(*)
+               END
+        FROM cs_conversation.cs_csat_rating
+        WHERE status IN ('RATED', 'EXPIRED', 'SKIPPED')
+          AND requested_at &gt;= NOW() - INTERVAL '30 days'
+    </select>
+
+    <select id="csatRatedCount" resultType="long">
+        SELECT COUNT(*)
+        FROM cs_conversation.cs_csat_rating
+        WHERE status = 'RATED'
+          AND rated_at &gt;= NOW() - INTERVAL '30 days'
+    </select>
+
+    <resultMap id="CsatTrendItemRM"
+               type="com.aria.conversation.interfaces.rest.vo.CsatTrendItemVO">
+        <result column="date"        property="date"/>
+        <result column="avg_score"   property="avgScore"/>
+        <result column="rated_count" property="ratedCount"/>
+    </resultMap>
+
+    <select id="getCsatTrend" resultMap="CsatTrendItemRM">
+        SELECT TO_CHAR(rated_at::date, 'YYYY-MM-DD') AS date,
+               AVG(score::double precision)           AS avg_score,
+               COUNT(*)                               AS rated_count
+        FROM cs_conversation.cs_csat_rating
+        WHERE status = 'RATED'
+          AND rated_at::date BETWEEN #{startDate} AND #{endDate}
+        GROUP BY rated_at::date
+        ORDER BY rated_at::date
+    </select>
+
+    <resultMap id="CsatDistributionItemRM"
+               type="com.aria.conversation.interfaces.rest.vo.CsatDistributionItemVO">
+        <result column="score"      property="score"/>
+        <result column="count"      property="count"/>
+        <result column="percentage" property="percentage"/>
+    </resultMap>
+
+    <select id="getCsatDistribution" resultMap="CsatDistributionItemRM">
+        SELECT score,
+               COUNT(*)                                                    AS count,
+               ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2)         AS percentage
+        FROM cs_conversation.cs_csat_rating
+        WHERE status = 'RATED'
+        GROUP BY score
+        ORDER BY score
+    </select>
+
+    <resultMap id="CsatByAgentItemRM"
+               type="com.aria.conversation.interfaces.rest.vo.CsatByAgentItemVO">
+        <result column="agent_id"   property="agentId"/>
+        <result column="agent_name" property="agentName"/>
+        <result column="avg_score"  property="avgScore"/>
+        <result column="rated_count" property="ratedCount"/>
+    </resultMap>
+
+    <select id="getCsatByAgent" resultMap="CsatByAgentItemRM">
+        SELECT c.agent_id,
+               u.username                        AS agent_name,
+               AVG(c.score::double precision)    AS avg_score,
+               COUNT(*)                          AS rated_count
+        FROM cs_conversation.cs_csat_rating c
+                 LEFT JOIN cs_auth.sys_user u ON u.id = c.agent_id
+        WHERE c.status = 'RATED'
+          AND c.agent_id IS NOT NULL
+        GROUP BY c.agent_id, u.username
+        ORDER BY avg_score DESC
+        LIMIT #{limit} OFFSET #{offset}
+    </select>
+
+    <resultMap id="CsatOverviewRM"
+               type="com.aria.conversation.interfaces.rest.vo.CsatOverviewVO">
+        <result column="avg_score"         property="avgScore"/>
+        <result column="response_rate"     property="responseRate"/>
+        <result column="satisfaction_rate" property="satisfactionRate"/>
+        <result column="rated_count"       property="ratedCount"/>
+        <result column="total_invitations" property="totalInvitations"/>
+        <result column="pending_count"     property="pendingCount"/>
+        <result column="expired_count"     property="expiredCount"/>
+        <result column="skipped_count"     property="skippedCount"/>
+    </resultMap>
+
+    <select id="getCsatOverview" resultMap="CsatOverviewRM">
+        SELECT COALESCE(
+                       AVG(CASE WHEN status = 'RATED' THEN score::double precision END),
+                       0.0
+               )                                                                           AS avg_score,
+               CASE
+                   WHEN COUNT(*) FILTER (WHERE status IN ('RATED', 'EXPIRED', 'SKIPPED')) = 0
+                       THEN 0.0
+                   ELSE COUNT(*) FILTER (WHERE status = 'RATED')::double precision
+                            / COUNT(*) FILTER (WHERE status IN ('RATED', 'EXPIRED', 'SKIPPED'))
+               END                                                                         AS response_rate,
+               CASE
+                   WHEN COUNT(*) FILTER (WHERE status = 'RATED') = 0
+                       THEN 0.0
+                   ELSE COUNT(*) FILTER (WHERE status = 'RATED' AND score &gt;= 4)::double precision
+                            / COUNT(*) FILTER (WHERE status = 'RATED')
+               END                                                                         AS satisfaction_rate,
+               COUNT(*) FILTER (WHERE status = 'RATED')                                   AS rated_count,
+               COUNT(*) FILTER (WHERE status IN ('RATED', 'EXPIRED', 'SKIPPED'))          AS total_invitations,
+               COUNT(*) FILTER (WHERE status = 'PENDING')                                 AS pending_count,
+               COUNT(*) FILTER (WHERE status = 'EXPIRED')                                 AS expired_count,
+               COUNT(*) FILTER (WHERE status = 'SKIPPED')                                 AS skipped_count
+        FROM cs_conversation.cs_csat_rating
+        WHERE requested_at &gt;= #{startDate}::date
+          AND requested_at &lt; #{endDate}::date + INTERVAL '1 day'
+    </select>
+
+</mapper>

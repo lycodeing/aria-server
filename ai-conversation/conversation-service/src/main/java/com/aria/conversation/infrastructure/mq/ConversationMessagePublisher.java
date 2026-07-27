@@ -2,6 +2,7 @@ package com.aria.conversation.infrastructure.mq;
 
 import com.aria.common.core.util.JsonUtils;
 import com.aria.conversation.domain.ConversationMessage;
+import com.aria.conversation.domain.ClosedBy;
 import com.aria.conversation.domain.MessageRole;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -135,15 +136,13 @@ public class ConversationMessagePublisher {
     }
 
     @Retryable(maxAttempts = 3, backoff = @Backoff(delay = 1000, multiplier = 2))
-    public void publishSessionEnd(String sessionId, String closedBy) {
-        String effectiveClosedBy = ConversationStreamEvent.isValidClosedBy(closedBy)
-                ? closedBy
-                : ConversationStreamEvent.CLOSED_BY_SYSTEM;
+    public void publishSessionEnd(String sessionId, ClosedBy closedBy) {
+        ClosedBy effectiveClosedBy = (closedBy != null) ? closedBy : ClosedBy.SYSTEM;
         Map<String, Object> payload = new LinkedHashMap<>(6);
         payload.put(ConversationStreamEvent.FIELD_TYPE, ConversationStreamEvent.Type.SESSION_END.name());
         payload.put(ConversationStreamEvent.FIELD_SESSION_ID, sessionId);
         payload.put(ConversationStreamEvent.FIELD_TIMESTAMP, Instant.now().getEpochSecond());
-        payload.put(ConversationStreamEvent.FIELD_CLOSED_BY, effectiveClosedBy);
+        payload.put(ConversationStreamEvent.FIELD_CLOSED_BY, effectiveClosedBy.getValue());
         putTraceId(payload);
         rabbitTemplate.convertAndSend(exchange, routingKey, payload);
         log.info("[MQ] SESSION_END published sessionId={} closedBy={}", sessionId, effectiveClosedBy);

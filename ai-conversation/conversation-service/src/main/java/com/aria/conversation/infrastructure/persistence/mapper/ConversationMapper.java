@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.persistence.mapper;
 
+import com.aria.conversation.domain.ClosedBy;
 import com.aria.conversation.domain.SessionStatus;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
@@ -177,7 +178,7 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
      */
     default int closeBySessionId(@Param("sessionId") String sessionId,
                                  @Param("endedAt") OffsetDateTime endedAt,
-                                 @Param("closedBy") String closedBy) {
+                                 @Param("closedBy") ClosedBy closedBy) {
         return update(Wrappers.lambdaUpdate(ConversationEntity.class)
                 .set(ConversationEntity::getStatus,    SessionStatus.CLOSED.getValue())
                 .set(ConversationEntity::getEndedAt,   endedAt)

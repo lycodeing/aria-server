@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aria.auth.infrastructure.persistence.role.PermissionMapper">
+
+    <!--
+        查询指定用户拥有的所有权限。
+        关联路径：sys_permission → sys_role_permission → sys_user_role
+    -->
+    <select id="findPermissionsByUserId" resultType="com.aria.auth.infrastructure.persistence.role.PermissionDO">
+        SELECT p.*
+        FROM cs_auth.sys_permission p
+                 INNER JOIN cs_auth.sys_role_permission rp ON p.id = rp.permission_id
+                 INNER JOIN cs_auth.sys_user_role ur ON rp.role_id = ur.role_id
+        WHERE ur.user_id = #{userId}
+    </select>
+
+</mapper>

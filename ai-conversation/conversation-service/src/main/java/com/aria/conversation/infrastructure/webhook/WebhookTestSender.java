@@ -2,6 +2,8 @@ package com.aria.conversation.infrastructure.webhook;
 
 import com.aria.common.core.exception.BusinessException;
 import com.aria.conversation.application.service.IWebhookSendService;
+import com.aria.conversation.domain.model.BreachStage;
+import com.aria.conversation.domain.model.BreachType;
 import com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity;
 import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEntity;
 import com.aria.conversation.infrastructure.persistence.mapper.WebhookConfigMapper;
@@ -33,7 +35,7 @@ public class WebhookTestSender implements IWebhookSendService {
         if (sender == null) throw new BusinessException(40001, "不支持的 Webhook 类型: " + config.getType());
 
         SlaBreachEntity mockBreach = SlaBreachEntity.builder()
-                .sessionId("test-session").breachType("WAIT").stage("BREACH")
+                .sessionId("test-session").breachType(BreachType.WAIT).stage(BreachStage.BREACH)
                 .targetSec(120).actualSec(185).build();
         SlaBreachContext mockCtx = new SlaBreachContext(
                 "test-session", "测试访客", "测试策略", List.of(mockBreach));

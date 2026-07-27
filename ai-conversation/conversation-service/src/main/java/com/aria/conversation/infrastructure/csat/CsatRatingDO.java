@@ -1,7 +1,12 @@
 package com.aria.conversation.infrastructure.csat;
 
-import com.baomidou.mybatisplus.annotation.*;
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
+import com.aria.conversation.domain.CsatChannel;
+import com.aria.conversation.domain.CsatStatus;
 import lombok.Data;
+
 import java.time.OffsetDateTime;
 
 @Data
@@ -15,9 +20,9 @@ public class CsatRatingDO {
     private Short score;
     private String comment;
     /** AI / HUMAN */
-    private String channel;
+    private CsatChannel channel;
     /** PENDING / RATED / EXPIRED / SKIPPED */
-    private String status;
+    private CsatStatus status;
     private OffsetDateTime requestedAt;
     private OffsetDateTime ratedAt;
     private OffsetDateTime expiredAt;

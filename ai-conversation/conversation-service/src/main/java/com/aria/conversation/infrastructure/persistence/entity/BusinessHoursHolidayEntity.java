@@ -1,5 +1,7 @@
 package com.aria.conversation.infrastructure.persistence.entity;
 
+import com.aria.conversation.domain.HolidaySource;
+import com.aria.conversation.domain.HolidayType;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -27,7 +29,7 @@ public class BusinessHoursHolidayEntity {
     private LocalDate date;
 
     /** CLOSED | CUSTOM | WORKDAY */
-    private String type;
+    private HolidayType type;
 
     @TableField(typeHandler = JacksonTypeHandler.class)
     private List<BusinessHoursScheduleEntity.TimeRange> timeRanges;
@@ -35,7 +37,7 @@ public class BusinessHoursHolidayEntity {
     private String remark;
 
     /** AUTO | MANUAL */
-    private String source;
+    private HolidaySource source;
 
     private LocalDateTime createTime;
 }

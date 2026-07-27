@@ -44,6 +44,8 @@ public class UserDO {
     @TableField(value = "password_history", typeHandler = JsonbTypeHandler.class)
     private String passwordHistoryJson;
 
+    private LocalDateTime deletedAt;
+
     private LocalDateTime lastLoginAt;
     private String lastLoginIp;
 }

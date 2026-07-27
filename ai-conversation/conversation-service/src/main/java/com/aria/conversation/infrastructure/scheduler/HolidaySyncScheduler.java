@@ -3,6 +3,8 @@ package com.aria.conversation.infrastructure.scheduler;
 import com.aria.conversation.application.service.BusinessHoursService;
 import com.aria.conversation.infrastructure.persistence.entity.BusinessHoursHolidayEntity;
 import com.aria.conversation.infrastructure.persistence.entity.BusinessHoursScheduleEntity;
+import com.aria.conversation.domain.HolidaySource;
+import com.aria.conversation.domain.HolidayType;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursHolidayMapper;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursScheduleMapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
@@ -87,7 +89,7 @@ public class HolidaySyncScheduler {
                 continue;
             }
 
-            String type       = entry.isOffDay() ? "CLOSED" : "WORKDAY";
+            HolidayType type  = entry.isOffDay() ? HolidayType.CLOSED : HolidayType.WORKDAY;
             // CLOSED 节假日 timeRanges 为 null（不开放服务）
             // WORKDAY 调休补班复用周一排班时间段
             List<BusinessHoursScheduleEntity.TimeRange> timeRanges =
@@ -98,7 +100,7 @@ public class HolidaySyncScheduler {
                     .type(type)
                     .timeRanges(timeRanges)
                     .remark(entry.name())
-                    .source("AUTO")
+                    .source(HolidaySource.AUTO)
                     .build());
 
             businessHoursService.evictCache(entry.date());
