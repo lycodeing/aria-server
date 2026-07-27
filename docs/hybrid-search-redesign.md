@@ -15,20 +15,26 @@ Aria 客服系统的知识库检索模块（`ai-knowledge`）采用混合检索�
 | 提升召回率 | 扩大双路召回池，减少因召回数量不足导致的相关内容遗漏 |
 | 提升精排效果 | 激活并正确配置 BGE-Reranker，发挥精排对中文语义的优势 |
 | 参数解耦 | 将"召回数量"与"最终返回数量 topK"解耦，支持独立调优 |
+| 模型配置统一 | Reranker 配置纳入 auth-service 模型管理中心，支持热切换 |
 | 可观测性 | 增加检索链路日志，支持后期数据驱动调优 |
 
 ### 1.3 范围
 
-本文覆盖 `ai-knowledge/knowledge-service` 中的检索链路，涉及：
+本文覆盖 `ai-knowledge/knowledge-service` 中的检索链路，以及相关的跨模块改动，涉及：
 
 - `KnowledgeSearchAppService.java` — 检索编排
+- `RerankService.java` — BGE-Reranker 精排服务（含热切换重构）
+- `SearchProperties.java` — 检索参数配置类
 - `RrfUtils.java` — RRF 融合算法
 - `KnowledgeChunkMapper.xml` — 向量/全文 SQL
 - `application.yml` / `application-prod.yml` — 检索参数配置
+- `ai-auth` / `ai-common` — 模型配置体系扩展（RERANKER 类型）
 
 不涉及 Embedding 模型替换、分块策略调整、文档解析管道变更。
 
-## 2. 现有架构分析
+## 2. 现有架构分析（改造前基线）
+
+> 本章描述**改造前**的代码状态，作为问题分析的基线参考。
 
 ### 2.1 检索链路全景
 
@@ -58,14 +64,15 @@ flowchart TD
     H -->|否| J
 ```
 
-### 2.2 关键代码现状
+### 2.2 关键代码现状（改造前）
 
-**KnowledgeSearchAppService.hybridSearch（精简版）：**
+**KnowledgeSearchAppService.hybridSearch（改造前精简版）：**
 
 ```java
 public List<ChunkHit> hybridSearch(String query, String kbId, int topK) {
     float[] queryVector = embeddingService.encode(query);
 
+    // 召回数与 topK 绑定：topK=5 时每路仅召 10 条
     CompletableFuture<List<ChunkHit>> vectorFuture = CompletableFuture.supplyAsync(
         () -> chunkRepository.vectorSearch(queryVector, topK * 2, kbId), searchExecutor);
     CompletableFuture<List<ChunkHit>> textFuture = CompletableFuture.supplyAsync(
@@ -74,15 +81,52 @@ public List<ChunkHit> hybridSearch(String query, String kbId, int topK) {
     List<ChunkHit> vectorHits = safeGet(vectorFuture, "向量检索", kbId);
     List<ChunkHit> textHits   = safeGet(textFuture,   "全文检索", kbId);
 
-    List<String> vectorIds = vectorHits.stream().map(ChunkHit::getChunkId).toList();
-    List<String> textIds   = textHits.stream().map(ChunkHit::getChunkId).toList();
-
+    // RRF 直接截断到 topK，没有独立的候选池概念
     List<String> fusedIds = RrfUtils.fuse(topK, List.of(vectorIds, textIds));
-    // ... 重建 ChunkHit 并可选 rerank
+    // ...
 }
 ```
 
-**RrfUtils.fuseWithK（核心算法）：**
+**RerankService（改造前）：**
+
+```java
+// 通过 @ConditionalOnProperty 控制 Bean 是否创建
+@Service
+@ConditionalOnProperty(name = "knowledge.reranker.enabled", havingValue = "true")
+public class RerankService {
+
+    // 配置硬编码在 @Value，无法热切换
+    public RerankService(
+            @Value("${knowledge.reranker.base-url:http://localhost:8001}") String baseUrl,
+            @Value("${knowledge.reranker.model-name:bge-reranker-v2-m3}") String modelName,
+            @Value("${knowledge.reranker.timeout-seconds:10}") int timeoutSeconds) {
+        // ...
+    }
+}
+```
+
+**改造前配置（application.yml 节选）：**
+
+```yaml
+knowledge:
+  search:
+    fts-config: simple          # 生产环境覆盖为 jieba
+  reranker:
+    enabled: false              # 默认关闭，开启需修改配置并重启
+    base-url: http://localhost:8001
+    model-name: bge-reranker-v2-m3
+    timeout-seconds: 10
+```
+
+**对话服务默认参数（KnowledgeServiceClient）：**
+
+```yaml
+knowledge:
+  search:
+    top-k: 5                    # 默认 topK
+```
+
+**RrfUtils.fuseWithK（核心算法，不变）：**
 
 ```java
 public static List<String> fuseWithK(int topK, int k, List<List<String>> lists) {
@@ -98,27 +142,6 @@ public static List<String> fuseWithK(int topK, int k, List<List<String>> lists) 
         .map(Map.Entry::getKey)
         .toList();
 }
-```
-
-**当前配置（application.yml）：**
-
-```yaml
-knowledge:
-  search:
-    fts-config: simple          # 生产环境覆盖为 jieba
-  reranker:
-    enabled: false              # 默认关闭
-    base-url: http://localhost:8001
-    model-name: bge-reranker-v2-m3
-    timeout-seconds: 10
-```
-
-**对话服务默认参数（KnowledgeServiceClient）：**
-
-```yaml
-knowledge:
-  search:
-    top-k: 5                    # 默认 topK
 ```
 
 ### 2.3 数据库层
@@ -154,7 +177,7 @@ LIMIT #{topK}
 
 **现象：**
 
-当前每路召回数量固定为 `topK * 2`。对话服务默认 `topK=5`，因此每路实际只召回 **10 条**，两路合并去重后送入 RRF 的候选池最多 **20 条**，取出 5 条返回。
+改造前每路召回数量固定为 `topK * 2`。对话服务默认 `topK=5`，因此每路实际只召回 **10 条**，两路合并去重后送入 RRF 的候选池最多 **20 条**，取出 5 条返回。
 
 **根因：**
 
@@ -173,29 +196,30 @@ topK=20 →  每路召回 40 条  →  候选池 ≤ 80 条  →  RRF 取 20 条
 
 ---
 
-### 3.2 问题二：BGE-Reranker 默认关闭，精排能力闲置
+### 3.2 问题二：BGE-Reranker 精排能力闲置，且缺乏统一配置管理
 
-**现象：**
+**现象（改造前）：**
 
 ```yaml
 knowledge:
   reranker:
-    enabled: false   # 生产环境也是 false
+    enabled: false   # 生产环境也是 false，且配置分散在本服务
+    base-url: http://localhost:8001
+    model-name: bge-reranker-v2-m3
+    timeout-seconds: 10
 ```
 
-`RerankService` 已经有完整实现：HTTP 调用 `/rerank` 接口、Resilience4j Circuit Breaker 降级、超时控制。接入代码完善，只是开关没有打开。
+`RerankService` 通过 `@ConditionalOnProperty(name="knowledge.reranker.enabled", havingValue="true")` 控制 Bean 是否创建，配置通过 `@Value` 硬绑定在构造函数，无法在运行时热切换。
 
 **根因分析：**
 
-Reranker 被关闭可能出于以下考虑：
-1. 担心引入额外延迟
-2. 召回池只有 20 条，Reranker 的提升有限，性价比低
+Reranker 被关闭且配置分散有以下问题：
 
-但这两个顾虑在召回池扩大后会发生变化：
-- 延迟：BGE-Reranker-v2-M3 对 100 条候选的推理延迟约 50~100ms（GPU），Circuit Breaker 已做降级保护
-- 效果：候选池从 20 条扩大到 200 条后，Reranker 的精排作用才真正显现
+1. **精排能力闲置**：候选池小（20 条）时 Reranker 提升有限，形成与问题一的恶性循环
+2. **配置割裂**：CHAT/EMBEDDING/ROUTER 模型已统一在 auth-service 后台管理，RERANKER 却孤立在本服务的 yml 中，需要重启才能切换地址或模型
+3. **无热切换**：生产环境换一台 GPU 服务器，需要修改配置文件并重新部署
 
-问题一和问题二互为因果：**召回池小，Reranker 没用；Reranker 没用，召回池小也无所谓。**
+**问题一和问题二互为因果**：召回池小 → Reranker 没用 → 开关一直关着 → 不优化召回也无所谓。
 
 ---
 
@@ -219,9 +243,9 @@ K=60 是 Cormack 等人 2009 年原始论文中针对**大规模文档集、topK
 - K=60, rank=5: score = 1/65 ≈ 0.0154
 - 差距仅 6%
 
-- K=30, rank=1: score = 1/31 ≈ 0.0323
-- K=30, rank=5: score = 1/35 ≈ 0.0286
-- 差距 11%
+- K=40, rank=1: score = 1/41 ≈ 0.0244
+- K=40, rank=5: score = 1/45 ≈ 0.0222
+- 差距 9%
 
 对于 topK=5~20 的场景，K 调低到 **30~40** 能让 RRF 对头部结果更敏感。
 
@@ -229,7 +253,7 @@ K=60 是 Cormack 等人 2009 年原始论文中针对**大规模文档集、topK
 
 ### 3.4 问题四：向量检索与全文检索分配相同数量，未区分优先级
 
-**现象：**
+**现象（改造前）：**
 
 ```java
 chunkRepository.vectorSearch(queryVector, topK * 2, kbId)   // 同数量
@@ -267,9 +291,8 @@ BM25 全文检索的计算量远低于向量 ANN 检索，且 BM25 对于精确�
 
 | 策略 | 描述 | 优点 | 缺点 |
 |---|---|---|---|
-| **固定乘数（当前：topK×2）** | 召回数 = topK × 固定系数 | 简单 | topK 小时候选池极小；topK 大时浪费资源 |
-| **固定下限（推荐）** | 召回数 = max(topK×N, 固定下限) | 低 topK 时有保底 | 略增配置复杂度 |
-| **完全独立参数** | recallK 与 topK 完全解耦 | 最灵活 | 需单独运维两套参数 |
+| **固定乘数（改造前：topK×2）** | 召回数 = topK × 固定系数 | 简单 | topK 小时候选池极小；topK 大时浪费资源 |
+| **完全独立参数（已实现）** | recallK 与 topK 完全解耦 | 最灵活，低 topK 有保底 | 需单独运维两套参数 |
 | **自适应（动态）** | 根据 kbId 知识库大小动态调整 | 精细化 | 实现复杂，可观测性差 |
 
 业界实践参考：
@@ -283,7 +306,7 @@ BM25 全文检索的计算量远低于向量 ANN 检索，且 BM25 对于精确�
 
 ### 4.3 Reranker 原理：与向量模型的区别
 
-#### Bi-Encoder（向量模型，当前用于召回）
+#### Bi-Encoder（向量模型，用于召回）
 
 ```
 query  → Embedding Model → [0.12, 0.87, ...]  ─┐
@@ -329,7 +352,7 @@ query 和文档**各自独立**编码成向量，两者互不感知。文档向�
 最终结果（5~20 条，送给 LLM 构建 RAG 上下文）
 ```
 
-类比：向量检索像**简历筛选**（快速过滤明显不匹配的），Reranker 像**面试**（对剩余候选人深入评估）。面试比简历筛选准确得多，但不可能对所有人都面试。**召回池越大，面试的价值越高**——这也是召回数量扩大和 Reranker 激活必须同时做的根本原因。
+类比：向量检索像**简历筛选**（快速过滤明显不匹配的），Reranker 像**面试**（对剩余候选人深入评估）。**召回池越大，面试的价值越高**——这也是召回数量扩大和 Reranker 激活必须同时做的根本原因。
 
 #### BGE-Reranker-v2-M3 说明
 
@@ -341,20 +364,18 @@ BAAI（北京人工智能研究院）发布，"M3"含义：
 | **M**ulti-functionality | 多功能 | 既可做 Reranker，也可做 Embedding |
 | **M**ulti-granularity | 多粒度 | 短查询和长文档均有良好表现 |
 
-对中文客服场景（混杂中英文、行业术语、口语化表达），BGE-Reranker-v2-M3 是目前开源里综合表现最好的选择，系统已完整接入，只需打开开关即可生效。
-
 ---
 
 ### 4.4 Reranker 方案对比
 
 | 方案 | 延迟（100条候选，GPU） | 中文效果 | 部署复杂度 | 适配现有接口 |
 |---|---|---|---|---|
-| **BGE-Reranker-v2-M3（当前接入）** | 50~100ms | ⭐⭐⭐⭐⭐ 专为中英双语设计 | 低（已接入） | ✅ 已有完整代码 |
+| **BGE-Reranker-v2-M3（已接入）** | 50~100ms | ⭐⭐⭐⭐⭐ 专为中英双语设计 | 低（已接入） | ✅ 已有完整代码 |
 | BGE-Reranker-v2-Large | 100~200ms | ⭐⭐⭐⭐⭐ | 低 | ✅ 同接口 |
 | Cohere Rerank（云服务） | 200~500ms（网络） | ⭐⭐⭐⭐ | 极低（API调用） | 需改 HTTP 客户端 |
 | Cross-Encoder 自训练 | 取决于模型大小 | 取决于训练数据 | 高 | 需重新开发 |
 
-**结论：BGE-Reranker-v2-M3 是当前最优选择，接口已就绪，只需打开开关。**
+**结论：BGE-Reranker-v2-M3 是当前最优选择，接口已重构为动态配置，可在后台热切换。**
 
 ---
 
@@ -368,18 +389,19 @@ BAAI（北京人工智能研究院）发布，"M3"含义：
 - **K=20~40** 适合小候选池（100~300）、topK 较小（top-5~20）的场景，头部区分度更好
 - K 值对最终效果的影响通常在 **1%~3% MRR@10**，属于细节调优，不是主要优化方向
 
-针对 Aria 的场景（候选池 200 条、topK 5~20），建议将 K 从 60 调整为 **40**，作为稳妥的折中值。
+针对 Aria 的场景（候选池 200 条、topK 5~20），将 K 从 60 调整为 **40**，作为稳妥的折中值。
 
 ---
 
-### 4.5 方案选型决策
+### 4.6 方案选型决策
 
 综合以上调研，确定优化方向为：
 
-1. **融合算法：保持 RRF**，微调 K 值（60→40）
-2. **召回数量：解耦 recallK 与 topK**，引入独立配置参数
-3. **精排：激活 BGE-Reranker**，明确候选上限（rerankerCandidateLimit）
-4. **两路分配：BM25 略多于向量**（6:4），反映中文客服场景的字面匹配需求
+1. **融合算法：保持 RRF**，微调 K 值（60→40），通过 `SearchProperties.rrfK` 配置
+2. **召回数量：解耦 recallK 与 topK**，引入 `SearchProperties.recallKVector` / `recallKText` 独立参数
+3. **精排：激活 BGE-Reranker**，通过 `SearchProperties.rerankerCandidateLimit` 控制候选上限
+4. **模型配置统一：Reranker 配置迁移到 auth-service**，与 CHAT/EMBEDDING/ROUTER 同等管理，支持热切换
+5. **两路分配：BM25 略多于向量**（100:80），反映中文客服场景的字面匹配需求
 
 ## 5. 推荐方案详细设计
 
@@ -411,7 +433,7 @@ flowchart LR
     E --> T["fullTextSearch\n✅ recallKText = 100条"]
     V --> R["RRF K=40\n取 ≤200条候选"]
     T --> R
-    R --> RK["BGE-Reranker\n✅ 精排开启"]
+    R --> RK["BGE-Reranker\n✅ DB 动态配置"]
     RK --> LM["limit(topK=5)"]
     LM --> O(["返回 5 条\n候选池 180 条"])
 
@@ -422,23 +444,20 @@ flowchart LR
 
 ---
 
-### 5.2 新增配置参数
+### 5.2 新增配置参数（SearchProperties）
 
-在 `application.yml` 中新增以下配置项，通过 `@ConfigurationProperties` 绑定：
+Reranker 的 `base-url / model-name / api-key / timeout` 已迁移到 auth-service AI 模型配置中心（RERANKER 类型），通过后台统一管理，支持热切换，无需重启。
+
+`application.yml` 中仅保留与检索算法相关的调优参数，通过 `SearchProperties` 绑定：
 
 ```yaml
 knowledge:
   search:
-    fts-config: simple                 # 不变
-    recall-k-vector: 80               # 【新增】向量召回数，独立于 topK
-    recall-k-text: 100                # 【新增】BM25 召回数，独立于 topK
-    reranker-candidate-limit: 200     # 【新增】送入 Reranker 的候选上限
-    rrf-k: 40                         # 【新增】RRF 平滑系数，覆盖默认 60
-  reranker:
-    enabled: true                     # 【修改】生产环境打开
-    base-url: http://reranker:8001    # 生产环境地址
-    model-name: bge-reranker-v2-m3
-    timeout-seconds: 10
+    fts-config: simple                  # PostgreSQL FTS 分词：simple（本地）/ jieba（生产）
+    recall-k-vector: 80                 # 向量 ANN 召回数，独立于 topK
+    recall-k-text: 100                  # BM25 全文召回数，独立于 topK
+    reranker-candidate-limit: 200       # RRF 融合后送 Reranker 的候选上限
+    rrf-k: 40                           # RRF 平滑系数 K
 ```
 
 **参数说明：**
@@ -460,145 +479,194 @@ knowledge:
 // ai-knowledge/knowledge-service/src/main/java/
 // com/aria/knowledge/infrastructure/config/SearchProperties.java
 
-@ConfigurationProperties(prefix = "knowledge.search")
 @Validated
+@ConfigurationProperties(prefix = "knowledge.search")
 public record SearchProperties(
 
     @NotBlank
+    @DefaultValue("simple")
     String ftsConfig,
 
     @Min(10) @Max(500)
-    int recallKVector,         // 默认 80
+    @DefaultValue("80")
+    int recallKVector,
 
     @Min(10) @Max(500)
-    int recallKText,           // 默认 100
+    @DefaultValue("100")
+    int recallKText,
 
     @Min(50) @Max(500)
-    int rerankerCandidateLimit, // 默认 200
+    @DefaultValue("200")
+    int rerankerCandidateLimit,
 
     @Min(1) @Max(100)
-    int rrfK                   // 默认 40
+    @DefaultValue("40")
+    int rrfK
+) {}
+```
 
-) {
-    public SearchProperties {
-        // compact constructor 兜底
-        if (recallKVector <= 0) recallKVector = 80;
-        if (recallKText <= 0) recallKText = 100;
-        if (rerankerCandidateLimit <= 0) rerankerCandidateLimit = 200;
-        if (rrfK <= 0) rrfK = 40;
+在 `KnowledgeApplication.java` 上注册：
+
+```java
+@EnableConfigurationProperties(SearchProperties.class)
+@SpringBootApplication
+public class KnowledgeApplication { ... }
+```
+
+---
+
+### 5.4 RerankService 重构（热切换架构）
+
+**核心变化：**
+
+| 改造前 | 改造后 |
+|---|---|
+| `@ConditionalOnProperty(enabled=true)` 控制 Bean | Bean 始终存在，降级由内部逻辑处理 |
+| `@Value` 硬绑定 base-url/model/timeout | `AiModelConfigProvider.getActiveReranker()` 动态获取 |
+| 更换配置需重启 | Caffeine 缓存热切换，配置变更自动生效 |
+| 无配置 → Bean 不创建 → 注入为 null | 无配置 → `getClient()` 返回 empty → 透明降级 |
+
+**两个独立降级路径：**
+
+```
+DB 无 active RERANKER 配置
+    → configProvider.getActiveReranker() 抛 IllegalStateException / UnsupportedOperationException
+    → getClient() catch → 返回 Optional.empty()
+    → rerank() 直接返回 candidates（不调远端，不触发 CircuitBreaker）
+
+Reranker 服务宕机/超时
+    → @CircuitBreaker(name="reranker") fallback
+    → rerankFallback() 返回原候选列表
+```
+
+**Caffeine 热切换（精简）：**
+
+```java
+@Service
+public class RerankService {
+
+    // key = SHA-256(baseUrl|modelName|maskedApiKey)，max 3 entries，30min idle evict
+    private final Cache<String, RerankerClient> clientCache = Caffeine.newBuilder()
+            .maximumSize(3).expireAfterAccess(30, TimeUnit.MINUTES).build();
+
+    private final AiModelConfigProvider configProvider;
+
+    @CircuitBreaker(name = "reranker", fallbackMethod = "rerankFallback")
+    public List<ChunkHit> rerank(String query, List<ChunkHit> candidates) {
+        if (candidates.isEmpty()) return candidates;
+
+        Optional<RerankerClient> clientOpt = getClient();
+        if (clientOpt.isEmpty()) {
+            log.debug("[Reranker] 无 active RERANKER 配置，跳过精排");
+            return candidates;         // 透明降级
+        }
+        // ... POST /rerank，按 relevance_score 重排
+    }
+
+    private Optional<RerankerClient> getClient() {
+        try {
+            AiModelConfig config = configProvider.getActiveReranker();
+            String key = buildCacheKey(config);   // SHA-256 防配置泄露
+            return Optional.of(clientCache.get(key, k -> buildClient(config)));
+        } catch (IllegalStateException | UnsupportedOperationException e) {
+            // DB 无配置 or 实现类未覆盖接口方法 → 降级，不依赖 AOP
+            log.debug("[Reranker] 无/不支持 RERANKER 配置，降级跳过: {}", e.getMessage());
+            return Optional.empty();
+        }
     }
 }
 ```
 
 ---
 
-### 5.4 KnowledgeSearchAppService 改造
+### 5.5 KnowledgeSearchAppService 改造
 
-**核心改动：** 将 `topK * 2` 替换为独立召回参数，RRF 先融合到 `rerankerCandidateLimit`，Rerank 后再截断到 `topK`。
+**核心改动：**
+
+1. `topK * 2` → 独立参数 `searchProps.recallKVector()` / `searchProps.recallKText()`
+2. `RrfUtils.fuse(topK, ...)` → `RrfUtils.fuseWithK(candidateLimit, rrfK, ...)`，先到 candidateLimit 再 Reranker
+3. Reranker 精排后 `.stream().limit(topK)` 截断
+4. `RerankService` 改为必需构造器注入（Bean 始终存在，内部自己处理降级）
 
 ```java
 @Service
-@RequiredArgsConstructor
 public class KnowledgeSearchAppService {
 
     private final KnowledgeChunkRepository chunkRepository;
-    private final EmbeddingService embeddingService;
-    private final SearchProperties searchProps;            // 【新增注入】
-
-    @Autowired(required = false)
-    private RerankService rerankService;
-
-    @Qualifier("searchExecutor")
-    private final Executor searchExecutor;
-
-    private static final long SEARCH_TIMEOUT_SECONDS = 3L;
+    private final EmbeddingService         embeddingService;
+    private final RerankService            rerankService;    // 必需注入，不再 required=false
+    private final SearchProperties         searchProps;
+    private final Executor                 searchExecutor;
 
     public List<ChunkHit> hybridSearch(String query, String kbId, int topK) {
         float[] queryVector = embeddingService.encode(query);
 
-        // 【改动】使用独立的召回参数，不再绑定 topK
-        int recallVector = searchProps.recallKVector();   // 80
-        int recallText   = searchProps.recallKText();     // 100
-
+        // 召回数独立于 topK
         CompletableFuture<List<ChunkHit>> vectorFuture = CompletableFuture.supplyAsync(
-            () -> chunkRepository.vectorSearch(queryVector, recallVector, kbId),
+            () -> chunkRepository.vectorSearch(queryVector, searchProps.recallKVector(), kbId),
             searchExecutor);
         CompletableFuture<List<ChunkHit>> textFuture = CompletableFuture.supplyAsync(
-            () -> chunkRepository.fullTextSearch(query, recallText, kbId),
+            () -> chunkRepository.fullTextSearch(query, searchProps.recallKText(), kbId),
             searchExecutor);
 
         List<ChunkHit> vectorHits = safeGet(vectorFuture, "向量检索", kbId);
         List<ChunkHit> textHits   = safeGet(textFuture,   "全文检索", kbId);
 
-        List<String> vectorIds = vectorHits.stream().map(ChunkHit::getChunkId).toList();
-        List<String> textIds   = textHits.stream().map(ChunkHit::getChunkId).toList();
+        log.info("[hybridSearch] kbId={} query_len={} vector_hits={} text_hits={}",
+            kbId, query.length(), vectorHits.size(), textHits.size());
 
-        // 【改动】RRF 融合到 rerankerCandidateLimit，不是 topK
-        int candidateLimit = searchProps.rerankerCandidateLimit(); // 200
-        int rrfK           = searchProps.rrfK();                   // 40
-        List<String> fusedIds = RrfUtils.fuseWithK(candidateLimit, rrfK,
+        if (vectorHits.isEmpty() && textHits.isEmpty()) return List.of();
+
+        // RRF 融合到 rerankerCandidateLimit，不直接截断到 topK
+        List<String> fusedIds = RrfUtils.fuseWithK(
+            searchProps.rerankerCandidateLimit(),
+            searchProps.rrfK(),
             List.of(vectorIds, textIds));
 
-        // 重建 ChunkHit，向量结果优先（putIfAbsent 不变）
-        Map<String, ChunkHit> hitMap = new LinkedHashMap<>();
-        vectorHits.forEach(h -> hitMap.putIfAbsent(h.getChunkId(), h));
-        textHits.forEach(h ->   hitMap.putIfAbsent(h.getChunkId(), h));
-
+        // 重建候选集（向量结果优先）
+        Map<String, ChunkHit> chunkMap = vectorHits.stream()
+            .collect(Collectors.toMap(ChunkHit::getChunkId, h -> h));
+        textHits.forEach(h -> chunkMap.putIfAbsent(h.getChunkId(), h));
         List<ChunkHit> candidates = fusedIds.stream()
-            .map(hitMap::get)
-            .filter(Objects::nonNull)
+            .filter(chunkMap::containsKey).map(chunkMap::get)
             .collect(Collectors.toList());
 
-        // 【改动】Rerank 后再截断到 topK（而不是 RRF 直接截断）
-        return rerank(query, candidates).stream()
-            .limit(topK)
-            .collect(Collectors.toList());
+        log.debug("[hybridSearch] kbId={} fused={}", kbId, candidates.size());
+
+        // Reranker 精排（无配置时透明降级），最后截断到 topK
+        List<ChunkHit> reranked = rerankService.rerank(query, candidates);
+        log.info("[hybridSearch] kbId={} after_rerank={} topK={}", kbId, reranked.size(), topK);
+
+        return reranked.stream().limit(topK).collect(Collectors.toList());
     }
 
-    private List<ChunkHit> rerank(String query, List<ChunkHit> candidates) {
-        if (rerankService == null || candidates.isEmpty()) {
-            return candidates;
-        }
-        try {
-            return rerankService.rerank(query, candidates);
-        } catch (Exception e) {
-            log.warn("[rerank] 精排失败，降级返回 RRF 结果. error={}", e.getMessage());
-            return candidates;
-        }
+    /** 独立精排入口，供 POST /internal/knowledge/rerank 调用 */
+    public List<ChunkHit> rerank(String query, List<ChunkHit> candidates) {
+        return rerankService.rerank(query, candidates);
     }
 
-    // safeGet 不变
-    private List<ChunkHit> safeGet(CompletableFuture<List<ChunkHit>> future,
-                                    String label, String kbId) {
-        try {
-            return future.get(SEARCH_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-        } catch (TimeoutException e) {
-            log.warn("[hybridSearch] {} 超时降级. kbId={}", label, kbId);
-            future.cancel(true);
-            return List.of();
-        } catch (Exception e) {
-            log.error("[hybridSearch] {} 异常降级. kbId={}", label, kbId, e);
-            return List.of();
-        }
+    /** 管理后台检索测试入口 */
+    public List<ChunkHit> managementSearch(String query, String kbId, int topK) {
+        return hybridSearch(query, kbId, topK);
     }
 }
 ```
 
 ---
 
-### 5.5 RrfUtils 无需改动
+### 5.6 RrfUtils 无需改动
 
-`fuseWithK(int topK, int k, List<List<String>> lists)` 接口已支持自定义 K 值，只需在调用侧传入 `searchProps.rrfK()` 即可。不修改 `RrfUtils.java`。
+`fuseWithK(int topK, int k, List<List<String>> lists)` 接口已支持自定义 K 值，只需在调用侧传入 `searchProps.rrfK()` 即可。
 
 ---
 
-### 5.6 数据库层无需改动
+### 5.7 数据库层无需改动
 
 `selectByVector` 和 `selectByFullText` 的 `LIMIT #{topK}` 参数已通过 MyBatis 动态传入，召回数量的变化只影响参数值，不需要修改 SQL 或 Mapper。
 
 ---
 
-### 5.7 延迟影响评估
+### 5.8 延迟影响评估
 
 | 阶段 | 改造前（topK=5） | 改造后 | 增量 |
 |---|---|---|---|
@@ -613,9 +681,25 @@ public class KnowledgeSearchAppService {
 
 若对延迟敏感，可将 `reranker-candidate-limit` 调低至 100 条，Reranker 延迟可降至约 40ms。
 
+**Resilience4j Circuit Breaker 配置（针对 GPU 推理慢调用场景）：**
+
+```yaml
+resilience4j:
+  circuitbreaker:
+    instances:
+      reranker:
+        sliding-window-size: 20
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 5s     # GPU 推理超 5s 视为慢调用
+        slow-call-rate-threshold: 80
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+        minimum-number-of-calls: 5
+```
+
 ---
 
-### 5.8 请求时序图
+### 5.9 请求时序图
 
 #### 正常流程
 
@@ -728,63 +812,113 @@ sequenceDiagram
     Search-->>Client: List ChunkHit 5条 降级但服务正常
 ```
 
+#### 降级场景三：DB 无 active RERANKER 配置
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as 对话服务
+    participant Search as KnowledgeSearchAppService
+    participant RRF as RrfUtils
+    participant Rank as RerankService
+    participant DB as AiModelConfigProvider
+
+    Client->>Search: hybridSearch(query, kbId, topK=5)
+    Note over Search: 双路召回 + RRF 融合（同正常流程）
+    Search->>RRF: fuseWithK(...)
+    RRF-->>Search: candidates
+
+    Search->>Rank: rerank(query, candidates)
+    Rank->>DB: configProvider.getActiveReranker()
+    Note over DB: DB 无 RERANKER 配置
+    DB--xRank: IllegalStateException
+    Note over Rank: getClient() catch → Optional.empty()
+    Note over Rank: 不调远端，不触发 CircuitBreaker
+    Rank-->>Search: candidates 原样返回
+
+    Search->>Search: limit(topK=5)
+    Search-->>Client: List ChunkHit 5条 服务正常
+```
+
 ## 6. 实施计划
 
 ### 6.1 改动范围汇总
 
-| 文件 | 改动类型 | 说明 |
-|---|---|---|
-| `application.yml` | 新增配置项 | recall-k-vector/text、reranker-candidate-limit、rrf-k |
-| `application-prod.yml` | 修改配置项 | reranker.enabled=true、生产参数调整 |
-| `SearchProperties.java` | 新建文件 | @ConfigurationProperties 绑定类 |
-| `KnowledgeSearchAppService.java` | 修改逻辑 | 注入 SearchProperties，替换 topK*2，调整 RRF 参数 |
-| `KnowledgeAutoConfiguration.java`（或同类配置类） | 新增注解 | @EnableConfigurationProperties(SearchProperties.class) |
+本次改造跨越 4 个模块，共涉及 17 处文件变更：
+
+| 模块 | 文件 | 改动类型 | 说明 |
+|---|---|---|---|
+| `ai-auth/auth-client` | `ModelScope.java` | 修改 | 加 `RERANKER` 枚举值 |
+| `ai-auth/auth-service` | `AiModelConfigService.java` | 修改 | 加 `getActiveRerankerConfig()` + RERANKER testConnection 拦截 |
+| `ai-auth/auth-service` | `InternalAiModelController.java` | 修改 | 加 `GET /active-reranker` |
+| `ai-auth/auth-service` | `LocalAiModelConfigProvider.java` | 修改 | 加 `getActiveReranker()` / `invalidateReranker()` |
+| `ai-common/common-web` | `AiModelScopeDefaults.java` | 修改 | 加 `RERANKER(0.0, 0, 10)` |
+| `ai-common/common-web` | `AiModelConfigProvider.java` | 修改 | 加 `default getActiveReranker()` + `default invalidateReranker()` |
+| `ai-common/common-web` | `RemoteAiModelConfigProvider.java` | 修改 | 加 RERANKER 缓存键 + 方法 + onMessage |
+| `ai-knowledge` | `SearchProperties.java` | 新建 | `@ConfigurationProperties` 绑定检索调优参数 |
+| `ai-knowledge` | `KnowledgeApplication.java` | 修改 | 加 `@EnableConfigurationProperties(SearchProperties.class)` |
+| `ai-knowledge` | `RerankService.java` | **重构** | 移除 `@ConditionalOnProperty`/`@Value`，改用 `AiModelConfigProvider` + Caffeine 热切换 |
+| `ai-knowledge` | `KnowledgeSearchAppService.java` | 修改 | 注入 `SearchProperties`，召回数解耦，RRF 参数化，Rerank 后截断 |
+| `ai-knowledge` | `application.yml` | 修改 | 加 SearchProperties 配置 + Resilience4j CB 配置，移除 `knowledge.reranker.*` |
+| DB Schema | `auth-service-schema.sql` | 修改 | CHECK 约束加 RERANKER，注释更新 |
+| DB Schema | `init-db.sql` | 修改 | CHECK 约束 + RERANKER seed 行（id=11）+ setval→11 |
+| 补丁脚本 | `patch-reranker-model-type.sql` | 新建 | 已有部署手动升级（幂等） |
+| 文档 | `hybrid-search-redesign.md` | 新建 | 本文档 |
+| 测试 | `RerankServiceTest.java` | 新建 | 5 tests |
+| 测试 | `KnowledgeSearchAppService_SearchPropsTest.java` | 新建 | 8 tests |
 
 **不涉及改动：**
-- `RrfUtils.java` — 现有 `fuseWithK` 接口已满足需求
-- `KnowledgeChunkMapper.xml` — SQL 无需修改，LIMIT 参数动态传入
-- `RerankService.java` — 接口完整，只修改开关配置
+- `RrfUtils.java` — `fuseWithK` 接口已满足需求
+- `KnowledgeChunkMapper.xml` — SQL LIMIT 参数动态传入，无需修改
 - `KnowledgeChunkRepository.java` — 接口签名不变
 
 ---
 
-### 6.2 阶段一：参数解耦（低风险，1人天）
+### 6.2 阶段一：auth-service 模型配置扩展（低风险，0.5人天）
 
-**Step 1：新建 SearchProperties**
+**Step 1：扩展 DB Schema**
+
+执行 `docs/sql/patch-reranker-model-type.sql`（已有部署）或确认 `init-db.sql` 已包含变更（全新部署）：
+
+```sql
+-- CHECK 约束扩展（幂等）
+ALTER TABLE cs_auth.ai_model_config
+    DROP CONSTRAINT IF EXISTS ai_model_config_model_type_check;
+ALTER TABLE cs_auth.ai_model_config
+    ADD CONSTRAINT ai_model_config_model_type_check
+        CHECK (model_type = ANY (ARRAY['CHAT','EMBEDDING','ROUTER','RERANKER']));
+
+-- 插入默认 RERANKER 配置（本地开发用）
+INSERT INTO cs_auth.ai_model_config (...) VALUES (11, '本地 BGE-Reranker-v2-M3', ...)
+ON CONFLICT (id) DO NOTHING;
+```
+
+**Step 2：部署 auth-service**
+
+- `ModelScope` 枚举加 `RERANKER`
+- `AiModelConfigService.getActiveRerankerConfig()`
+- `InternalAiModelController.GET /active-reranker`
+- `LocalAiModelConfigProvider.getActiveReranker()`
+
+**Step 3：部署 common-web**
+
+- `AiModelScopeDefaults.RERANKER(0.0, 0, 10)`
+- `AiModelConfigProvider.default getActiveReranker()`（向后兼容，抛 UnsupportedOperationException）
+- `RemoteAiModelConfigProvider` 加 RERANKER Redis 缓存 + onMessage 清 4 个缓存
+
+---
+
+### 6.3 阶段二：knowledge-service 改造（低风险，1人天）
+
+**Step 1：新建 SearchProperties，更新 application.yml**
 
 ```
 ai-knowledge/knowledge-service/src/main/java/
   com/aria/knowledge/infrastructure/config/
-    SearchProperties.java     ← 新建
+    SearchProperties.java     ← 新建（@ConfigurationProperties + @DefaultValue）
 ```
 
-```java
-@ConfigurationProperties(prefix = "knowledge.search")
-@Validated
-public record SearchProperties(
-
-    @NotBlank
-    String ftsConfig,
-
-    @Min(10) @Max(500)
-    @DefaultValue("80")
-    int recallKVector,
-
-    @Min(10) @Max(500)
-    @DefaultValue("100")
-    int recallKText,
-
-    @Min(50) @Max(500)
-    @DefaultValue("200")
-    int rerankerCandidateLimit,
-
-    @Min(1) @Max(100)
-    @DefaultValue("40")
-    int rrfK
-) {}
-```
-
-**Step 2：更新 application.yml**
+`application.yml` 检索参数配置（`knowledge.reranker.*` 整块已删除，配置移至 auth-service DB）：
 
 ```yaml
 knowledge:
@@ -796,91 +930,102 @@ knowledge:
     rrf-k: 40
 ```
 
+**Step 2：重构 RerankService**
+
+- 移除 `@ConditionalOnProperty`，Bean 始终创建
+- 移除 `@Value`，改注入 `AiModelConfigProvider`
+- 加 Caffeine 缓存：key = `SHA-256(baseUrl|modelName|maskedApiKey)`
+- `getClient()` 同时 catch `IllegalStateException | UnsupportedOperationException` → 降级
+
 **Step 3：改造 KnowledgeSearchAppService**
 
-将 `topK * 2` 替换为 `searchProps.recallKVector()` / `searchProps.recallKText()`，将 `RrfUtils.fuse(topK, ...)` 替换为 `RrfUtils.fuseWithK(candidateLimit, rrfK, ...)`，Rerank 后 `.limit(topK)`。
+- 注入 `SearchProperties`（必需，不再 `required=false`）
+- 召回数改为 `searchProps.recallKVector()` / `searchProps.recallKText()`
+- RRF 改为 `RrfUtils.fuseWithK(searchProps.rerankerCandidateLimit(), searchProps.rrfK(), ...)`
+- Reranker 精排后 `.stream().limit(topK)` 截断
+
+**Step 4：在后台配置 RERANKER 模型**
+
+登录管理后台 → AI 模型配置 → 新增 RERANKER 类型配置：
+
+| 字段 | 值 |
+|---|---|
+| 模型名称 | `本地 BGE-Reranker-v2-M3` |
+| 模型类型 | `RERANKER` |
+| Base URL | `http://reranker-service:8001`（实际地址） |
+| Model Name | `bge-reranker-v2-m3` |
+| Timeout | `10` |
+| 设为默认 | ✅ |
+| 启用 | ✅ |
+
+配置保存后，knowledge-service 下次请求自动拉取，无需重启。
 
 ---
 
-### 6.3 阶段二：激活 Reranker（中风险，0.5人天）
+### 6.4 阶段三：可观测性（已内置，无需额外开发）
 
-**Step 1：生产环境配置**
+改造后 `KnowledgeSearchAppService` 已内置三条结构化日志，日志内容分三行输出：
 
-在 `application-prod.yml` 中：
-
-```yaml
-knowledge:
-  reranker:
-    enabled: true
-    base-url: http://reranker-service:8001    # 实际服务地址
-    model-name: bge-reranker-v2-m3
-    timeout-seconds: 10
 ```
-
-**Step 2：确认 Reranker 服务部署**
-
-- [ ] BGE-Reranker-v2-M3 服务（infinity-emb 或 Xinference）已部署
-- [ ] `/rerank` 接口可通，返回格式与 `RerankService` 期望一致
-- [ ] Circuit Breaker 降级测试：停掉 Reranker 服务，确认 `KnowledgeSearchAppService` 正常降级为 RRF 结果
-
-**Step 3：灰度上线**
-
-建议先在测试知识库上验证，对比开启前后的搜索结果质量，再逐步推到生产。
-
----
-
-### 6.4 阶段三：可观测性增强（低风险，0.5人天）
-
-在 `KnowledgeSearchAppService` 中增加结构化日志，支持后期数据分析：
-
-```java
-// 在 hybridSearch 返回前记录
-log.info("[hybridSearch] kbId={} query_len={} vector_hits={} text_hits={} " +
-         "fused={} after_rerank={} topK={}",
-    kbId, query.length(),
-    vectorHits.size(), textHits.size(),
-    fusedIds.size(), result.size(), topK);
+INFO [hybridSearch] kbId={} query_len={} vector_hits={} text_hits={}
+DEBUG [hybridSearch] kbId={} fused={}
+INFO [hybridSearch] kbId={} after_rerank={} topK={}
 ```
-
-日志字段说明：
 
 | 字段 | 用途 |
 |---|---|
-| `vector_hits` | 向量召回实际数量（低于 recallKVector 说明知识库内容少） |
+| `vector_hits` | 向量召回实际数量（持续为 0 说明 Embedding 服务异常） |
 | `text_hits` | BM25 召回实际数量（为 0 说明无字面匹配，依赖向量兜底） |
-| `fused` | RRF 融合后候选数（接近 rerankerCandidateLimit 说明去重率低） |
-| `after_rerank` | Rerank 后数量（等于 topK 为正常） |
+| `fused` | RRF 融合后候选数（接近 `rerankerCandidateLimit` 说明去重率低） |
+| `after_rerank` | Reranker 精排后数量（等于 `topK` 为正常） |
 
 ---
 
 ### 6.5 回滚方案
 
-所有改动均通过配置参数控制，无需改动 SQL 或数据库结构。回滚只需：
+所有改动均通过配置参数或 DB 数据控制，无需改动 SQL Schema（RERANKER CHECK 约束向后兼容）。
+
+**快速禁用 Reranker**（不重启）：在后台将 RERANKER 配置的"启用"关闭，或将 `is_default=false`，knowledge-service 5 分钟内（Redis TTL）自动感知，`getActiveReranker()` 抛 `IllegalStateException`，检索链路降级为 RRF 结果。
+
+**恢复旧召回数量行为**：
 
 ```yaml
-# 回滚配置（恢复旧行为）
 knowledge:
   search:
     recall-k-vector: 10     # 等效于原 topK*2（topK=5时）
     recall-k-text: 10
     reranker-candidate-limit: 10
     rrf-k: 60
-  reranker:
-    enabled: false
 ```
 
 ---
 
 ### 6.6 测试用例
 
+已实现的单元测试：
+
+| 测试类 | 覆盖场景 |
+|---|---|
+| `KnowledgeSearchAppService_SearchPropsTest` | 召回数使用 SearchProperties 而非 topK*2 |
+| | RRF 融合到 candidateLimit，不截断到 topK |
+| | Reranker 精排后 limit(topK) |
+| | 双路均空直接返回 |
+| | 单路为空（BM25 兜底 / 向量兜底） |
+| | 独立精排入口 rerank() 委托 |
+| `RerankServiceTest` | DB 无配置 → 透明降级，返回原列表 |
+| | UnsupportedOperationException → 同样降级 |
+| | 空列表不调 configProvider |
+| | 配置存在时构建并缓存 client |
+| | 相同配置两次调用复用 cache |
+
+需补充集成测试：
+
 | 测试场景 | 验证点 |
 |---|---|
-| `topK=5`，向量和 BM25 各召 80/100 条 | 候选池 ≤ 180 条，RRF 输出 ≤ 200 条，最终返回 5 条 |
-| Reranker 服务不可用 | Circuit Breaker 触发，降级返回 RRF 前 5 条，无异常抛出 |
-| 查询无 BM25 匹配（text_hits=0） | 仅向量结果参与 RRF，正常返回 topK 条 |
+| Reranker 服务不可用 | Circuit Breaker 触发，降级返回 RRF 前 topK 条，无异常 |
 | 向量检索超时（模拟 3s+） | 降级为空列表，全文检索结果独立返回 |
 | 知识库内容少（总 chunk < recallK） | 召回数自然小于配置值，不报错，正常返回 |
-| `topK=50`（最大值） | 候选池 ≤ 180 条 > topK，正常截断 |
+| 后台切换 RERANKER 配置 | 下次请求自动使用新配置（Caffeine key 变化） |
 
 ## 7. 预期收益与验收指标
 
@@ -901,6 +1046,7 @@ knowledge:
 
 - Reranker Circuit Breaker 保障：Reranker 不可用时自动降级，P99 延迟不受影响
 - 参数化配置：无需重新部署即可调整召回数量和 RRF 参数
+- 模型配置统一管理：RERANKER 与 CHAT/EMBEDDING/ROUTER 同等管理，后台热切换无需重启
 
 ---
 
@@ -912,8 +1058,9 @@ knowledge:
 - [ ] `recall-k-text=100` 时，全文检索实际返回 ≤ 100 条
 - [ ] RRF 输出条数 ≤ `reranker-candidate-limit`（200）
 - [ ] 最终返回条数 = `topK`（候选充足时）
-- [ ] Reranker 关闭时，行为与改造前等效（仅召回数量不同）
-- [ ] Reranker 超时/异常时，服务正常降级，不抛出 500
+- [ ] DB 无 active RERANKER 配置时，检索正常返回 RRF 结果，不抛出异常
+- [ ] Reranker 服务宕机时，Circuit Breaker 触发降级，服务正常，不抛出 500
+- [ ] 后台切换 RERANKER 配置后，5 分钟内（Redis TTL）knowledge-service 自动使用新配置
 
 #### 7.2.2 性能验收
 
@@ -939,12 +1086,12 @@ knowledge:
 
 ```
 # Grafana 面板建议指标
-knowledge_search_vector_hits_count{kbId}      # 向量召回实际数量分布
-knowledge_search_text_hits_count{kbId}        # BM25 召回实际数量分布
-knowledge_search_fused_count{kbId}            # RRF 融合后候选数分布
-knowledge_reranker_latency_ms                 # Reranker 调用延迟
-knowledge_reranker_circuit_breaker_state      # Circuit Breaker 状态
-knowledge_search_total_latency_ms{kbId}       # 端到端搜索延迟
+knowledge_search_vector_hits_count{kbId}           # 向量召回实际数量分布
+knowledge_search_text_hits_count{kbId}             # BM25 召回实际数量分布
+knowledge_search_fused_count{kbId}                 # RRF 融合后候选数分布
+knowledge_reranker_latency_ms                      # Reranker 调用延迟
+knowledge_reranker_circuit_breaker_state           # Circuit Breaker 状态（CLOSED/OPEN/HALF_OPEN）
+knowledge_search_total_latency_ms{kbId}            # 端到端搜索延迟
 ```
 
 #### 参数调优建议
@@ -956,6 +1103,7 @@ knowledge_search_total_latency_ms{kbId}       # 端到端搜索延迟
 | `text_hits` 经常为 0 | BM25 匹配率低，考虑换 `jieba` 分词或降低 `recall-k-text` |
 | `fused` 远小于 `rerankerCandidateLimit` | 两路重叠度高，可适当降低 `recall-k-vector/text` |
 | Reranker P99 > 500ms | 降低 `reranker-candidate-limit`（200→100） |
+| Circuit Breaker 频繁开路 | 检查 GPU 服务资源，调整 `slow-call-duration-threshold` |
 | 用户反馈搜索结果不准 | 考虑收集标注数据，引入 DBSFusion 或加权 RRF |
 
 ---
@@ -964,8 +1112,10 @@ knowledge_search_total_latency_ms{kbId}       # 端到端搜索延迟
 
 | 方向 | 时机 | 说明 |
 |---|---|---|
+| `testConnection()` 支持 RERANKER | Phase-2 | POST /rerank 连通性测试，当前返回"暂不支持" |
 | 查询改写（Query Rewriting） | 有足够日志后 | 对模糊查询先扩写再检索 |
 | 加权 RRF / DBSFusion | 有标注数据后 | 基于人工评测结果调整两路权重 |
 | SPLADE 稀疏向量 | 中长期 | 替换 BM25，兼顾字面匹配和语义泛化 |
 | 多路召回（3路+） | 知识库规模扩大后 | 加入标题检索、Q&A 精确匹配等专项通道 |
 | 检索结果缓存 | 高并发场景 | 对热门查询向量相似度缓存 topK 结果 |
+| maskApiKey 统一提取 | 下次重构 | `RerankService` 与 `LangChain4jEmbeddingService` 的 maskApiKey 逻辑提取到 `common-web` |
