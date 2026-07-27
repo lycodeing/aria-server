@@ -281,10 +281,17 @@ IntentResult (不变)             MultiIntentResult (新增)
   intentCode: String            + primaryIntent(): IntentResult
   confidence: double            + requiresTransfer(): boolean
   requiresTransfer(): bool      + skipRag(): boolean
-  skipRag(): bool               + resolveRouting(): RoutingDecision
+  skipRag(): bool               + isEffectivelyOutOfScope(): boolean
+                                + intentCodes(): List<String>
 
                                 IntentPriority (新增)
                                   枚举，定义路由优先级顺序
+
+                                ClassificationTierConstants (新增, infrastructure)
+                                  提取魔法字符串 "RULE"/"EMBEDDING"/"LLM" 为常量
+
+                                MultiIntentClassifier (新增, infrastructure 内部接口)
+                                  Tier3 LLM 分类器抽象接口，解除 DIP 违规
 ```
 
 ### 4.2 IntentPriority — 路由优先级枚举
@@ -298,6 +305,12 @@ IntentResult (不变)             MultiIntentResult (新增)
  *
  * <p>设计原则：安全保障类意图（投诉、转人工）优先于服务类意图（FAQ），
  * 服务类意图优先于修饰类意图（闲聊），拒答最低。
+ *
+ * <p><b>维护约束：</b>{@link IntentType} 与本枚举的枚举项必须保持一一对应，同步新增/删除。
+ * {@code switch} 语句的 exhaustive 检查（Java 17+）会在编译期保护该约束，
+ * 如新增 {@link IntentType} 值而未同步本枚举，编译将报错。
+ *
+ * @see IntentType 两者枚举项必须保持同步
  */
 public enum IntentPriority {
     COMPLAINT(1),
@@ -337,19 +350,22 @@ public enum IntentPriority {
  *
  * <p>不可变值对象，线程安全。
  *
+ * <p><b>注意：</b>{@code sourceTier} 字段为可观测性用途，使用字符串而非枚举，
+ * 避免将基础设施层（RULE/EMBEDDING/LLM）的技术概念引入领域对象。
+ *
  * @param intents         所有命中的意图，按置信度降序排列，不可为 null
- * @param tier            实际使用的处理层级（RULE / EMBEDDING / LLM），用于可观测性
+ * @param sourceTier      实际命中的处理层标识（"RULE" / "EMBEDDING" / "LLM"），仅用于日志和指标
  * @param processingMs    分类耗时（毫秒），用于性能监控
  */
 public record MultiIntentResult(
         List<IntentResult> intents,
-        ClassificationTier tier,
+        String sourceTier,
         long processingMs
 ) {
 
     /** 兜底结果 */
     public static final MultiIntentResult UNKNOWN =
-            new MultiIntentResult(List.of(IntentResult.UNKNOWN), ClassificationTier.RULE, 0L);
+            new MultiIntentResult(List.of(IntentResult.UNKNOWN), "RULE", 0L);
 
     /** 主意图：按 IntentPriority 取优先级最高的意图 */
     public IntentResult primaryIntent() {
@@ -374,6 +390,20 @@ public record MultiIntentResult(
         return intents.stream().allMatch(IntentResult::skipRag);
     }
 
+    /**
+     * 判断是否所有有效意图均为 OUT_OF_SCOPE 或 UNKNOWN。
+     *
+     * <p>供 Application 层做"整体拒答"路由决策使用，将路由判断逻辑
+     * 收拢在领域对象内，避免业务规则泄漏到 Application Service。
+     *
+     * @return true 表示没有任何可回答的有效意图，应返回拒答模板
+     */
+    public boolean isEffectivelyOutOfScope() {
+        return intents.stream()
+                .allMatch(r -> r.intent() == IntentType.OUT_OF_SCOPE
+                            || r.intent() == IntentType.UNKNOWN);
+    }
+
     /** 是否包含某个具体的业务意图 code */
     public boolean hasIntentCode(String intentCode) {
         return intents.stream().anyMatch(r -> intentCode.equalsIgnoreCase(r.intentCode()));
@@ -383,9 +413,6 @@ public record MultiIntentResult(
     public List<String> intentCodes() {
         return intents.stream().map(IntentResult::intentCode).toList();
     }
-
-    /** 分类层级枚举 */
-    public enum ClassificationTier { RULE, EMBEDDING, LLM }
 }
 ```
 
@@ -416,6 +443,85 @@ public interface MultiIntentService {
 }
 ```
 
+### 4.4.1 IntentType 补充 fromCode() 静态工厂
+
+**I2 修复：** 在 `IntentType` 枚举中增加静态工厂，消灭三处重复的 `try-catch` 控制流反模式：
+
+```java
+// IntentType.java 新增方法
+/**
+ * 从业务意图 code 字符串安全解析枚举值，不抛异常。
+ *
+ * <p>替代各处 {@code try { IntentType.valueOf(code) } catch (IllegalArgumentException) {...}}
+ * 的反模式写法（用异常做正常控制流，违反阿里规范）。
+ *
+ * @param code 意图 code（大小写不敏感），null 或未知值均返回 {@link #FAQ_QUERY}
+ * @return 对应枚举值，未知时返回 {@link #FAQ_QUERY}
+ */
+public static IntentType fromCode(String code) {
+    if (code == null || code.isBlank()) {
+        return FAQ_QUERY;
+    }
+    String upper = code.toUpperCase();
+    for (IntentType t : values()) {
+        if (t.name().equals(upper)) {
+            return t;
+        }
+    }
+    return FAQ_QUERY;
+}
+```
+
+### 4.4.2 ClassificationTierConstants — 层级标识常量
+
+**C1/I1 修复：** `MultiIntentResult.sourceTier` 使用字符串而非枚举（避免 domain 层引入 infra 概念），
+但字符串不能散落各处。在 infrastructure 层定义常量接口统一管理：
+
+```java
+// 位置：infrastructure/ai/ClassificationTierConstants.java
+/**
+ * 意图分类处理层级标识常量。
+ *
+ * <p>供 {@link MultiHybridIntentService} 填充 {@link MultiIntentResult#sourceTier()} 字段，
+ * 以及 Micrometer 指标的 tier tag 使用。不放在领域层，因为 RULE/EMBEDDING/LLM 是
+ * 基础设施实现细节，领域对象不应感知。
+ */
+public interface ClassificationTierConstants {
+    String RULE      = "RULE";
+    String EMBEDDING = "EMBEDDING";
+    String LLM       = "LLM";
+}
+```
+
+### 4.4.3 IntentClassificationConstants — 魔法值常量
+
+**I1 修复：** 消灭设计文档中散落的魔法数字（0.75、0.85、0.95 等）：
+
+```java
+// 位置：infrastructure/ai/IntentClassificationConstants.java
+/**
+ * 意图分类相关默认值常量。
+ *
+ * <p>所有默认值均可通过 {@code system_config} 的 {@code routing.config} 覆盖，
+ * 此处仅为 Java 侧 {@link RoutingConfig.Intent} 字段的默认值来源。
+ * 阿里规范：不允许在代码中直接使用魔法值。
+ */
+public interface IntentClassificationConstants {
+    /** Tier2 Embedding 全局默认相似度阈值 */
+    double DEFAULT_EMBEDDING_THRESHOLD      = 0.75;
+    /** Tier2 高置信度阈值：超过此值跳过 Tier3 LLM */
+    double DEFAULT_HIGH_CONFIDENCE          = 0.85;
+    /** Tier3 LLM 最低置信度：低于此值的意图被过滤 */
+    double DEFAULT_MIN_LLM_CONFIDENCE       = 0.50;
+    /** 高置信度自动积累历史案例的最低置信度门槛 */
+    double DEFAULT_AUTO_ACCUMULATE_MIN_CONF = 0.95;
+    /** Caffeine 本地缓存最大条目数（意图原型）*/
+    int    PROTOTYPE_CACHE_MAX_SIZE         = 200;
+    /** Caffeine 本地缓存 TTL（分钟）*/
+    int    PROTOTYPE_CACHE_TTL_MINUTES      = 10;
+}
+```
+
 ### 4.5 旧接口兼容性
 
 `IntentService` 接口**保留不变**，`HybridIntentService` 继续作为其实现：
@@ -428,7 +534,52 @@ HybridIntentService (保留)        MultiHybridIntentService (新增, @Primary)
   基于 MultiHybridIntentService 代理        三级级联实现
 ```
 
-`HybridIntentService` 内部代理 `MultiHybridIntentService`，取 `primaryIntent()` 返回，实现零破坏兼容：
+**C3 修复（DIP 违规）：** `MultiHybridIntentService` 对 Tier3 依赖具体实现类 `LangChain4jIntentService`。
+在 infrastructure 层新增内部接口 `MultiIntentClassifier`，解除具体依赖：
+
+```java
+// 位置：infrastructure/ai/MultiIntentClassifier.java
+/**
+ * 多意图 LLM 分类器内部接口（infrastructure 层）。
+ *
+ * <p>使 {@link MultiHybridIntentService} 依赖抽象而非具体实现，
+ * 便于替换实现（如切换模型提供商）和独立单测（Mock）。
+ * 接口定义在 infrastructure 层而非 domain 层，因为"LLM 调用"是基础设施关注点。
+ */
+public interface MultiIntentClassifier {
+    /**
+     * 对用户消息进行多意图分类。
+     *
+     * @param userMessage 用户消息
+     * @return 分类结果列表，失败时返回含 {@link IntentResult#UNKNOWN} 的单元素列表，不抛异常
+     */
+    List<IntentResult> classifyMulti(String userMessage);
+}
+```
+
+`LangChain4jIntentService` 实现此接口，`MultiHybridIntentService` 依赖接口：
+
+```java
+// MultiHybridIntentService 字段声明修改：
+private final MultiIntentClassifier llmClassifier;  // ← 依赖接口，不依赖具体类
+```
+
+`LangChain4jIntentService` 同时实现 `IntentService`（旧接口）和 `MultiIntentClassifier`（新接口）：
+```java
+@Component
+public class LangChain4jIntentService implements IntentService, MultiIntentClassifier {
+    ...
+}
+```
+
+`HybridIntentService` 对接口兼容性
+
+`IntentService (保留)                MultiIntentService (新增)
+  classify(): IntentResult            classifyMulti(): MultiIntentResult
+       ↑                                    ↑
+HybridIntentService (保留)        MultiHybridIntentService (新增, @Primary)
+  基于 MultiHybridIntentService 代理        三级级联实现
+                                           依赖 MultiIntentClassifier（接口）而非具体类`
 
 ```java
 @Override
@@ -458,12 +609,13 @@ public IntentResult classify(String userMessage) {
 │  ┌──────────────────┐    ┌─────────────────────────────────┐   │
 │  │   IntentResult   │    │       MultiIntentResult          │   │
 │  │  (record，不变)   │    │  intents: List<IntentResult>    │   │
-│  │  intent          │◄───│  tier: ClassificationTier       │   │
+│  │  intent          │◄───│  sourceTier: String             │   │
 │  │  intentCode      │    │  processingMs: long             │   │
 │  │  confidence      │    │  primaryIntent()                │   │
 │  │  requiresTransfer│    │  requiresTransfer() [union]     │   │
 │  │  skipRag()       │    │  skipRag() [intersection]       │   │
-│  └──────────────────┘    │  intentCodes()                  │   │
+│  └──────────────────┘    │  isEffectivelyOutOfScope()      │   │
+│                           │  intentCodes()                  │   │
 │                           └─────────────────────────────────┘   │
 │                                        │                        │
 │  ┌──────────────────┐    ┌─────────────────────────────────┐   │
@@ -670,7 +822,8 @@ public class IntentPrototypeStore {
             .maximumSize(200)
             .build();
 
-    static final String HASH_KEY = "intent:prototypes";
+    // m1修复：不在类内定义重复的字符串常量，统一引用 CustomerServiceCacheConstant
+    // static final String HASH_KEY 已删除，直接使用 CustomerServiceCacheConstant.INTENT_PROTOTYPES
 
     /**
      * 获取所有意图的原型向量快照。
@@ -708,14 +861,23 @@ public class IntentPrototypeStore {
 
             PrototypeEntry entry = new PrototypeEntry(prototype, examples.size(),
                     Instant.now().toString());
-            protoMap.put(intent.code(), objectMapper.writeValueAsString(entry));
+            // C7修复：writeValueAsString 抛受检异常，必须显式处理，不能让整体 rebuild() 中断
+            try {
+                protoMap.put(intent.code(), objectMapper.writeValueAsString(entry));
+            } catch (JsonProcessingException e) {
+                log.warn("[PrototypeStore] 意图 {} 原型序列化失败，跳过. error={}",
+                        intent.code(), e.getMessage());
+                // continue 继续处理下一个意图，不中断整体重建
+            }
         }
-        redisTemplate.opsForHash().putAll(HASH_KEY, protoMap);
+        // 使用 CustomerServiceCacheConstant 统一管理 Redis key，避免字符串散落各处
+        redisTemplate.opsForHash().putAll(CustomerServiceCacheConstant.INTENT_PROTOTYPES, protoMap);
         localCache.invalidateAll();
         log.info("[PrototypeStore] 重建原型向量 {} 个", protoMap.size());
     }
 
-    record PrototypeEntry(float[] vector, int exampleCount, String updatedAt) {}
+    // public 可见性：确保 Jackson 2.12+ 能正确序列化/反序列化 record
+    public record PrototypeEntry(float[] vector, int exampleCount, String updatedAt) {}
 }
 ```
 
@@ -780,23 +942,17 @@ public class EmbeddingPrototypeIntentMatcher {
             double threshold = intentThresholds.getOrDefault(intentCode, globalThreshold);
 
             if (similarity >= threshold) {
-                IntentType type = resolveIntentType(intentCode);
+                // 使用 IntentType.fromCode() 静态工厂，避免用异常做控制流（阿里规范）
+                IntentType type = IntentType.fromCode(intentCode);
                 results.add(new IntentResult(type, intentCode, similarity));
-                log.debug("[EmbeddingMatcher] 命中 intent={} sim={:.4f} threshold={}",
-                        intentCode, similarity, threshold);
+                // SLF4J 占位符只支持 {}，格式化通过 String.format 实现
+                log.debug("[EmbeddingMatcher] 命中 intent={} sim={} threshold={}",
+                        intentCode, String.format("%.4f", similarity), threshold);
             }
         }
 
         results.sort(Comparator.comparingDouble(IntentResult::confidence).reversed());
         return results;
-    }
-
-    private IntentType resolveIntentType(String intentCode) {
-        try {
-            return IntentType.valueOf(intentCode.toUpperCase());
-        } catch (IllegalArgumentException e) {
-            return IntentType.FAQ_QUERY;
-        }
     }
 }
 ```
@@ -832,19 +988,53 @@ EmbeddingPrototypeIntentMatcher.match(userMessage)
     return results
 ```
 
-### 6.5 VectorUtils 新增方法
+### 6.5 VectorUtils 与 VectorMathUtils
+
+现有 `VectorUtils` 职责是 `float[]` 与 pgvector 字符串格式互转（如 `toStr(float[])`）。
+新增的向量数学运算方法职责不同，**新建 `VectorMathUtils` 类**承载，保持单一职责：
 
 ```java
-// 在 common-core/VectorUtils.java 新增
+// 位置：ai-common/common-core/src/main/java/com/aria/common/core/util/VectorMathUtils.java
 
-/** 计算多向量均值后 L2 归一化，用于原型向量计算 */
-public static float[] meanAndNormalize(List<float[]> vectors) { ... }
+/**
+ * 向量数学运算工具类。
+ *
+ * <p>与 {@link VectorUtils}（格式转换）的职责分离：
+ * 本类负责向量的数学操作（归一化、余弦相似度、均值），
+ * {@link VectorUtils} 负责 float[] 与 pgvector 字符串格式互转。
+ */
+public final class VectorMathUtils {
 
-/** L2 归一化 */
-public static float[] normalize(float[] v) { ... }
+    private VectorMathUtils() {}
 
-/** 余弦相似度（两个已归一化向量的点积即为余弦相似度） */
-public static double cosineSimilarity(float[] a, float[] b) { ... }
+    /**
+     * 计算多个向量的均值并进行 L2 归一化，用于构建意图原型向量。
+     *
+     * @param vectors 输入向量列表，不可为空
+     * @return 均值后 L2 归一化的向量
+     * @throws IllegalArgumentException 若 vectors 为空
+     */
+    public static float[] meanAndNormalize(List<float[]> vectors) { ... }
+
+    /**
+     * 对向量进行 L2 归一化（使向量模长为 1）。
+     *
+     * @param v 输入向量
+     * @return 归一化后的新向量（不修改原向量）
+     */
+    public static float[] normalize(float[] v) { ... }
+
+    /**
+     * 计算两个已归一化向量的余弦相似度。
+     *
+     * <p><b>前置条件：</b>入参向量必须已经 L2 归一化，此时余弦相似度等于点积，计算更高效。
+     *
+     * @param a 已归一化向量 a
+     * @param b 已归一化向量 b
+     * @return 余弦相似度，范围 [-1.0, 1.0]
+     */
+    public static double cosineSimilarity(float[] a, float[] b) { ... }
+}
 ```
 
 ### 6.6 配置参数
@@ -915,13 +1105,19 @@ public class IntentExampleVectorRepository {
     /**
      * 检索与 query 语义最相似的历史案例，按意图 code 分组返回。
      *
-     * @param queryEmbedding query 的 embedding 向量
+     * <p><b>参数绑定说明：</b>{@code float[]} 不能直接绑定为 pgvector 参数，
+     * 需先通过 {@link VectorUtils#toStr(float[])} 转换为 {@code "[0.1,0.2,...]"} 格式字符串，
+     * 再以 {@code ?::vector} 形式传入 SQL。SQL 中 {@code ?} 出现两次，需传入同一字符串两次。
+     *
+     * @param queryEmbedding query 的 embedding 向量（float[]，内部自动序列化为 pgvector 字符串）
      * @param topK           每个意图返回的最大案例数（建议 2-3）
      * @param limit          检索候选总数
      * @return intentCode → 历史案例文本列表
      */
     public Map<String, List<String>> findSimilarByIntent(
             float[] queryEmbedding, int topK, int limit) {
+        // I7修复：float[] 必须先序列化为 pgvector 字符串格式，且同一参数绑定两次
+        String vecStr = VectorUtils.toStr(queryEmbedding);
         String sql = """
                 SELECT intent_code, message_text,
                        1 - (embedding <=> ?::vector) AS similarity
@@ -930,6 +1126,7 @@ public class IntentExampleVectorRepository {
                 LIMIT ?
                 """;
         // 按 intentCode 分组，每组取 topK 条
+        // vecStr 传两次对应 SQL 中两个 ?::vector 参数
         ...
     }
 
@@ -1021,19 +1218,18 @@ LLM 返回 MultiIntentResult
          │
     for each IntentResult in intents:
          │
-    confidence >= 0.95?
+    confidence >= autoAccumulateMinConfidence?
     ├──NO──► skip（不积累，置信度不够）
     └──YES──►
          │
-    messageText 已存在相似向量？
-    （防止重复积累相同语义）
-    ├──YES──► skip
-    └──NO──►
+    异步任务（@Async，不阻塞主路径）：
          │
-    exampleVectorRepo.save(
+    exampleVectorRepo.saveIfAbsent(
         intentCode, messageText,
         embedding, autoConfirmed=true
     )
+    ──► 数据库层：INSERT INTO intent_example_vectors ... ON CONFLICT DO NOTHING
+        （I4修复：原子操作防止并发双写，不依赖应用层的"先查后插"）
          │
     记录积累日志（供人工抽样复核）
 ```
@@ -1069,10 +1265,30 @@ List<IntentResult> parseMultiResponse(String response, double minConfidence) {
         double confidence = node.path("confidence").asDouble(0.0);
         if (confidence < minConfidence) continue;
 
-        IntentType type = resolveType(intentStr);
+    // I2修复：去掉 try-catch 用异常做控制流的反模式，统一使用 IntentType.fromCode() 静态工厂
+        IntentType type = IntentType.fromCode(intentStr);
         results.add(new IntentResult(type, intentStr.toLowerCase(), confidence));
     }
     return results.isEmpty() ? List.of(IntentResult.UNKNOWN) : results;
+}
+
+/**
+ * 兼容旧格式单意图 JSON 的解析（兜底）。
+ *
+ * <p>当 LLM 返回旧格式 {@code {"intent":"...", "confidence":0.9}} 时调用。
+ *
+ * @param root          已解析的 JSON 根节点
+ * @param minConfidence 最低置信度阈值
+ * @return 单元素列表；解析失败返回 {@code [IntentResult.UNKNOWN]}
+ */
+private IntentResult parseSingleResponse(JsonNode root, double minConfidence) {
+    String intentStr = root.path("intent").asText("UNKNOWN").toUpperCase();
+    double confidence = root.path("confidence").asDouble(0.0);
+    if (confidence < minConfidence) {
+        return IntentResult.UNKNOWN;
+    }
+    IntentType type = IntentType.fromCode(intentStr);
+    return new IntentResult(type, intentStr.toLowerCase(), confidence);
 }
 ```
 
@@ -1163,6 +1379,7 @@ public class MultiHybridIntentService implements MultiIntentService {
     private final EmbeddingPrototypeIntentMatcher embeddingMatcher;
     private final LangChain4jIntentService llmClassifier;
     private final RoutingConfigProvider routingConfigProvider;
+    private final MeterRegistry meterRegistry;  // 注入 Micrometer，记录分类延迟和命中分布
 
     @Override
     public MultiIntentResult classifyMulti(String userMessage) {
@@ -1180,8 +1397,8 @@ public class MultiHybridIntentService implements MultiIntentService {
         Map<String, IntentResult> merged = new LinkedHashMap<>();
 
         // ── Tier 1: 规则层（必执行）──────────────────────────────────
-        MultiIntentResult.ClassificationTier reachedTier =
-                MultiIntentResult.ClassificationTier.RULE;
+        // sourceTier 使用字符串常量而非枚举，避免将基础设施概念引入领域对象
+        String reachedTier = ClassificationTierConstants.RULE;
         try {
             List<IntentResult> ruleResults = ruleMatcher.matchAll(userMessage);
             ruleResults.forEach(r -> merged.put(r.intentCode(), r));
@@ -1196,15 +1413,15 @@ public class MultiHybridIntentService implements MultiIntentService {
         // ── Tier 2: Embedding 原型层（按需）────────────────────────────
         if (intentConfig.isEmbeddingEnabled()) {
             try {
-                reachedTier = MultiIntentResult.ClassificationTier.EMBEDDING;
+                reachedTier = ClassificationTierConstants.EMBEDDING;  // 使用常量，避免魔法字符串
                 List<IntentResult> embResults = embeddingMatcher.match(userMessage);
+                // 必须在 putIfAbsent 前统计新增数量，否则统计结果恒为 0
+                long newCount = embResults.stream()
+                        .filter(r -> !merged.containsKey(r.intentCode())).count();
                 // 合并：Tier1 已命中的 intentCode，Tier2 不覆盖（Tier1 置信度=1.0 更可信）
                 embResults.forEach(r -> merged.putIfAbsent(r.intentCode(), r));
-                if (!embResults.isEmpty()) {
-                    log.debug("[MultiHybrid] Tier2 新增 {} 个意图: {}",
-                            embResults.stream()
-                                    .filter(r -> !merged.containsKey(r.intentCode())).count(),
-                            intentCodes(embResults));
+                if (newCount > 0) {
+                    log.debug("[MultiHybrid] Tier2 新增 {} 个意图", newCount);
                 }
             } catch (Exception e) {
                 log.warn("[MultiHybrid] Tier2 Embedding 层异常，跳过. msg={}", userMessage, e);
@@ -1214,7 +1431,7 @@ public class MultiHybridIntentService implements MultiIntentService {
         // ── Tier 3: LLM 兜底（仅在置信度不足时触发）───────────────────
         if (shouldFallbackToLlm(merged, intentConfig)) {
             try {
-                reachedTier = MultiIntentResult.ClassificationTier.LLM;
+                reachedTier = ClassificationTierConstants.LLM;  // 使用常量，避免魔法字符串
                 List<IntentResult> llmResults = llmClassifier.classifyMulti(userMessage);
                 // LLM 结果：仅补充，不覆盖 Tier1/Tier2 已有的高置信度结果
                 llmResults.forEach(r -> merged.merge(r.intentCode(), r,
@@ -1450,12 +1667,11 @@ private Flux<ChatEvent> buildEventStream(String sessionId, String message, FaqCo
         return handleTransfer(sessionId, multi.primaryIntent());
     }
 
-    // 2. 主意图是 OUT_OF_SCOPE 且无其他有效意图 → 拒答
+    // 2. 所有有效意图均为 OUT_OF_SCOPE 或 UNKNOWN → 拒答
     //    注意：如果同时有 FAQ_QUERY 意图，不能整体拒答
-    boolean onlyOutOfScope = multi.intents().stream()
-            .allMatch(r -> r.intent() == IntentType.OUT_OF_SCOPE
-                       || r.intent() == IntentType.UNKNOWN);
-    if (onlyOutOfScope) {
+    //    路由判断逻辑收拢在 MultiIntentResult.isEffectivelyOutOfScope() 内，
+    //    避免业务规则泄漏到 Application Service
+    if (multi.isEffectivelyOutOfScope()) {
         return Flux.just(ChatEvent.token(OUT_OF_SCOPE_REPLY, objectMapper));
     }
 
@@ -1571,14 +1787,19 @@ Agent 内部构建 System Prompt 时，可以根据意图 codes 动态调整指�
 // RoutingConfig.java 内部类 Intent 新增字段
 @Data
 public static class Intent {
-    // 已有
+    // 已有（保留，供旧调用方兼容）
     private boolean embeddingEnabled = true;
-    private double embeddingThreshold = 0.75;
+    // I6修复：旧字段 embeddingThreshold 与新字段 embeddingGlobalThreshold 语义重叠。
+    // 统一使用 embeddingGlobalThreshold，此处将旧字段标记为 @Deprecated，
+    // 由 EmbeddingPrototypeIntentMatcher 和 HybridIntentService 均改为读取新字段。
+    @Deprecated
+    private double embeddingThreshold = 0.75;  // ← 已废弃，改用 embeddingGlobalThreshold
     private double minLlmConfidence = 0.5;
     private int maxExamplesToInject = 3;
 
     // 新增
     private boolean multiIntentEnabled = true;
+    /** Tier2 全局默认阈值，替代已废弃的 embeddingThreshold */
     private double embeddingGlobalThreshold = 0.75;
     private double embeddingHighConfidence = 0.85;
     private Map<String, Double> embeddingThresholds = new HashMap<>();
@@ -1600,10 +1821,11 @@ String INTENT_PROTOTYPES = "intent:prototypes";
 
 /** 原型向量版本号，IntentConfig 变更时更新 */
 String INTENT_PROTOTYPE_VERSION = "intent:prototype:version";
-
-/** 历史案例向量表名（pgvector，非 Redis key，仅作常量引用） */
-String INTENT_EXAMPLE_VECTORS_TABLE = "intent_example_vectors";
 ```
+
+> **注意（m2 修复）：** 历史案例向量表名 `intent_example_vectors` 属于数据库表常量，
+> 应定义在 `IntentExampleVectorRepository` 内部作为 `private static final String TABLE_NAME`，
+> 而不是混入 Redis 缓存常量接口。
 
 ### 10.3 IntentConfig 变更触发原型重建
 
@@ -1625,16 +1847,42 @@ String INTENT_EXAMPLE_VECTORS_TABLE = "intent_example_vectors";
 ```
 
 **事件定义（简洁）：**
+
+> **DDD 说明（C4 修复）：** `IntentConfigChangedEvent` 描述的是意图配置这一领域概念发生变更，
+> 属于领域事件，放在 `domain/event/` 包；`IntentPrototypeStoreRefreshListener` 属于
+> 基础设施层对领域事件的响应，放在 `infrastructure/event/` 包。
+
 ```java
+// 位置：domain/event/IntentConfigChangedEvent.java
 public record IntentConfigChangedEvent(String domainCode) {}
 
+// 位置：infrastructure/event/IntentPrototypeStoreRefreshListener.java
 @Component
 @RequiredArgsConstructor
 @Slf4j
 public class IntentPrototypeStoreRefreshListener {
     private final IntentPrototypeStore store;
 
-    @Async
+    /**
+     * 监听意图配置变更事件，异步触发原型向量重建。
+     *
+     * <p><b>线程池说明：</b>使用专用线程池 {@code prototypeRebuildExecutor}（需配置
+     * Bean），避免使用 SimpleAsyncTaskExecutor（每次新建线程，高并发时线程膨胀）。
+     * 在 Spring @Configuration 类中配置：
+     * <pre>{@code
+     *   @Bean("prototypeRebuildExecutor")
+     *   public Executor prototypeRebuildExecutor() {
+     *       ThreadPoolTaskExecutor exec = new ThreadPoolTaskExecutor();
+     *       exec.setCorePoolSize(1);
+     *       exec.setMaxPoolSize(2);
+     *       exec.setQueueCapacity(5);
+     *       exec.setThreadNamePrefix("proto-rebuild-");
+     *       exec.initialize();
+     *       return exec;
+     *   }
+     * }</pre>
+     */
+    @Async("prototypeRebuildExecutor")
     @EventListener
     public void onEvent(IntentConfigChangedEvent event) {
         log.info("[PrototypeStore] 检测到 IntentConfig 变更，触发原型重建 domain={}",
@@ -1649,6 +1897,13 @@ public class IntentPrototypeStoreRefreshListener {
 #### 10.4.1 结构化日志（已在代码中埋点）
 
 每次 `classifyMulti()` 完成后输出：
+
+> **m7 修复：** `MultiIntentService.classifyMulti(String)` 接口只接收 `userMessage`，不传 `sessionId`。
+> 日志中的 `session_id` 通过 **MDC（Mapped Diagnostic Context）** 注入：
+> `ChatAppService` 在调用 `classifyMulti()` 前执行 `MDC.put("sessionId", sessionId)`，
+> 响应结束后在 `finally` 中 `MDC.remove("sessionId")`。
+> Logback 配置 `%X{sessionId}` 即可自动带入所有日志输出，无需修改接口签名。
+
 ```json
 {
   "logger": "MultiHybridIntentService",
@@ -1668,14 +1923,14 @@ public class IntentPrototypeStoreRefreshListener {
 // 在 MultiHybridIntentService 中注入 MeterRegistry
 private final MeterRegistry meterRegistry;
 
-// 每次分类后记录
+// 每次分类后记录（reachedTier 已是字符串常量，直接作为 tag）
 Counter.builder("intent.classification.total")
-    .tag("tier", reachedTier.name())
+    .tag("tier", reachedTier)
     .tag("intent_count", String.valueOf(finalResults.size()))
     .register(meterRegistry).increment();
 
 Timer.builder("intent.classification.latency")
-    .tag("tier", reachedTier.name())
+    .tag("tier", reachedTier)
     .register(meterRegistry)
     .record(elapsed, TimeUnit.MILLISECONDS);
 ```
@@ -2088,27 +2343,31 @@ Step 6: 收集数据，调优阈值
 ai-conversation/conversation-service/src/main/java/com/aria/conversation/
 ├── domain/
 │   ├── model/
-│   │   ├── IntentPriority.java          [新增] 意图路由优先级枚举
-│   │   └── MultiIntentResult.java       [新增] 多意图结果值对象
-│   └── service/
-│       └── MultiIntentService.java      [新增] 多意图领域接口
+│   │   ├── IntentPriority.java               [新增] 意图路由优先级枚举
+│   │   └── MultiIntentResult.java            [新增] 多意图结果值对象（sourceTier: String）
+│   ├── service/
+│   │   └── MultiIntentService.java           [新增] 多意图领域接口
+│   └── event/
+│       └── IntentConfigChangedEvent.java     [新增] 领域事件（C4 DDD修复，domain层）
 └── infrastructure/
     ├── ai/
-    │   ├── MultiHybridIntentService.java      [新增] 三级级联协调器
-    │   └── EmbeddingPrototypeIntentMatcher.java [新增] Tier2 实现
+    │   ├── MultiHybridIntentService.java          [新增] 三级级联协调器
+    │   ├── EmbeddingPrototypeIntentMatcher.java   [新增] Tier2 实现
+    │   ├── MultiIntentClassifier.java             [新增] Tier3 内部接口（C3 DIP修复）
+    │   ├── ClassificationTierConstants.java       [新增] Tier 标识字符串常量（C1/I1修复）
+    │   └── IntentClassificationConstants.java     [新增] 分类魔法值常量（I1修复）
     ├── prototype/
-    │   └── IntentPrototypeStore.java           [新增] 原型向量 Redis 存储
+    │   └── IntentPrototypeStore.java              [新增] 原型向量 Redis 存储
     ├── example/
-    │   └── IntentExampleVectorRepository.java  [新增] 历史案例 pgvector 存储
+    │   └── IntentExampleVectorRepository.java     [新增] 历史案例 pgvector 存储
     └── event/
-        └── IntentConfigChangedEvent.java        [新增] 配置变更事件
-        └── IntentPrototypeStoreRefreshListener.java [新增] 事件监听
+        └── IntentPrototypeStoreRefreshListener.java [新增] 事件监听（infra层）
 
 ai-common/common-core/src/main/java/com/aria/common/core/util/
-└── VectorUtils.java                     [改造] 新增 meanAndNormalize, normalize, cosineSimilarity
+└── VectorMathUtils.java                 [新增] 向量数学工具（均值/归一化/余弦，m3职责分离修复）
 
-ai-knowledge/knowledge-service/src/main/resources/db/migration/
-└── V{next}__create_intent_example_vectors.sql  [新增] Flyway 迁移脚本
+ai-conversation/conversation-service/src/main/resources/db/migration/
+└── V{next}__create_intent_example_vectors.sql  [新增] Flyway 迁移脚本（C6路径修复）
 ```
 
 ### 12.3 改造文件清单
