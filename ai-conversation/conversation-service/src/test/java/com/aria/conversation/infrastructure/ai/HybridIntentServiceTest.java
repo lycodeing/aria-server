@@ -2,64 +2,80 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.domain.model.IntentResult;
 import com.aria.conversation.domain.model.IntentType;
-import com.aria.conversation.domain.service.IntentService;
+import com.aria.conversation.domain.model.MultiIntentResult;
+import com.aria.conversation.domain.service.MultiIntentService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
-import java.util.Optional;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
+/**
+ * HybridIntentService 向后兼容测试。
+ *
+ * <p>改造后 HybridIntentService 代理 MultiIntentService，
+ * 取 primaryIntent() 返回，对 IntentService 调用方保持零感知兼容。
+ */
 @ExtendWith(MockitoExtension.class)
-@DisplayName("HybridIntentService")
+@DisplayName("HybridIntentService 向后兼容代理")
 class HybridIntentServiceTest {
 
-    @Mock private KeywordRegexIntentMatcher ruleMatcher;
-    @Mock private LangChain4jIntentService llmClassifier;
-    @InjectMocks private HybridIntentService service;
+    @Mock private MultiIntentService multiIntentService;
+    private HybridIntentService service;
+
+    @BeforeEach
+    void setUp() {
+        service = new HybridIntentService(multiIntentService);
+    }
+
+    private MultiIntentResult singleResult(IntentType type, String code, double conf) {
+        return new MultiIntentResult(
+                List.of(new IntentResult(type, code, conf)), "RULE", 1L);
+    }
 
     @Test
-    @DisplayName("Tier1 命中：返回规则结果，不调用 LLM")
-    void classify_tier1Hit_llmNotCalled() {
-        when(ruleMatcher.match("转人工"))
-                .thenReturn(Optional.of(new IntentResult(IntentType.TRANSFER_REQUEST, "TRANSFER_REQUEST", 1.0)));
+    @DisplayName("classify: 代理 MultiIntentService，返回 primaryIntent")
+    void classify_delegatesToMultiIntentService_returnsPrimaryIntent() {
+        when(multiIntentService.classifyMulti("转人工"))
+                .thenReturn(singleResult(IntentType.TRANSFER_REQUEST, "transfer_request", 1.0));
 
-        IntentResult result = service.classify("转人工");
+        var result = service.classify("转人工");
 
         assertThat(result.intent()).isEqualTo(IntentType.TRANSFER_REQUEST);
         assertThat(result.confidence()).isEqualTo(1.0);
-        verify(llmClassifier, never()).classify(anyString());
+        verify(multiIntentService).classifyMulti("转人工");
     }
 
     @Test
-    @DisplayName("Tier1 未命中：调用 LLM 分类器")
-    void classify_tier1Miss_llmCalled() {
-        when(ruleMatcher.match(anyString())).thenReturn(Optional.empty());
-        when(llmClassifier.classify("退款政策是什么"))
-                .thenReturn(new IntentResult(IntentType.FAQ_QUERY, "FAQ_QUERY", 0.9));
+    @DisplayName("classify: 多意图时取优先级最高的主意图（COMPLAINT > FAQ_QUERY）")
+    void classify_multiIntent_returnsPrimaryByPriority() {
+        when(multiIntentService.classifyMulti("投诉加查物流"))
+                .thenReturn(new MultiIntentResult(List.of(
+                        new IntentResult(IntentType.FAQ_QUERY, "query_logistics", 0.9),
+                        new IntentResult(IntentType.COMPLAINT, "complaint", 0.85)
+                ), "RULE", 1L));
 
-        IntentResult result = service.classify("退款政策是什么");
+        var result = service.classify("投诉加查物流");
 
-        assertThat(result.intent()).isEqualTo(IntentType.FAQ_QUERY);
-        verify(llmClassifier).classify("退款政策是什么");
+        // COMPLAINT 优先级高于 FAQ_QUERY，取 COMPLAINT
+        assertThat(result.intent()).isEqualTo(IntentType.COMPLAINT);
     }
 
     @Test
-    @DisplayName("规则层抛异常：不传播，降级走 LLM")
-    void classify_tier1Throws_fallsBackToLlm() {
-        when(ruleMatcher.match(anyString())).thenThrow(new RuntimeException("规则层内部错误"));
-        when(llmClassifier.classify(anyString()))
-                .thenReturn(new IntentResult(IntentType.FAQ_QUERY, "FAQ_QUERY", 0.8));
+    @DisplayName("classify: MultiIntentService 返回 UNKNOWN，透传给调用方")
+    void classify_unknownResult_returnsUnknown() {
+        when(multiIntentService.classifyMulti(anyString()))
+                .thenReturn(MultiIntentResult.UNKNOWN);
 
-        IntentResult result = service.classify("任意消息");
+        var result = service.classify("随机文本");
 
-        assertThat(result.intent()).isEqualTo(IntentType.FAQ_QUERY);
-        verify(llmClassifier).classify(anyString());
+        assertThat(result.intent()).isEqualTo(IntentType.UNKNOWN);
     }
 }
