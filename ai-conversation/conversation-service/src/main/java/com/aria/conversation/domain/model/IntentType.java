@@ -33,7 +33,7 @@ public enum IntentType {
      */
     public static IntentType fromCode(String code) {
         if (code == null || code.isBlank()) {
-            return FAQ_QUERY;
+            return UNKNOWN;
         }
         String upper = code.toUpperCase();
         for (IntentType t : values()) {
@@ -41,6 +41,8 @@ public enum IntentType {
                 return t;
             }
         }
-        return FAQ_QUERY;
+        // C4 修复：未知 code 回退到 UNKNOWN 而非 FAQ_QUERY，避免将 LLM 幻觉意图
+        // 静默转为 FAQ_QUERY 导致不应触发的 RAG 被执行
+        return UNKNOWN;
     }
 }

@@ -41,6 +41,14 @@ public class RoutingConfig {
         c.getIntent().setEmbeddingThreshold(p.getIntent().getEmbeddingThreshold());
         c.getIntent().setMinLlmConfidence(p.getIntent().getMinLlmConfidence());
         c.getIntent().setMaxExamplesToInject(p.getIntent().getMaxExamplesToInject());
+        // C3 修复：新增的 8 个多意图字段也需要从 RoutingProperties 同步
+        c.getIntent().setMultiIntentEnabled(p.getIntent().isMultiIntentEnabled());
+        c.getIntent().setEmbeddingGlobalThreshold(p.getIntent().getEmbeddingGlobalThreshold());
+        c.getIntent().setEmbeddingHighConfidence(p.getIntent().getEmbeddingHighConfidence());
+        c.getIntent().setLlmRagEnabled(p.getIntent().isLlmRagEnabled());
+        c.getIntent().setLlmRagTopK(p.getIntent().getLlmRagTopK());
+        c.getIntent().setAutoAccumulateEnabled(p.getIntent().isAutoAccumulateEnabled());
+        c.getIntent().setAutoAccumulateMinConfidence(p.getIntent().getAutoAccumulateMinConfidence());
         c.getDomain().setRuleEnabled(p.getDomain().isRuleEnabled());
         return c;
     }

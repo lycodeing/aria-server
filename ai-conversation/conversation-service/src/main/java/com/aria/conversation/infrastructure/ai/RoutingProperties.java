@@ -29,6 +29,22 @@ public class RoutingProperties {
         private double minLlmConfidence = 0.0;
         /** few-shot prompt 中每个意图最多注入的示例条数 */
         private int maxExamplesToInject = 5;
+
+        // C3 修复：与 RoutingConfig.Intent 保持同步，确保降级到 YAML 时多意图配置不丢失
+        /** 多意图总开关，false 时退化为单意图（可无重启回滚） */
+        private boolean multiIntentEnabled = true;
+        /** Tier2 全局默认相似度阈值（替代 embeddingThreshold）*/
+        private double embeddingGlobalThreshold = 0.75;
+        /** 超过此置信度则跳过 Tier3 LLM */
+        private double embeddingHighConfidence = 0.85;
+        /** 是否开启 Tier3 动态 RAG 注入 */
+        private boolean llmRagEnabled = true;
+        /** Tier3 动态 RAG 每意图注入历史案例数 */
+        private int llmRagTopK = 2;
+        /** 是否开启高置信度结果自动积累 */
+        private boolean autoAccumulateEnabled = true;
+        /** 自动积累的最低置信度门槛 */
+        private double autoAccumulateMinConfidence = 0.95;
     }
 
     @Getter
