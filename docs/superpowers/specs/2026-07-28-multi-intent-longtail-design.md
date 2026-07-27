@@ -180,9 +180,9 @@ message → [规则] → IntentResult{FAQ_QUERY, "query_order", 1.0}
 │       │                                                         │
 │       ├─ intentService.classifyMulti(message) ─────────────┐   │
 │       │                                                     │   │
-│       └─ MultiIntentResult.resolveRouting()                 │   │
-│              → 取最高优先级意图驱动分叉                       │   │
-│              → 所有意图均传给下游 Agent                      │   │
+│       └─ multi.requiresTransfer() / isEffectivelyOutOfScope()  │   │
+│              → 取最高优先级意图驱动分叉                          │   │
+│              → 所有意图均传给下游 Agent（intentCodes()）          │   │
 └─────────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -857,7 +857,7 @@ public class IntentPrototypeStore {
             List<float[]> vectors = examples.stream()
                     .map(embeddingService::encode)
                     .toList();
-            float[] prototype = VectorUtils.meanAndNormalize(vectors);
+            float[] prototype = VectorMathUtils.meanAndNormalize(vectors);  // m3修复：使用 VectorMathUtils
 
             PrototypeEntry entry = new PrototypeEntry(prototype, examples.size(),
                     Instant.now().toString());
@@ -925,7 +925,7 @@ public class EmbeddingPrototypeIntentMatcher {
         }
 
         float[] queryVector = embeddingService.encode(userMessage);
-        float[] queryNorm = VectorUtils.normalize(queryVector);
+        float[] queryNorm = VectorMathUtils.normalize(queryVector);  // m3修复：使用 VectorMathUtils
 
         double globalThreshold = routingConfigProvider.getConfig()
                 .getIntent().getEmbeddingGlobalThreshold();  // 默认 0.75
@@ -938,7 +938,7 @@ public class EmbeddingPrototypeIntentMatcher {
             String intentCode = entry.getKey();
             float[] protoNorm = entry.getValue();
 
-            double similarity = VectorUtils.cosineSimilarity(queryNorm, protoNorm);
+            double similarity = VectorMathUtils.cosineSimilarity(queryNorm, protoNorm);  // m3修复
             double threshold = intentThresholds.getOrDefault(intentCode, globalThreshold);
 
             if (similarity >= threshold) {
@@ -1135,6 +1135,21 @@ public class IntentExampleVectorRepository {
      */
     public void save(String intentCode, String messageText, float[] embedding,
                      boolean autoConfirmed) { ... }
+
+    /**
+     * 幂等保存意图触发案例（原子操作，防止并发双写）。
+     *
+     * <p><b>I4修复：</b>数据库层使用 {@code INSERT INTO ... ON CONFLICT DO NOTHING}，
+     * 避免应用层"先查后插"的非原子操作导致并发竞争时语义重复样本入库。
+     * 唯一约束建议基于 {@code (intent_code, message_text)} 的哈希或语义去重。
+     *
+     * @param intentCode    意图 code
+     * @param messageText   原始用户消息文本
+     * @param embedding     消息 embedding 向量
+     * @param autoConfirmed 是否为自动积累（非人工确认）
+     */
+    public void saveIfAbsent(String intentCode, String messageText, float[] embedding,
+                             boolean autoConfirmed) { ... }
 }
 ```
 
@@ -1377,7 +1392,7 @@ public class MultiHybridIntentService implements MultiIntentService {
 
     private final KeywordRegexIntentMatcher ruleMatcher;
     private final EmbeddingPrototypeIntentMatcher embeddingMatcher;
-    private final LangChain4jIntentService llmClassifier;
+    private final MultiIntentClassifier llmClassifier;  // C3修复：依赖接口，不依赖具体实现类
     private final RoutingConfigProvider routingConfigProvider;
     private final MeterRegistry meterRegistry;  // 注入 Micrometer，记录分类延迟和命中分布
 
@@ -1793,20 +1808,20 @@ public static class Intent {
     // 统一使用 embeddingGlobalThreshold，此处将旧字段标记为 @Deprecated，
     // 由 EmbeddingPrototypeIntentMatcher 和 HybridIntentService 均改为读取新字段。
     @Deprecated
-    private double embeddingThreshold = 0.75;  // ← 已废弃，改用 embeddingGlobalThreshold
-    private double minLlmConfidence = 0.5;
+    private double embeddingThreshold = IntentClassificationConstants.DEFAULT_EMBEDDING_THRESHOLD;  // 已废弃，改用 embeddingGlobalThreshold
+    private double minLlmConfidence = IntentClassificationConstants.DEFAULT_MIN_LLM_CONFIDENCE;
     private int maxExamplesToInject = 3;
 
     // 新增
     private boolean multiIntentEnabled = true;
     /** Tier2 全局默认阈值，替代已废弃的 embeddingThreshold */
-    private double embeddingGlobalThreshold = 0.75;
-    private double embeddingHighConfidence = 0.85;
+    private double embeddingGlobalThreshold = IntentClassificationConstants.DEFAULT_EMBEDDING_THRESHOLD;
+    private double embeddingHighConfidence = IntentClassificationConstants.DEFAULT_HIGH_CONFIDENCE;
     private Map<String, Double> embeddingThresholds = new HashMap<>();
     private boolean llmRagEnabled = true;
     private int llmRagTopK = 2;
     private boolean autoAccumulateEnabled = true;
-    private double autoAccumulateMinConfidence = 0.95;
+    private double autoAccumulateMinConfidence = IntentClassificationConstants.DEFAULT_AUTO_ACCUMULATE_MIN_CONF;
 }
 ```
 
@@ -1969,9 +1984,10 @@ DELETE /admin/intent/examples/{id}  → 删除误积累的案例
 // MultiHybridIntentService.classifyMulti() 开头
 if (!intentConfig.isMultiIntentEnabled()) {
     // 退化为单意图，保持与旧 HybridIntentService 完全相同行为
+    // NC-1修复：ClassificationTier 枚举已从 MultiIntentResult 删除，改用字符串常量
     IntentResult single = legacyClassify(userMessage);
     return new MultiIntentResult(List.of(single),
-            MultiIntentResult.ClassificationTier.RULE, 0L);
+            ClassificationTierConstants.RULE, 0L);
 }
 ```
 
@@ -2011,7 +2027,7 @@ if (!intentConfig.isMultiIntentEnabled()) {
  │                   │ MultiIntentResult  │                      │                 │               │
  │                   │ {[rule1,rule2,emb1], EMBEDDING, 35ms}     │                 │               │
  │                   │                    │                      │                 │               │
- │                   │ resolveRouting()   │                      │                 │               │
+ │                   │ requiresTransfer() / isEffectivelyOutOfScope()    │               │
  │                   │ requiresTransfer?  │                      │                 │               │
  │                   │ ──NO──► domainAgentService.streamChat(    │                 │               │
  │                   │          intentCodes=[rule1,rule2,emb1])  │                 │               │
@@ -2250,7 +2266,7 @@ graph TB
     end
 
     subgraph "common-core"
-        VU["VectorUtils\n[改造: 新增方法]"]
+        VU["VectorMathUtils\n[新增: 向量数学运算]"]
         RRF["RrfUtils\n[不变]"]
     end
 
@@ -2310,7 +2326,7 @@ Step 1: 领域层 + 基础设施新增（无破坏，并行运行）
   ├── 新增 EmbeddingPrototypeIntentMatcher
   ├── 新增 IntentPrototypeStore
   ├── 新增 IntentExampleVectorRepository + Flyway 迁移脚本
-  └── 新增 VectorUtils 工具方法
+  └── 新增 VectorMathUtils 向量数学工具（职责分离，替代 VectorUtils 数学方法）
 
 Step 2: 改造现有类（低风险，保持接口兼容）
   ├── KeywordRegexIntentMatcher: 新增 matchAll()，保留 match()
