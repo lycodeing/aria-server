@@ -97,12 +97,10 @@ public class LangChain4jIntentService implements IntentService, MultiIntentClass
             double confidence = node.path("confidence").asDouble(1.0);
 
             IntentType intent;
-            try {
-                intent = IntentType.valueOf(intentStr);
-            } catch (IllegalArgumentException ex) {
-                // 自定义业务 code 不在枚举内，按 FAQ_QUERY 分叉
-                log.warn("[Intent] 未知意图值: {}, 映射为 FAQ_QUERY", intentStr);
-                intent = IntentType.FAQ_QUERY;
+            // N1 修复：使用 fromCode()，未知意图 code 视为 LLM 幻觉返回 UNKNOWN，不再映射为 FAQ_QUERY
+            intent = IntentType.fromCode(intentStr);
+            if (intent == IntentType.UNKNOWN) {
+                log.warn("[Intent] 未知意图值: {}, 降级为 UNKNOWN", intentStr);
             }
 
             // 低置信度降级（minLlmConfidence=0.0 时关闭此检查）

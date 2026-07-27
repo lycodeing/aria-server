@@ -23,13 +23,14 @@ public enum IntentType {
     UNKNOWN;
 
     /**
-     * 从业务意图 code 字符串安全解析枚举值，不抛异常。
+     * 从业务意图 code 字符串安全解析枚举值（LLM 输出解析语境）。
      *
-     * <p>替代 {@code try { IntentType.valueOf(code) } catch (IllegalArgumentException) {...}}
-     * 的反模式（用异常做正常控制流，违反阿里规范）。
+     * <p>适用于解析 LLM 返回的意图 code，未知 code 视为幻觉返回 {@link #UNKNOWN}，
+     * 由上层路由逻辑决定如何降级处理。
      *
-     * @param code 意图 code（大小写不敏感），null 或未知值均返回 {@link #FAQ_QUERY}
-     * @return 对应枚举值，未知时返回 {@link #FAQ_QUERY}
+     * @param code 意图 code（大小写不敏感）
+     * @return 对应枚举值，null/blank/未知时返回 {@link #UNKNOWN}
+     * @see #fromBusinessCode(String) 业务路由语境（Tier1/Tier2）使用此方法
      */
     public static IntentType fromCode(String code) {
         if (code == null || code.isBlank()) {
@@ -41,8 +42,32 @@ public enum IntentType {
                 return t;
             }
         }
-        // C4 修复：未知 code 回退到 UNKNOWN 而非 FAQ_QUERY，避免将 LLM 幻觉意图
-        // 静默转为 FAQ_QUERY 导致不应触发的 RAG 被执行
+        // 未知 code 视为 LLM 幻觉，回退到 UNKNOWN，由路由层做降级决策
         return UNKNOWN;
+    }
+
+    /**
+     * 从业务意图 code 字符串安全解析枚举值（业务路由语境，Tier1/Tier2 使用）。
+     *
+     * <p>适用于 {@link com.aria.conversation.infrastructure.dit.config.IntentConfig#code()}
+     * 等业务配置的意图 code，这些 code 可能不对应枚举名（如自定义业务意图）。
+     * 未知 code 映射为 {@link #FAQ_QUERY}，表示走通用 RAG + LLM 处理路径。
+     *
+     * @param code 业务意图 code（大小写不敏感）
+     * @return 对应枚举值，未知时返回 {@link #FAQ_QUERY}
+     * @see #fromCode(String) LLM 输出解析语境使用此方法
+     */
+    public static IntentType fromBusinessCode(String code) {
+        if (code == null || code.isBlank()) {
+            return FAQ_QUERY;
+        }
+        String upper = code.toUpperCase();
+        for (IntentType t : values()) {
+            if (t.name().equals(upper)) {
+                return t;
+            }
+        }
+        // 自定义业务意图 code（如 "query_order"）不在枚举内，走 FAQ_QUERY（RAG + LLM）路径
+        return FAQ_QUERY;
     }
 }

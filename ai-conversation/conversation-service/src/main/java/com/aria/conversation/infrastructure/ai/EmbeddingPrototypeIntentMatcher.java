@@ -67,7 +67,8 @@ public class EmbeddingPrototypeIntentMatcher {
             double threshold = intentThresholds.getOrDefault(intentCode, globalThreshold);
 
             if (similarity >= threshold) {
-                IntentType type = IntentType.fromCode(intentCode);
+                // N2 修复：业务路由语境使用 fromBusinessCode()，自定义意图 code 映射为 FAQ_QUERY
+                IntentType type = IntentType.fromBusinessCode(intentCode);
                 results.add(new IntentResult(type, intentCode, similarity));
                 log.debug("[EmbeddingMatcher] 命中 intent={} sim={} threshold={}",
                         intentCode, String.format("%.4f", similarity), threshold);

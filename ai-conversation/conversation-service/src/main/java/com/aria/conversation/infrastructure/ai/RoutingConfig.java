@@ -45,6 +45,10 @@ public class RoutingConfig {
         c.getIntent().setMultiIntentEnabled(p.getIntent().isMultiIntentEnabled());
         c.getIntent().setEmbeddingGlobalThreshold(p.getIntent().getEmbeddingGlobalThreshold());
         c.getIntent().setEmbeddingHighConfidence(p.getIntent().getEmbeddingHighConfidence());
+        // embeddingThresholds 是 Map，YAML 可配置，需同步（C3 遗漏补充）
+        if (p.getIntent().getEmbeddingThresholds() != null) {
+            c.getIntent().setEmbeddingThresholds(new java.util.HashMap<>(p.getIntent().getEmbeddingThresholds()));
+        }
         c.getIntent().setLlmRagEnabled(p.getIntent().isLlmRagEnabled());
         c.getIntent().setLlmRagTopK(p.getIntent().getLlmRagTopK());
         c.getIntent().setAutoAccumulateEnabled(p.getIntent().isAutoAccumulateEnabled());

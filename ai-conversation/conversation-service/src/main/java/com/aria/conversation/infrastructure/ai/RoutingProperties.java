@@ -37,6 +37,8 @@ public class RoutingProperties {
         private double embeddingGlobalThreshold = 0.75;
         /** 超过此置信度则跳过 Tier3 LLM */
         private double embeddingHighConfidence = 0.85;
+        /** 意图级独立阈值覆盖（key=intentCode, value=阈值），可通过 YAML 配置 */
+        private java.util.Map<String, Double> embeddingThresholds = new java.util.HashMap<>();
         /** 是否开启 Tier3 动态 RAG 注入 */
         private boolean llmRagEnabled = true;
         /** Tier3 动态 RAG 每意图注入历史案例数 */
