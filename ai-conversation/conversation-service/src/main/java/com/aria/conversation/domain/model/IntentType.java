@@ -20,5 +20,27 @@ public enum IntentType {
     COMPLAINT,
     CHITCHAT,
     OUT_OF_SCOPE,
-    UNKNOWN
+    UNKNOWN;
+
+    /**
+     * 从业务意图 code 字符串安全解析枚举值，不抛异常。
+     *
+     * <p>替代 {@code try { IntentType.valueOf(code) } catch (IllegalArgumentException) {...}}
+     * 的反模式（用异常做正常控制流，违反阿里规范）。
+     *
+     * @param code 意图 code（大小写不敏感），null 或未知值均返回 {@link #FAQ_QUERY}
+     * @return 对应枚举值，未知时返回 {@link #FAQ_QUERY}
+     */
+    public static IntentType fromCode(String code) {
+        if (code == null || code.isBlank()) {
+            return FAQ_QUERY;
+        }
+        String upper = code.toUpperCase();
+        for (IntentType t : values()) {
+            if (t.name().equals(upper)) {
+                return t;
+            }
+        }
+        return FAQ_QUERY;
+    }
 }
