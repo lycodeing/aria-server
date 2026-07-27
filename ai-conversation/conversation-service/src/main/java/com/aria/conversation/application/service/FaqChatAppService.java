@@ -5,7 +5,8 @@ import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.domain.model.IntentResult;
 import com.aria.conversation.domain.model.IntentType;
-import com.aria.conversation.domain.service.IntentService;
+import com.aria.conversation.domain.model.MultiIntentResult;
+import com.aria.conversation.domain.service.MultiIntentService;
 import com.aria.conversation.infrastructure.ai.ChatMessage;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
@@ -56,8 +57,8 @@ public class FaqChatAppService {
     private final ConversationHistoryRepository  historyRepository;
     /** 知识库 RAG 检索客户端，根据用户消息向量检索相关知识块 */
     private final KnowledgeServiceClient         knowledgeServiceClient;
-    /** 意图分类服务（@Primary 实现为 HybridIntentService），Tier1 规则 → Tier2 LLM */
-    private final IntentService                  intentService;
+    /** 意图分类服务（三级级联：规则 → Embedding 原型 → LLM） */
+    private final MultiIntentService                  multiIntentService;
     /** 会话队列服务，提供入队和状态查询能力 */
     private final SessionQueueService            sessionQueueService;
     /** JSON 序列化工具，用于构造 TransferPayload、sources 等 SSE 载荷 */
@@ -95,10 +96,11 @@ public class FaqChatAppService {
                     }
                     historyRepository.append(sessionId, MessageRole.USER.getValue(), message);
                     List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(message);
-                    IntentResult intent = intentService.classify(message);
-                    log.debug("[FAQ] sessionId={} intent={} confidence={}",
-                            sessionId, intent.intent(), intent.confidence());
-                    return Optional.of(new FaqContext(hits, intent));
+                    MultiIntentResult multiIntent = multiIntentService.classifyMulti(message);
+                    log.debug("[FAQ] sessionId={} primaryIntent={} confidence={}",
+                            sessionId, multiIntent.primaryIntent().intent(),
+                            multiIntent.primaryIntent().confidence());
+                    return Optional.of(new FaqContext(hits, multiIntent));
                 })
                 .subscribeOn(Schedulers.boundedElastic())
                 .flatMapMany(opt -> {
@@ -145,10 +147,14 @@ public class FaqChatAppService {
     }
 
     private Flux<ChatEvent> buildEventStream(String sessionId, String message, FaqContext ctx) {
-        if (ctx.intent().requiresTransfer()) {
-            return handleTransfer(sessionId, ctx.intent());
+        MultiIntentResult multi = ctx.multiIntent();
+        // 1. union 语义：任意意图需转人工 → 转人工（安全优先）
+        if (multi.requiresTransfer()) {
+            return handleTransfer(sessionId, multi.primaryIntent());
         }
-        if (ctx.intent().intent() == IntentType.OUT_OF_SCOPE) {
+        // 2. 所有有效意图均为 OUT_OF_SCOPE 或 UNKNOWN → 拒答
+        //    注意：如果同时有 FAQ_QUERY 意图，不能整体拒答
+        if (multi.isEffectivelyOutOfScope()) {
             historyRepository.append(sessionId, MessageRole.ASSISTANT.getValue(), OUT_OF_SCOPE_REPLY);
             return Flux.just(ChatEvent.token(OUT_OF_SCOPE_REPLY, objectMapper));
         }
@@ -157,7 +163,7 @@ public class FaqChatAppService {
 
     private Flux<ChatEvent> buildLlmStream(String sessionId, String message, FaqContext ctx) {
         List<KnowledgeSearchResult.Hit> effectiveHits =
-                ctx.intent().skipRag() ? List.of() : ctx.hits();
+                ctx.multiIntent().skipRag() ? List.of() : ctx.hits();
         String systemPrompt = SystemPromptBuilder.build(effectiveHits);
         List<ChatMessage> aiPrompt = toAiPrompt(historyRepository.findAll(sessionId));
         StringBuilder replyBuf = new StringBuilder();
@@ -284,6 +290,6 @@ public class FaqChatAppService {
                 .toList();
     }
 
-    /** FAQ 路由阶段的中间结果，携带 RAG 命中列表和意图分类结果。 */
-    private record FaqContext(List<KnowledgeSearchResult.Hit> hits, IntentResult intent) {}
+    /** FAQ 路由阶段的中间结果，携带 RAG 命中列表和多意图分类结果。 */
+    private record FaqContext(List<KnowledgeSearchResult.Hit> hits, MultiIntentResult multiIntent) {}
 }

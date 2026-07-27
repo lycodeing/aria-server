@@ -2,7 +2,8 @@ package com.aria.conversation.application.service;
 
 import com.aria.conversation.domain.model.IntentResult;
 import com.aria.conversation.domain.model.IntentType;
-import com.aria.conversation.domain.service.IntentService;
+import com.aria.conversation.domain.model.MultiIntentResult;
+import com.aria.conversation.domain.service.MultiIntentService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -13,6 +14,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import reactor.core.publisher.Flux;
 import reactor.test.StepVerifier;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -22,7 +25,7 @@ import static org.mockito.Mockito.*;
  * ChatAppService 三路分发单元测试。
  *
  * <p>验证路由分发逻辑：已接入人工、无 domainCode（FAQ）、有 domainCode + 转人工意图。
- * 详细的意图路由场景测试属于 FaqChatAppServiceTest。
+ * 详细的多意图路由场景测试属于 ChatAppServiceMultiIntentTest。
  */
 @ExtendWith(MockitoExtension.class)
 @DisplayName("ChatAppService 三路分发")
@@ -32,7 +35,7 @@ class ChatAppServiceIntentTest {
     @Mock private DomainSessionAppService   domainSessionService;
     @Mock private FaqChatAppService         faqChatService;
     @Mock private DomainAgentService        domainAgentService;
-    @Mock private IntentService             intentClassifier;
+    @Mock private MultiIntentService        multiIntentService;
 
     private ChatAppService service;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -40,7 +43,12 @@ class ChatAppServiceIntentTest {
     @BeforeEach
     void setUp() {
         service = new ChatAppService(sessionQueueService, domainSessionService,
-                faqChatService, domainAgentService, intentClassifier, objectMapper);
+                faqChatService, domainAgentService, multiIntentService, objectMapper);
+    }
+
+    private MultiIntentResult singleResult(IntentType type, String code) {
+        return new MultiIntentResult(
+                List.of(new IntentResult(type, code, 1.0)), "RULE", 1L);
     }
 
     @Test
@@ -65,7 +73,7 @@ class ChatAppServiceIntentTest {
         service.stream("s2", "查订单", null).blockLast();
 
         verify(faqChatService).stream("s2", "查订单");
-        verify(domainAgentService, never()).streamChat(any(), any(), any());
+        verify(domainAgentService, never()).streamChat(any(), any(), any(), any());
     }
 
     @Test
@@ -74,15 +82,15 @@ class ChatAppServiceIntentTest {
         when(sessionQueueService.isActive("s3")).thenReturn(false);
         when(domainSessionService.resolveActiveDomain("s3", "转人工", "ecommerce"))
                 .thenReturn("ecommerce");
-        when(intentClassifier.classify("转人工"))
-                .thenReturn(new IntentResult(IntentType.TRANSFER_REQUEST, "transfer_request", 1.0));
+        when(multiIntentService.classifyMulti("转人工"))
+                .thenReturn(singleResult(IntentType.TRANSFER_REQUEST, "transfer_request"));
         when(faqChatService.handleTransfer(eq("s3"), any()))
                 .thenReturn(Flux.just(ChatEvent.transfer("{}")));
 
         StepVerifier.create(service.stream("s3", "转人工", "ecommerce"))
                 .assertNext(e -> assertThat(e.eventType()).isEqualTo(ChatEvent.EventType.TRANSFER))
                 .verifyComplete();
-        verify(domainAgentService, never()).streamChat(any(), any(), any());
+        verify(domainAgentService, never()).streamChat(any(), any(), any(), any());
     }
 
     @Test
@@ -91,15 +99,15 @@ class ChatAppServiceIntentTest {
         when(sessionQueueService.isActive("s4")).thenReturn(false);
         when(domainSessionService.resolveActiveDomain("s4", "查订单", "ecommerce"))
                 .thenReturn("ecommerce");
-        when(intentClassifier.classify("查订单"))
-                .thenReturn(new IntentResult(IntentType.FAQ_QUERY, "faq_query", 0.9));
-        when(domainAgentService.streamChat("s4", "ecommerce", "查订单"))
+        when(multiIntentService.classifyMulti("查订单"))
+                .thenReturn(singleResult(IntentType.FAQ_QUERY, "faq_query"));
+        when(domainAgentService.streamChat(eq("s4"), eq("ecommerce"), eq("查订单"), any()))
                 .thenReturn(Flux.just(ChatEvent.token("好的", objectMapper)));
 
         StepVerifier.create(service.stream("s4", "查订单", "ecommerce"))
                 .assertNext(e -> assertThat(e.eventType()).isNull())
                 .verifyComplete();
-        verify(domainAgentService).streamChat("s4", "ecommerce", "查订单");
+        verify(domainAgentService).streamChat(eq("s4"), eq("ecommerce"), eq("查订单"), any());
         verify(faqChatService, never()).handleTransfer(any(), any());
     }
 }
