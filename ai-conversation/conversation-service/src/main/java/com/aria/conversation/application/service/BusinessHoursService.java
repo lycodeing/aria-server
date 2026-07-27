@@ -70,17 +70,47 @@ public class BusinessHoursService implements IBusinessHoursCalculator {
         return "—";
     }
 
-    /** 供 SlaBreachEvaluator 使用，计算区间内业务时间秒数（按秒粒度累加）。 */
+    /**
+     * 供 SlaBreachEvaluator 使用，计算区间内业务时间秒数。
+     *
+     * <p>采用区间交集算法（O(天数 × 时间段数)），逐日加载当天排班，
+     * 计算 [start, end] 与各营业时间段的重叠秒数并累加。
+     * 相较按秒步进的 O(elapsed_seconds) 实现，性能提升数千倍。
+     */
     @Override
     public long calcBusinessSeconds(OffsetDateTime start, OffsetDateTime end) {
-        long seconds = 0;
-        ZonedDateTime cursor = start.atZoneSameInstant(ZONE);
+        ZonedDateTime startZ = start.atZoneSameInstant(ZONE);
         ZonedDateTime endZ   = end.atZoneSameInstant(ZONE);
-        while (cursor.isBefore(endZ)) {
-            if (isOpen(cursor)) seconds++;
-            cursor = cursor.plusSeconds(1);
+        if (!startZ.isBefore(endZ)) {
+            return 0;
         }
-        return seconds;
+
+        long totalSeconds = 0;
+        LocalDate day     = startZ.toLocalDate();
+        LocalDate lastDay = endZ.toLocalDate();
+
+        while (!day.isAfter(lastDay)) {
+            List<BusinessHoursScheduleEntity.TimeRange> ranges = loadTodayRanges(day);
+            if (ranges != null && !ranges.isEmpty()) {
+                for (BusinessHoursScheduleEntity.TimeRange range : ranges) {
+                    ZonedDateTime rangeStart = day.atTime(
+                            LocalTime.parse(range.getStart(), TIME_FMT)).atZone(ZONE);
+                    ZonedDateTime rangeEnd   = day.atTime(
+                            LocalTime.parse(range.getEnd(), TIME_FMT)).atZone(ZONE);
+
+                    // 与查询区间求交集
+                    ZonedDateTime overlapStart = rangeStart.isBefore(startZ) ? startZ : rangeStart;
+                    ZonedDateTime overlapEnd   = rangeEnd.isAfter(endZ)      ? endZ   : rangeEnd;
+
+                    if (overlapStart.isBefore(overlapEnd)) {
+                        totalSeconds += ChronoUnit.SECONDS.between(overlapStart, overlapEnd);
+                    }
+                }
+            }
+            day = day.plusDays(1);
+        }
+
+        return totalSeconds;
     }
 
     /** 管理员修改排班或节假日后调用，主动失效缓存。 */

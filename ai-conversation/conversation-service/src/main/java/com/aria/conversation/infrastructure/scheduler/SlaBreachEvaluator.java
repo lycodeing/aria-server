@@ -47,28 +47,48 @@ public class SlaBreachEvaluator {
     public List<BreachCandidate> evaluate(ConversationEntity session,
                                           SlaPolicyEntity policy,
                                           OffsetDateTime now) {
+        // null-safe：DB 列有 NOT NULL DEFAULT 80，但防御遗留脏数据或手动修改导致的 null
+        int warningPct = resolveWarningPct(policy);
         List<BreachCandidate> results = new ArrayList<>();
-        evaluateWait(session, policy, now).ifPresent(results::add);
-        evaluateFrt(session, policy, now).ifPresent(results::add);
-        evaluateHandle(session, policy, now).ifPresent(results::add);
+        evaluateWait(session, policy, warningPct, now).ifPresent(results::add);
+        evaluateFrt(session, policy, warningPct, now).ifPresent(results::add);
+        evaluateHandle(session, policy, warningPct, now).ifPresent(results::add);
         return results;
+    }
+
+    /**
+     * 安全读取 warningThresholdPct。
+     * 数据库列为 NOT NULL DEFAULT 80，正常情况不会为 null；
+     * 若遇到遗留脏数据，退回 100（warnAtSec == targetSec，即 WARNING 与 BREACH 同时触发，等效禁用预警），
+     * 并输出 WARN 日志方便排查。
+     */
+    private int resolveWarningPct(SlaPolicyEntity policy) {
+        Integer pct = policy.getWarningThresholdPct();
+        if (pct == null) {
+            log.warn("[SLA] policy={} warningThresholdPct is null, WARNING stage disabled (defaulting to 100)",
+                    policy.getId());
+            return 100;
+        }
+        return pct;
     }
 
     // ── 三个指标的独立检测方法 ─────────────────────────────────────────────────
 
     private Optional<BreachCandidate> evaluateWait(ConversationEntity session,
                                                     SlaPolicyEntity policy,
+                                                    int warningPct,
                                                     OffsetDateTime now) {
         if (session.getStatus() != SessionStatus.WAITING) {
             return Optional.empty();
         }
         long elapsed = calcElapsed(session.getStartedAt(), now, policy.getTimeMode());
         return resolveStage(elapsed, policy.getWaitTimeTargetSec(),
-                policy.getWarningThresholdPct(), BreachType.WAIT, session, now);
+                warningPct, BreachType.WAIT, session, now);
     }
 
     private Optional<BreachCandidate> evaluateFrt(ConversationEntity session,
                                                    SlaPolicyEntity policy,
+                                                   int warningPct,
                                                    OffsetDateTime now) {
         if (session.getStatus() != SessionStatus.ACTIVE) {
             return Optional.empty();
@@ -84,11 +104,12 @@ public class SlaBreachEvaluator {
         }
         long elapsed = calcElapsed(session.getAcceptedAt(), now, policy.getTimeMode());
         return resolveStage(elapsed, policy.getFrtTargetSec(),
-                policy.getWarningThresholdPct(), BreachType.FRT, session, now);
+                warningPct, BreachType.FRT, session, now);
     }
 
     private Optional<BreachCandidate> evaluateHandle(ConversationEntity session,
                                                       SlaPolicyEntity policy,
+                                                      int warningPct,
                                                       OffsetDateTime now) {
         if (session.getStatus() != SessionStatus.ACTIVE) {
             return Optional.empty();
@@ -100,7 +121,7 @@ public class SlaBreachEvaluator {
         }
         long elapsed = calcElapsed(session.getAcceptedAt(), now, policy.getTimeMode());
         return resolveStage(elapsed, policy.getHandleTimeTargetSec(),
-                policy.getWarningThresholdPct(), BreachType.HANDLE, session, now);
+                warningPct, BreachType.HANDLE, session, now);
     }
 
     // ── 通用辅助方法 ──────────────────────────────────────────────────────────
