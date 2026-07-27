@@ -66,13 +66,20 @@ public class IntentPrototypeStore {
 
     /**
      * 获取所有意图的原型向量快照。
-     * 优先从本地 Caffeine 缓存读取；缓存未命中时从 Redis HASH 全量加载；
+     * 优先从本地 Caffeine 缓存读取（快路径，避免高频 Redis 访问）；
+     * 缓存未命中时从 Redis HASH 全量加载并回填缓存；
      * Redis 无数据时触发 rebuild()。
      *
      * @return intentCode → 原型向量（已归一化），不可修改
      */
     public Map<String, float[]> getAllPrototypes() {
-        // 先从 Caffeine 批量获取（快路径）
+        // 快路径：从 Caffeine 批量读取已缓存的快照
+        Map<String, float[]> cached = Map.copyOf(localCache.asMap());
+        if (!cached.isEmpty()) {
+            return cached;
+        }
+
+        // 缓存未命中：从 Redis 全量加载
         RMap<String, String> redisMap = redissonClient.getMap(CustomerServiceCacheConstant.INTENT_PROTOTYPES);
         Map<String, String> redisData = redisMap.readAllMap();
 
@@ -96,6 +103,8 @@ public class IntentPrototypeStore {
                 log.warn("[PrototypeStore] 反序列化失败 intentCode={}", entry.getKey(), e);
             }
         }
+        // 回填 Caffeine 缓存，后续调用走快路径
+        localCache.putAll(result);
         return Map.copyOf(result);
     }
 

@@ -22,20 +22,20 @@ class IntentTypeFromCodeTest {
     }
 
     @Test
-    @DisplayName("未知 code 返回 FAQ_QUERY 兜底")
-    void fromCode_unknown_returnsFaqQuery() {
-        assertThat(IntentType.fromCode("query_order")).isEqualTo(IntentType.FAQ_QUERY);
+    @DisplayName("未知 code 返回 UNKNOWN（C4 修复：避免 LLM 幻觉意图被静默转为 FAQ_QUERY）")
+    void fromCode_unknown_returnsUnknown() {
+        assertThat(IntentType.fromCode("query_order")).isEqualTo(IntentType.UNKNOWN);
     }
 
     @Test
-    @DisplayName("null 返回 FAQ_QUERY 兜底")
-    void fromCode_null_returnsFaqQuery() {
-        assertThat(IntentType.fromCode(null)).isEqualTo(IntentType.FAQ_QUERY);
+    @DisplayName("null 返回 UNKNOWN")
+    void fromCode_null_returnsUnknown() {
+        assertThat(IntentType.fromCode(null)).isEqualTo(IntentType.UNKNOWN);
     }
 
     @Test
-    @DisplayName("空白字符串返回 FAQ_QUERY 兜底")
-    void fromCode_blank_returnsFaqQuery() {
-        assertThat(IntentType.fromCode("   ")).isEqualTo(IntentType.FAQ_QUERY);
+    @DisplayName("空白字符串返回 UNKNOWN")
+    void fromCode_blank_returnsUnknown() {
+        assertThat(IntentType.fromCode("   ")).isEqualTo(IntentType.UNKNOWN);
     }
 }
