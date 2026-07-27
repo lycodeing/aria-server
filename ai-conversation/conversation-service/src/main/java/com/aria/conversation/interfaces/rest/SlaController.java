@@ -12,8 +12,11 @@ import com.aria.conversation.infrastructure.persistence.mapper.SlaPolicyMapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Pattern;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -156,6 +159,9 @@ public class SlaController {
         private Integer priority;
         private List<String> matchVisitorTags;
         private List<String> matchTransferTags;
+        @NotNull
+        @Pattern(regexp = "CALENDAR|BUSINESS_HOURS",
+                 message = "timeMode 只允许 CALENDAR 或 BUSINESS_HOURS")
         private String timeMode = "CALENDAR";
         @NotNull
         private Integer waitTimeTargetSec;
@@ -163,6 +169,9 @@ public class SlaController {
         private Integer frtTargetSec;
         @NotNull
         private Integer handleTimeTargetSec;
+        @NotNull
+        @Min(value = 1,   message = "warningThresholdPct 最小为 1")
+        @Max(value = 100, message = "warningThresholdPct 最大为 100")
         private Integer warningThresholdPct = 80;
         @NotNull @Valid
         private SlaBreachActions actions;
