@@ -74,6 +74,14 @@ public class SlaBreachEvaluator {
 
     // ── 三个指标的独立检测方法 ─────────────────────────────────────────────────
 
+    /**
+     * 检测等待超时（WAIT）。
+     *
+     * <p>仅对 {@link SessionStatus#WAITING} 状态的会话生效，以 {@code session.startedAt} 为计时起点。
+     * 会话转为 ACTIVE 后此指标自动停止评估（调度器不再返回该会话）。
+     *
+     * @param warningPct 预警百分比，由 {@link #resolveWarningPct} 安全解析
+     */
     private Optional<BreachCandidate> evaluateWait(ConversationEntity session,
                                                     SlaPolicyEntity policy,
                                                     int warningPct,
@@ -86,6 +94,15 @@ public class SlaBreachEvaluator {
                 warningPct, BreachType.WAIT, session, now);
     }
 
+    /**
+     * 检测首次响应超时（FRT，First Response Time）。
+     *
+     * <p>仅对 {@link SessionStatus#ACTIVE} 且 {@code firstReplyAt} 为 null 的会话生效，
+     * 以 {@code session.acceptedAt}（座席接入时间）为计时起点。
+     * 座席发出首条消息后 {@code firstReplyAt} 被写入，此后该指标自动跳过。
+     *
+     * @param warningPct 预警百分比，由 {@link #resolveWarningPct} 安全解析
+     */
     private Optional<BreachCandidate> evaluateFrt(ConversationEntity session,
                                                    SlaPolicyEntity policy,
                                                    int warningPct,
@@ -107,6 +124,14 @@ public class SlaBreachEvaluator {
                 warningPct, BreachType.FRT, session, now);
     }
 
+    /**
+     * 检测处理时长超时（HANDLE）。
+     *
+     * <p>仅对 {@link SessionStatus#ACTIVE} 的会话生效，以 {@code session.acceptedAt} 为计时起点，
+     * 持续累计直到会话关闭（CLOSED 状态的会话不会出现在调度器扫描列表中）。
+     *
+     * @param warningPct 预警百分比，由 {@link #resolveWarningPct} 安全解析
+     */
     private Optional<BreachCandidate> evaluateHandle(ConversationEntity session,
                                                       SlaPolicyEntity policy,
                                                       int warningPct,
@@ -157,6 +182,17 @@ public class SlaBreachEvaluator {
                 : ChronoUnit.SECONDS.between(start, now);
     }
 
+    /**
+     * 构建违规候选值对象。
+     *
+     * @param session     违规会话
+     * @param type        违规类型（WAIT / FRT / HANDLE）
+     * @param stage       违规阶段（WARNING / BREACH）
+     * @param targetSec   策略配置的目标时间（秒）
+     * @param warnAtSec   预警触发时间（秒）= targetSec × warningPct / 100
+     * @param actualSec   实际已用时间（秒），超出 int 范围时截断（极长会话）
+     * @param detectedAt  本次扫描的基准时间，作为违规发生时间写入数据库
+     */
     private BreachCandidate buildCandidate(ConversationEntity session, BreachType type,
                                            BreachStage stage, int targetSec, int warnAtSec,
                                            long actualSec, OffsetDateTime detectedAt) {

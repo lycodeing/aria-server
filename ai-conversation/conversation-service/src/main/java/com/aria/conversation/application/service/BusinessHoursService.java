@@ -120,6 +120,22 @@ public class BusinessHoursService implements IBusinessHoursCalculator {
 
     // ── 私有：加载当天生效时间段（含节假日覆盖） ──────────────────
 
+    /**
+     * 加载指定日期的有效营业时间段列表，优先级：Redis 缓存 → 节假日配置 → 周排班。
+     *
+     * <p>返回值语义：
+     * <ul>
+     *   <li>{@code null}              — 排班表无配置（视为全天开放，降级处理）</li>
+     *   <li>{@code Collections.emptyList()} — 该日为休息日或节假日关闭（全天不开放）</li>
+     *   <li>非空列表               — 当天各营业时段（HH:mm 格式，左闭右开区间）</li>
+     * </ul>
+     *
+     * <p>Redis 缓存 TTL 为当天剩余秒数（到次日零点失效），命中率高；
+     * 节假日配置优先于周排班，支持临时调班（WORKDAY / CUSTOM / CLOSED）。
+     *
+     * @param date 目标日期（Asia/Shanghai 时区）
+     * @return 时间段列表，{@code null} 表示无排班数据
+     */
     private List<BusinessHoursScheduleEntity.TimeRange> loadTodayRanges(LocalDate date) {
         String cacheKey = CACHE_KEY_PREFIX + date;
 
