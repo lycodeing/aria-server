@@ -2466,3 +2466,62 @@ git revert <commit> 或 kubectl rollout undo deployment/conversation-service
 | 原型重建触发 | IntentConfig 变更后，5 分钟内 Tier2 结果更新 |
 | 高置信度自动积累 | confidence>=0.95 的案例写入 intent_example_vectors |
 | Tier3 动态 RAG 注入 | LLM Prompt 中包含历史案例，识别准确率提升 |
+
+---
+
+## 13. 实现备注（2026-07-28）
+
+### 13.1 实现与设计的关键偏差
+
+| 编号 | 设计文档原定 | 实际实现 | 原因 |
+|------|------------|---------|------|
+| D1 | Flyway 迁移脚本 `V{next}__create_intent_example_vectors.sql` | 追加到 `docs/sql/conversation-service-schema.sql` | 项目不使用 Flyway，用手动 SQL 脚本管理数据库变更 |
+| D2 | `EmbeddingService` 复用知识库服务 | conversation-service 新建独立 `EmbeddingService` 接口 + `LangChain4jEmbeddingService` 实现 | knowledge-service 与 conversation-service 独立部署，不共享 Bean |
+| D3 | `IntentPrototypeStore` 使用 `RedisTemplate` | 使用 `RedissonClient`（项目统一 Redis 客户端） | 项目全局使用 Redisson，无 Spring RedisTemplate 配置 |
+| D4 | Tier3 动态 RAG 注入 + 高置信度自动积累 | 基础设施已就绪（`IntentExampleVectorRepository`），接入点标注 TODO | Phase 2 工作，本次优先交付核心多意图识别和 Tier2 Embedding |
+| D5 | `sourceTier` 更新时机 | 只在 Tier 真正贡献新意图时更新 `reachedTier` | 设计文档描述模糊，实现澄清：Tier2/3 只在新增意图时才变更 tier 标记 |
+
+### 13.2 代码评审发现并修复的问题（3 轮评审，10 个问题）
+
+**第一轮 Critical 修复：**
+- `C1`：`IntentPrototypeStore.getAllPrototypes()` Caffeine 缓存逻辑缺失（死代码），修复为先查本地缓存，Redis 加载后回填
+- `C2`：`prototypeRebuildExecutor` Bean 缺失，补充到 `AsyncConfig.java`
+- `C3`：`RoutingConfig.fromProperties()` 未同步 8 个新字段（含 `embeddingThresholds` Map），全部补全
+- `C4`：`IntentType.fromCode()` 对未知 code 回退为 `FAQ_QUERY` 存在安全隐患，改为回退 `UNKNOWN`
+
+**第一轮 Important 修复：**
+- `I2`：`IntentConfigChangedEvent` 无发布点，在 `DitManageAppService.evictDomainByIntentId()` 补充发布
+- `I3`：`VectorMathUtils.cosineSimilarity()` 缺少维度不匹配校验，增加 `IllegalArgumentException`
+
+**第二轮修复（C4 修复引发的语义澄清）：**
+- `N1`：`LangChain4jIntentService.parseResponse()` 旧路径仍用 `FAQ_QUERY` 兜底，与 C4 修复目标矛盾，改用 `fromCode()`
+- `N2`：`EmbeddingPrototypeIntentMatcher` 自定义业务 code 不应视为幻觉，拆分为两个语义方法
+
+**核心设计修正（`IntentType` 两种语境分离）：**
+```
+IntentType.fromCode(code)          → LLM 输出解析语境，未知 code = 幻觉 → UNKNOWN
+IntentType.fromBusinessCode(code)  → 业务路由语境（Tier1/Tier2），未知 code = 自定义业务意图 → FAQ_QUERY
+```
+
+### 13.3 最终测试覆盖
+
+| 模块 | 测试数 | 覆盖重点 |
+|------|-------|---------|
+| `common-core` VectorMathUtils | 10 | 均值、归一化、余弦相似度、维度不匹配 |
+| domain model | 15 | MultiIntentResult union/intersection 语义、IntentType.fromCode/fromBusinessCode |
+| infrastructure Tier1 | 12 | matchAll 全量命中、去重、向后兼容 |
+| infrastructure Tier2 | 5 | 阈值命中/未命中、独立阈值覆盖、空原型库 |
+| infrastructure Tier3/协调器 | 6 | 三级跳过逻辑、合并去重、退化模式、异常降级 |
+| infrastructure 存储 | 4 | PrototypeStore rebuild 异常跳过、Redis 写入 |
+| application 路由 | 9 | union 转人工、intentCodes 透传、OUT_OF_SCOPE 路由 |
+| **合计** | **317** | **BUILD SUCCESS** |
+
+### 13.4 未实现功能（Phase 2）
+
+以下功能基础设施已就绪，但未接入主流程，标注 TODO 等待后续迭代：
+- `LangChain4jIntentService.buildMultiPrompt()` 未注入动态 RAG（`IntentExampleVectorRepository.findSimilarByIntent()`）
+- `MultiHybridIntentService` 未实现高置信度自动积累（`IntentExampleVectorRepository.saveIfAbsent()`）
+- `DomainAgentService.streamChat(..., intentCodes)` 仅记录日志，未动态注入 System Prompt
+- 标签相关性建模（GNN / 标签链）
+- 意图级阈值自动调优（PR 曲线离线分析）
+
