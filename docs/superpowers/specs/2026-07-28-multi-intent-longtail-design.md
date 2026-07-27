@@ -365,6 +365,8 @@ public record MultiIntentResult(
 
     /** 兜底结果 */
     public static final MultiIntentResult UNKNOWN =
+            // NM-1: domain 层不能引用 infra 层 ClassificationTierConstants，
+            // 此处定义局部兜底标记字符串。两者值相同但刻意分离，避免领域对象依赖基础设施。
             new MultiIntentResult(List.of(IntentResult.UNKNOWN), "RULE", 0L);
 
     /** 主意图：按 IntentPriority 取优先级最高的意图 */
@@ -519,6 +521,10 @@ public interface IntentClassificationConstants {
     int    PROTOTYPE_CACHE_MAX_SIZE         = 200;
     /** Caffeine 本地缓存 TTL（分钟）*/
     int    PROTOTYPE_CACHE_TTL_MINUTES      = 10;
+    /** LLM Few-Shot 静态样本最大注入数（NM-3修复）*/
+    int    DEFAULT_MAX_EXAMPLES_TO_INJECT   = 3;
+    /** Tier3 动态 RAG 每意图注入历史案例数（NM-3修复）*/
+    int    DEFAULT_LLM_RAG_TOP_K            = 2;
 }
 ```
 
@@ -574,12 +580,14 @@ public class LangChain4jIntentService implements IntentService, MultiIntentClass
 
 `HybridIntentService` 对接口兼容性
 
-`IntentService (保留)                MultiIntentService (新增)
+```
+IntentService (保留)                MultiIntentService (新增)
   classify(): IntentResult            classifyMulti(): MultiIntentResult
        ↑                                    ↑
 HybridIntentService (保留)        MultiHybridIntentService (新增, @Primary)
   基于 MultiHybridIntentService 代理        三级级联实现
-                                           依赖 MultiIntentClassifier（接口）而非具体类`
+                                           依赖 MultiIntentClassifier（接口）而非具体类
+```
 
 ```java
 @Override
@@ -1810,7 +1818,7 @@ public static class Intent {
     @Deprecated
     private double embeddingThreshold = IntentClassificationConstants.DEFAULT_EMBEDDING_THRESHOLD;  // 已废弃，改用 embeddingGlobalThreshold
     private double minLlmConfidence = IntentClassificationConstants.DEFAULT_MIN_LLM_CONFIDENCE;
-    private int maxExamplesToInject = 3;
+    private int maxExamplesToInject = IntentClassificationConstants.DEFAULT_MAX_EXAMPLES_TO_INJECT;  // NM-3修复
 
     // 新增
     private boolean multiIntentEnabled = true;
@@ -1819,7 +1827,7 @@ public static class Intent {
     private double embeddingHighConfidence = IntentClassificationConstants.DEFAULT_HIGH_CONFIDENCE;
     private Map<String, Double> embeddingThresholds = new HashMap<>();
     private boolean llmRagEnabled = true;
-    private int llmRagTopK = 2;
+    private int llmRagTopK = IntentClassificationConstants.DEFAULT_LLM_RAG_TOP_K;  // NM-3修复
     private boolean autoAccumulateEnabled = true;
     private double autoAccumulateMinConfidence = IntentClassificationConstants.DEFAULT_AUTO_ACCUMULATE_MIN_CONF;
 }
@@ -2286,7 +2294,8 @@ graph TB
     HMIS --> MHIS
     MHIS --> KRM
     MHIS --> EPIM
-    MHIS --> LJIS
+    MHIS --> MIC["MultiIntentClassifier\n接口(infra)"]
+    MIC  --> LJIS
     MHIS --> RCP
     KRM --> DR
     EPIM --> IPS
