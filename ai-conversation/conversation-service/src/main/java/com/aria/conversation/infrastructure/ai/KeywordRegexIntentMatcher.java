@@ -50,36 +50,64 @@ public class KeywordRegexIntentMatcher {
             .build();
 
     /**
-     * 尝试用规则匹配用户消息（纯内存操作，< 1ms）。
+     * 收集所有命中的意图规则（不再首个返回）。
      *
-     * <p>遍历规则列表（已按 sortOrder 升序排列），依次执行关键词包含匹配和正则匹配，
-     * 第一个命中即返回，不继续匹配剩余规则。
+     * <p>同一意图 code 可能被多条规则命中，结果集按 intentCode 去重，
+     * 保留 sortOrder 最小（即第一次命中）的结果。
+     *
+     * @param userMessage 用户消息，null 或空白直接返回空列表
+     * @return 所有命中的意图列表，按规则 sortOrder 升序，不可修改；未命中返回空列表
+     */
+    public List<IntentResult> matchAll(String userMessage) {
+        if (StringUtils.isBlank(userMessage)) {
+            return List.of();
+        }
+        String lower = userMessage.toLowerCase();
+        // LinkedHashMap 保证插入顺序（按 sortOrder），同 code 只保留第一条命中
+        java.util.Map<String, IntentResult> resultMap = new java.util.LinkedHashMap<>();
+
+        for (IntentRuleEntry entry : loadRules()) {
+            if (resultMap.containsKey(entry.intentCode())) {
+                continue;  // 该意图已命中，跳过重复规则
+            }
+            boolean hit = false;
+            for (String kw : entry.keywords()) {
+                if (lower.contains(kw.toLowerCase())) {
+                    log.debug("[RuleMatcher] 关键词命中 intent={} kw={}", entry.intentCode(), kw);
+                    hit = true;
+                    break;
+                }
+            }
+            if (!hit) {
+                for (Pattern p : entry.compiledPatterns()) {
+                    if (p.matcher(userMessage).find()) {
+                        log.debug("[RuleMatcher] 正则命中 intent={} pattern={}",
+                                entry.intentCode(), p.pattern());
+                        hit = true;
+                        break;
+                    }
+                }
+            }
+            if (hit) {
+                resultMap.put(entry.intentCode(),
+                        new IntentResult(entry.intentType(),
+                                entry.intentCode().toLowerCase(), 1.0));
+            }
+        }
+        return List.copyOf(resultMap.values());
+    }
+
+    /**
+     * 尝试用规则匹配用户消息（向后兼容方法，内部代理 {@link #matchAll(String)}）。
+     *
+     * <p>遍历规则列表（已按 sortOrder 升序排列），第一个命中即返回，不继续匹配剩余规则。
      *
      * @param userMessage 用户消息，null 或空白直接返回 empty
      * @return 命中返回 {@link IntentResult}（confidence=1.0，intentCode 小写），未命中返回 empty
      */
     public Optional<IntentResult> match(String userMessage) {
-        if (StringUtils.isBlank(userMessage)) {
-            return Optional.empty();
-        }
-        String lower = userMessage.toLowerCase();
-        for (IntentRuleEntry entry : loadRules()) {
-            for (String kw : entry.keywords()) {
-                if (lower.contains(kw.toLowerCase())) {
-                    log.debug("[RuleMatcher] 关键词命中 intent={} kw={}", entry.intentCode(), kw);
-                    return Optional.of(new IntentResult(entry.intentType(),
-                            entry.intentCode().toLowerCase(), 1.0));
-                }
-            }
-            for (Pattern p : entry.compiledPatterns()) {
-                if (p.matcher(userMessage).find()) {
-                    log.debug("[RuleMatcher] 正则命中 intent={} pattern={}", entry.intentCode(), p.pattern());
-                    return Optional.of(new IntentResult(entry.intentType(),
-                            entry.intentCode().toLowerCase(), 1.0));
-                }
-            }
-        }
-        return Optional.empty();
+        List<IntentResult> all = matchAll(userMessage);
+        return all.isEmpty() ? Optional.empty() : Optional.of(all.get(0));
     }
 
     /**
