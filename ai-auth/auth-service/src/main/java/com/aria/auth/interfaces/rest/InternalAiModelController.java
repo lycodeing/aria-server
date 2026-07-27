@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.RestController;
  * GET /internal/ai-models/active           返回当前默认 CHAT 配置（api_key 已解密明文）
  * GET /internal/ai-models/active-embedding 返回当前默认 EMBEDDING 配置（api_key 已解密明文）
  * GET /internal/ai-models/active-router    返回当前默认 ROUTER 配置（api_key 已解密明文）
+ * GET /internal/ai-models/active-reranker  返回当前默认 RERANKER 配置（api_key 已解密明文）
  * </pre>
  */
 @Slf4j
@@ -70,6 +71,21 @@ public class InternalAiModelController {
             return R.fail(NOT_FOUND_CODE, "未找到激活的 ROUTER 模型配置，请在后台 AI 模型配置页面设置默认 ROUTER 配置");
         }
         return R.ok(toConfig(d, AiModelScopeDefaults.ROUTER));
+    }
+
+    /**
+     * 返回当前激活（默认）的 RERANKER 模型配置，api_key 为解密后明文。
+     *
+     * <p>knowledge-service 通过此接口获取精排模型的 base_url / model_name / api_key，
+     * 支持热切换 Reranker 服务地址或模型版本，无需重启。
+     */
+    @GetMapping("/active-reranker")
+    public R<AiModelConfig> getActiveReranker() {
+        AiModelConfigDO d = service.getActiveRerankerConfig();
+        if (d == null) {
+            return R.fail(NOT_FOUND_CODE, "未找到激活的 RERANKER 模型配置，请在后台 AI 模型配置页面设置默认 RERANKER 配置");
+        }
+        return R.ok(toConfig(d, AiModelScopeDefaults.RERANKER));
     }
 
     // ---- 内部工具 ----

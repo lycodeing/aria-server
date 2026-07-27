@@ -92,7 +92,7 @@ CREATE TABLE cs_auth.ai_model_config (
     updated_at timestamp without time zone DEFAULT now() NOT NULL,
     deleted_at timestamp without time zone,
     model_type character varying(20) DEFAULT 'CHAT'::character varying NOT NULL,
-    CONSTRAINT ai_model_config_model_type_check CHECK (((model_type)::text = ANY ((ARRAY['CHAT'::character varying, 'EMBEDDING'::character varying, 'ROUTER'::character varying])::text[])))
+    CONSTRAINT ai_model_config_model_type_check CHECK (((model_type)::text = ANY ((ARRAY['CHAT'::character varying, 'EMBEDDING'::character varying, 'ROUTER'::character varying, 'RERANKER'::character varying])::text[])))
 );
 
 
@@ -121,7 +121,7 @@ COMMENT ON COLUMN cs_auth.ai_model_config.is_default IS '是否为默认模型�
 -- Name: COLUMN ai_model_config.model_type; Type: COMMENT; Schema: cs_auth; Owner: -
 --
 
-COMMENT ON COLUMN cs_auth.ai_model_config.model_type IS 'CHAT=对话大模型, EMBEDDING=向量模型, ROUTER=域路由小模型';
+COMMENT ON COLUMN cs_auth.ai_model_config.model_type IS 'CHAT=对话大模型, EMBEDDING=向量模型, ROUTER=域路由小模型, RERANKER=重排序模型';
 
 
 --
@@ -1964,6 +1964,7 @@ INSERT INTO cs_auth.ai_model_config (id, name, provider, api_protocol, remark, b
 INSERT INTO cs_auth.ai_model_config (id, name, provider, api_protocol, remark, base_url, api_key_enc, model_name, temperature, max_tokens, timeout_sec, is_default, is_enabled, created_by, created_at, updated_at, deleted_at, model_type) VALUES (1, '天翼云 DeepSeek-V4-Pro', 'CTYUN', 'OPENAI_COMPATIBLE', '天翼云 AI 平台 DeepSeek-V4-Flash 模型，默认对话模型', 'https://wishub-x6.ctyun.cn/v1', 'PLAINTEXT:c4747b2f3e3e49308b5fb0ba256cb70e', 'DeepSeek-V4-Pro', 0.70, 4096, 60, true, true, 1001, '2026-07-02 15:33:05.115131', '2026-07-10 00:26:59.38003', NULL, 'CHAT');
 INSERT INTO cs_auth.ai_model_config (id, name, provider, api_protocol, remark, base_url, api_key_enc, model_name, temperature, max_tokens, timeout_sec, is_default, is_enabled, created_by, created_at, updated_at, deleted_at, model_type) VALUES (8, 'qwen3.6-flash', 'CUSTOM', 'OPENAI_COMPATIBLE', NULL, 'https://llm-abgxi9yilg0zfoev.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', 'PLAINTEXT:sk-53e959ca40084e06953073c5c529e3ef', 'qwen3.6-flash-2026-04-16', 0.00, 32, 5, false, true, 1001, '2026-07-10 00:39:28.402335', '2026-07-10 00:39:28.404229', NULL, 'ROUTER');
 INSERT INTO cs_auth.ai_model_config (id, name, provider, api_protocol, remark, base_url, api_key_enc, model_name, temperature, max_tokens, timeout_sec, is_default, is_enabled, created_by, created_at, updated_at, deleted_at, model_type) VALUES (7, '意图识别和槽位填充模型', 'OPENAI', 'OPENAI_COMPATIBLE', NULL, 'http://192.168.1.8:11434/v1', 'PLAINTEXT:sk-53e959ca40084e06953073c5c529e3ef', 'qwen:4b', 0.00, 32, 5, false, true, 1001, '2026-07-06 23:04:45.988999', '2026-07-10 00:40:12.55508', NULL, 'ROUTER');
+INSERT INTO cs_auth.ai_model_config (id, name, provider, api_protocol, remark, base_url, api_key_enc, model_name, temperature, max_tokens, timeout_sec, is_default, is_enabled, created_by, created_at, updated_at, deleted_at, model_type) VALUES (11, '本地 BGE-Reranker-v2-M3', 'Custom', 'OPENAI_COMPATIBLE', 'BGE-Reranker-v2-M3 精排模型，基于 Cross-Encoder 架构，专为中英双语优化', 'http://localhost:8001', 'PLAINTEXT:', 'bge-reranker-v2-m3', 0.00, 0, 10, true, true, NULL, '2026-07-27 00:00:00.000000', '2026-07-27 00:00:00.000000', NULL, 'RERANKER');
 
 
 --
@@ -2369,7 +2370,7 @@ INSERT INTO cs_conversation.flyway_schema_history (installed_rank, version, desc
 -- Name: ai_model_config_id_seq; Type: SEQUENCE SET; Schema: cs_auth; Owner: -
 --
 
-SELECT pg_catalog.setval('cs_auth.ai_model_config_id_seq', 10, true);
+SELECT pg_catalog.setval('cs_auth.ai_model_config_id_seq', 11, true);
 
 
 --

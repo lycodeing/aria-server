@@ -10,6 +10,7 @@ package com.aria.sdk.auth.model;
  *   <li>{@link #CHAT}       → {@code /internal/ai-models/active}</li>
  *   <li>{@link #EMBEDDING}  → {@code /internal/ai-models/active-embedding}</li>
  *   <li>{@link #ROUTER}     → {@code /internal/ai-models/active-router}</li>
+ *   <li>{@link #RERANKER}   → {@code /internal/ai-models/active-reranker}</li>
  * </ul>
  *
  * @author lycodeing
@@ -24,7 +25,10 @@ public enum ModelScope {
     EMBEDDING("/internal/ai-models/active-embedding"),
 
     /** 域路由模型（Router，低延迟低成本） */
-    ROUTER("/internal/ai-models/active-router");
+    ROUTER("/internal/ai-models/active-router"),
+
+    /** 重排序模型（Reranker，Cross-Encoder 精排） */
+    RERANKER("/internal/ai-models/active-reranker");
 
     private final String path;
 
