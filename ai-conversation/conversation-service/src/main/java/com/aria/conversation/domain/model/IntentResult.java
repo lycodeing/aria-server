@@ -9,16 +9,22 @@ package com.aria.conversation.domain.model;
  */
 public record IntentResult(IntentType intent, String intentCode, double confidence) {
 
-    /** 兜底结果，分类失败时使用。confidence=0.0 表示完全不确定。 */
+    /**
+     * 兜底结果，分类失败时使用。confidence=0.0 表示完全不确定。
+     */
     public static final IntentResult UNKNOWN =
             new IntentResult(IntentType.UNKNOWN, "UNKNOWN", 0.0);
 
-    /** 判断是否需要自动转人工（TRANSFER_REQUEST 或 COMPLAINT） */
+    /**
+     * 判断是否需要自动转人工（TRANSFER_REQUEST 或 COMPLAINT）
+     */
     public boolean requiresTransfer() {
         return intent == IntentType.TRANSFER_REQUEST || intent == IntentType.COMPLAINT;
     }
 
-    /** 判断是否可以跳过 RAG 检索 */
+    /**
+     * 判断是否可以跳过 RAG 检索
+     */
     public boolean skipRag() {
         return intent == IntentType.CHITCHAT || intent == IntentType.OUT_OF_SCOPE;
     }
