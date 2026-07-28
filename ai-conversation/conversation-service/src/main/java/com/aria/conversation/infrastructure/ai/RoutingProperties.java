@@ -55,10 +55,14 @@ public class RoutingProperties {
         /** 是否启用域路由规则层 */
         private boolean ruleEnabled = true;
         /**
-         * 域路由 LLM 置信度阈值（预留）。
+         * 域路由 LLM 置信度阈值（预留，暂不生效）。
          * 当前 LangChain4jDomainRoutingService 返回裸 domain code，不含 confidence，
-         * 此配置暂不生效。
+         * 此字段等待域路由重构后启用。
+         *
+         * @deprecated 暂未接入路由逻辑，占位保留，不建议修改。
+         * TODO: 域路由感知置信度后启用
          */
+        @Deprecated
         private double minLlmConfidence = 0.0;
     }
 }
