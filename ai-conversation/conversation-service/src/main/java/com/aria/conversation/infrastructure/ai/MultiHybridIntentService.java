@@ -74,74 +74,77 @@ public class MultiHybridIntentService implements MultiIntentService {
     private MultiIntentResult doClassify(String userMessage, String domainCode, long start) {
         RoutingConfig.Intent cfg = routingConfigProvider.getConfig().getIntent();
 
-        // 退化模式：multiIntentEnabled=false 时降为单意图
         if (!cfg.isMultiIntentEnabled()) {
             List<IntentResult> ruleResult = safeMatchAll(userMessage);
             IntentResult single = ruleResult.isEmpty() ? IntentResult.UNKNOWN : ruleResult.get(0);
             return new MultiIntentResult(List.of(single), ClassificationTierConstants.RULE, 0L);
         }
 
-        // 合并意图列表：__system__ 路由级意图 + 活跃域业务意图（Tier3 Prompt 使用）
         List<IntentConfig> mergedIntents = loadMergedIntents(domainCode);
-
         Map<String, IntentResult> merged = new LinkedHashMap<>();
         String reachedTier = ClassificationTierConstants.RULE;
 
-        // ── Tier 1: 规则层（必执行）──────────────────────────────────
-        try {
-            List<IntentResult> ruleResults = ruleMatcher.matchAll(userMessage);
-            ruleResults.forEach(r -> merged.put(r.intentCode(), r));
-            if (!ruleResults.isEmpty()) {
-                log.debug("[MultiHybrid] Tier1 命中 {} 个意图", ruleResults.size());
-            }
-        } catch (Exception e) {
-            log.warn("[MultiHybrid] Tier1 规则层异常，跳过. msg={}", userMessage, e);
-        }
-
-        // ── Tier 2: Embedding 原型层（embeddingEnabled=true 时始终执行）────
-        if (cfg.isEmbeddingEnabled()) {
-            try {
-                List<IntentResult> embResults = embeddingMatcher.match(userMessage);
-                // 必须在 putIfAbsent 前统计新增数量，否则统计恒为 0（I5 修复）
-                long newCount = embResults.stream()
-                        .filter(r -> !merged.containsKey(r.intentCode())).count();
-                embResults.forEach(r -> merged.putIfAbsent(r.intentCode(), r));
-                if (newCount > 0) {
-                    // 只有 Tier2 真正新增了意图，才更新 reachedTier
-                    reachedTier = ClassificationTierConstants.EMBEDDING;
-                    log.debug("[MultiHybrid] Tier2 新增 {} 个意图", newCount);
-                }
-            } catch (Exception e) {
-                log.warn("[MultiHybrid] Tier2 Embedding 层异常，跳过. msg={}", userMessage, e);
-            }
-        }
-
-        // ── Tier 3: LLM 兜底（置信度不足时触发）──────────────────────
-        if (shouldFallbackToLlm(merged, cfg)) {
-            try {
-                reachedTier = ClassificationTierConstants.LLM;
-                // Tier3 使用合并后的意图列表，LLM Prompt 包含完整业务意图上下文
-                List<IntentResult> llmResults = llmClassifier.classifyMulti(userMessage, mergedIntents);
-                // LLM 结果：仅补充，不覆盖 Tier1/Tier2 已有的高置信度结果
-                llmResults.forEach(r -> merged.merge(r.intentCode(), r,
-                        (ex, nr) -> ex.confidence() >= nr.confidence() ? ex : nr));
-                log.debug("[MultiHybrid] Tier3 LLM 补充后共 {} 个意图", merged.size());
-                // 高置信度结果异步积累（不阻塞主路径）
-                autoAccumulate(llmResults, userMessage, cfg);
-            } catch (Exception e) {
-                log.warn("[MultiHybrid] Tier3 LLM 层异常，使用已有结果. msg={}", userMessage, e);
-            }
-        }
+        applyTier1(userMessage, merged);
+        if (cfg.isEmbeddingEnabled() && applyTier2(userMessage, merged)) reachedTier = ClassificationTierConstants.EMBEDDING;
+        if (shouldFallbackToLlm(merged, cfg) && applyTier3(userMessage, mergedIntents, merged, cfg)) reachedTier = ClassificationTierConstants.LLM;
 
         List<IntentResult> finalResults = merged.isEmpty()
                 ? List.of(IntentResult.UNKNOWN) : List.copyOf(merged.values());
-
         long elapsed = System.currentTimeMillis() - start;
-        log.info("[MultiHybrid] 分类完成 tier={} intentCount={} cost={}ms",
-                reachedTier, finalResults.size(), elapsed);
-
+        log.info("[MultiHybrid] 分类完成 tier={} intentCount={} cost={}ms", reachedTier, finalResults.size(), elapsed);
         recordMetrics(reachedTier, finalResults.size(), elapsed);
         return new MultiIntentResult(finalResults, reachedTier, elapsed);
+    }
+
+    /** Tier1：规则层（必执行），命中结果写 merged。 */
+    private void applyTier1(String userMessage, Map<String, IntentResult> merged) {
+        try {
+            List<IntentResult> results = ruleMatcher.matchAll(userMessage);
+            results.forEach(r -> merged.put(r.intentCode(), r));
+            if (!results.isEmpty()) log.debug("[MultiHybrid] Tier1 命中 {} 个意图", results.size());
+        } catch (Exception e) {
+            log.warn("[MultiHybrid] Tier1 规则层异常，跳过. msg={}", userMessage, e);
+        }
+    }
+
+    /**
+     * Tier2：Embedding 原型层，新增结果写入 merged。
+     *
+     * @return true 表示本层新增了至少一个意图（调用方据此更新 reachedTier）
+     */
+    private boolean applyTier2(String userMessage, Map<String, IntentResult> merged) {
+        try {
+            List<IntentResult> results = embeddingMatcher.match(userMessage);
+            long newCount = results.stream().filter(r -> !merged.containsKey(r.intentCode())).count();
+            results.forEach(r -> merged.putIfAbsent(r.intentCode(), r));
+            if (newCount > 0) {
+                log.debug("[MultiHybrid] Tier2 新增 {} 个意图", newCount);
+                return true;
+            }
+        } catch (Exception e) {
+            log.warn("[MultiHybrid] Tier2 Embedding 层异常，跳过. msg={}", userMessage, e);
+        }
+        return false;
+    }
+
+    /**
+     * Tier3：LLM 兜底，补充结果写入 merged，并异步积累高置信度案例。
+     *
+     * @return true 表示本层被触发（调用方据此更新 reachedTier）
+     */
+    private boolean applyTier3(String userMessage, List<IntentConfig> mergedIntents,
+                                Map<String, IntentResult> merged, RoutingConfig.Intent cfg) {
+        try {
+            List<IntentResult> llmResults = llmClassifier.classifyMulti(userMessage, mergedIntents);
+            llmResults.forEach(r -> merged.merge(r.intentCode(), r,
+                    (ex, nr) -> ex.confidence() >= nr.confidence() ? ex : nr));
+            log.debug("[MultiHybrid] Tier3 LLM 补充后共 {} 个意图", merged.size());
+            autoAccumulate(llmResults, userMessage, cfg);
+            return true;
+        } catch (Exception e) {
+            log.warn("[MultiHybrid] Tier3 LLM 层异常，使用已有结果. msg={}", userMessage, e);
+            return false;
+        }
     }
 
     /**
