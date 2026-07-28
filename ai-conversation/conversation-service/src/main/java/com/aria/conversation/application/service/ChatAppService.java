@@ -74,29 +74,30 @@ public class ChatAppService {
     }
 
     /**
-     * 域路径处理：在 boundedElastic 线程完成阻塞操作（域会话管理 + 多意图分类），
-     * 再根据意图决策走转人工或 DomainAgentService。
+     * 域路径处理：域路由和多意图分类完全独立，用 {@code Mono.zip} 并行执行，
+     * 延迟从 T(domain)+T(intent) 降为 max(T(domain), T(intent))。
      */
     private Flux<ChatEvent> streamDomain(String sessionId, String message, String domainCode) {
-        return Mono.fromCallable(() -> {
-                    // 阻塞操作：Redis 读写 + 小模型推理 + 多意图分类
-                    String activeDomain = domainSessionService.resolveActiveDomain(
-                            sessionId, message, domainCode);
-                    MultiIntentResult multiIntent = multiIntentService.classifyMulti(message);
-                    return new DomainRouteContext(activeDomain, multiIntent);
-                })
-                .subscribeOn(Schedulers.boundedElastic())
-                .flatMapMany(ctx -> {
-                    MultiIntentResult multi = ctx.multiIntent();
+        // 两路独立阻塞操作，各自跑在独立线程上，互不等待
+        Mono<String> domainMono = Mono.fromCallable(
+                        () -> domainSessionService.resolveActiveDomain(sessionId, message, domainCode))
+                .subscribeOn(Schedulers.boundedElastic());
+
+        Mono<MultiIntentResult> intentMono = Mono.fromCallable(
+                        () -> multiIntentService.classifyMulti(message))
+                .subscribeOn(Schedulers.boundedElastic());
+
+        return Mono.zip(domainMono, intentMono)
+                .flatMapMany(tuple -> {
+                    String activeDomain = tuple.getT1();
+                    MultiIntentResult multi = tuple.getT2();
                     if (multi.requiresTransfer()) {
-                        // union 语义：任意意图需要转人工，取优先级最高的主意图驱动转人工
                         log.info("[Chat] domain 路径多意图转人工拦截 sessionId={} primary={}",
                                 sessionId, multi.primaryIntent().intent());
                         return faqChatService.handleTransfer(sessionId, multi.primaryIntent());
                     }
-                    // 多意图 codes 透传给 Agent，供精细化回复
                     return domainAgentService.streamChat(
-                            sessionId, ctx.activeDomain(), message, multi.intentCodes());
+                            sessionId, activeDomain, message, multi.intentCodes());
                 });
     }
 
@@ -215,11 +216,4 @@ public class ChatAppService {
     // 内部记录
     // -------------------------------------------------------
 
-    /**
-     * 域路径路由阶段中间结果，携带最终确定的活跃域编码和多意图分类结果。
-     *
-     * @param activeDomain 经域路由决策后的最终活跃域编码
-     * @param multiIntent  多意图分类结果，决定后续走转人工还是 DomainAgentService
-     */
-    private record DomainRouteContext(String activeDomain, MultiIntentResult multiIntent) {}
 }
