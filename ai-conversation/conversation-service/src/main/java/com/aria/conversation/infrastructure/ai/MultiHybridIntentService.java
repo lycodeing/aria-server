@@ -1,12 +1,16 @@
 package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.domain.model.IntentResult;
+import com.aria.conversation.domain.model.IntentType;
 import com.aria.conversation.domain.model.MultiIntentResult;
 import com.aria.conversation.domain.service.MultiIntentService;
+import com.aria.conversation.infrastructure.embedding.EmbeddingService;
+import com.aria.conversation.infrastructure.example.IntentExampleVectorRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Primary;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -34,9 +38,11 @@ public class MultiHybridIntentService implements MultiIntentService {
 
     private final KeywordRegexIntentMatcher ruleMatcher;
     private final EmbeddingPrototypeIntentMatcher embeddingMatcher;
-    private final MultiIntentClassifier llmClassifier;  // 依赖接口，不依赖具体实现（DIP）
+    private final MultiIntentClassifier llmClassifier;
     private final RoutingConfigProvider routingConfigProvider;
     private final MeterRegistry meterRegistry;
+    private final IntentExampleVectorRepository exampleVectorRepo;  // 高置信度自动积累
+    private final EmbeddingService embeddingService;                 // 生成积累向量
 
     @Override
     public MultiIntentResult classifyMulti(String userMessage) {
@@ -101,6 +107,8 @@ public class MultiHybridIntentService implements MultiIntentService {
                 llmResults.forEach(r -> merged.merge(r.intentCode(), r,
                         (ex, nr) -> ex.confidence() >= nr.confidence() ? ex : nr));
                 log.debug("[MultiHybrid] Tier3 LLM 补充后共 {} 个意图", merged.size());
+                // 高置信度结果异步积累（不阻塞主路径）
+                autoAccumulate(llmResults, userMessage, cfg);
             } catch (Exception e) {
                 log.warn("[MultiHybrid] Tier3 LLM 层异常，使用已有结果. msg={}", userMessage, e);
             }
@@ -151,6 +159,37 @@ public class MultiHybridIntentService implements MultiIntentService {
                     .record(elapsedMs, TimeUnit.MILLISECONDS);
         } catch (Exception e) {
             log.debug("[MultiHybrid] Micrometer 指标记录失败（非关键）", e);
+        }
+    }
+
+    /**
+     * 将 Tier3 LLM 高置信度结果异步积累到历史案例库（数据飞轮）。
+     *
+     * <p>{@code @Async} 在独立线程执行，不阻塞主路径延迟。
+     * {@link IntentExampleVectorRepository#saveIfAbsent} 底层 ON CONFLICT DO NOTHING，幂等安全。
+     */
+    @Async("prototypeRebuildExecutor")
+    protected void autoAccumulate(List<IntentResult> llmResults,
+                                   String userMessage,
+                                   RoutingConfig.Intent cfg) {
+        if (!cfg.isAutoAccumulateEnabled()) {
+            return;
+        }
+        double threshold = cfg.getAutoAccumulateMinConfidence();
+        for (IntentResult r : llmResults) {
+            if (r.intent() == IntentType.UNKNOWN || r.confidence() < threshold) {
+                continue;
+            }
+            try {
+                float[] embedding = embeddingService.encode(userMessage);
+                exampleVectorRepo.saveIfAbsent(r.intentCode(), userMessage, embedding, true);
+                log.debug("[AutoAccumulate] 积累案例 intentCode={} confidence={}",
+                        r.intentCode(), String.format("%.3f", r.confidence()));
+                meterRegistry.counter("intent.example.accumulate.total",
+                        "intent_code", r.intentCode()).increment();
+            } catch (Exception e) {
+                log.warn("[AutoAccumulate] 积累失败 intentCode={}", r.intentCode(), e);
+            }
         }
     }
 }
