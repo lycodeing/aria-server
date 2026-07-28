@@ -35,15 +35,18 @@ import java.util.Map;
 @Slf4j
 public class BuiltinTools {
 
+    /**
+     * 转接人工的意图 code，与前端 SSE payload 约定一致
+     */
+    private static final String INTENT_CODE_AGENT_TRANSFER = "agent_transfer";
     private final InvocationParameters ctx;
     private final SessionDomainRepository sessionDomainRepo;
     private final SessionDomainSwitchRepository domainSwitchRepo;
     private final ObjectMapper objectMapper;
-    /** 转接入队服务，AI 工具触发转接时直接调用，不依赖前端消费 SSE */
+    /**
+     * 转接入队服务，AI 工具触发转接时直接调用，不依赖前端消费 SSE
+     */
     private final SessionQueueService sessionQueueService;
-
-    /** 转接人工的意图 code，与前端 SSE payload 约定一致 */
-    private static final String INTENT_CODE_AGENT_TRANSFER = "agent_transfer";
 
     public BuiltinTools(InvocationParameters ctx,
                         SessionDomainRepository sessionDomainRepo,
@@ -66,7 +69,7 @@ public class BuiltinTools {
      * @return 工具执行结果描述
      */
     @Tool(name = "switch_domain",
-          value = "当用户问题与当前服务域无关时调用，切换到正确的服务域。可用域列表见系统提示。")
+            value = "当用户问题与当前服务域无关时调用，切换到正确的服务域。可用域列表见系统提示。")
     public String switchDomain(
             @P("目标域 code") String targetDomainCode,
             @P("切换原因（可选）") String reason) {
@@ -121,7 +124,7 @@ public class BuiltinTools {
      * @return 工具执行结果描述
      */
     @Tool(name = "transfer_to_agent",
-          value = "当用户明确要求转接人工客服时调用")
+            value = "当用户明确要求转接人工客服时调用")
     public String transferToAgent() {
         log.info("[BuiltinTool] transfer_to_agent sessionId={}", ctx.sessionId());
         try {
@@ -201,7 +204,8 @@ public class BuiltinTools {
     private Map<String, Object> parseArgs(String arguments) {
         if (arguments == null || arguments.isBlank()) return Map.of();
         try {
-            return objectMapper.readValue(arguments, new TypeReference<>() {});
+            return objectMapper.readValue(arguments, new TypeReference<>() {
+            });
         } catch (Exception e) {
             log.warn("[BuiltinTools] 工具参数解析失败: {}", arguments, e);
             return Map.of();

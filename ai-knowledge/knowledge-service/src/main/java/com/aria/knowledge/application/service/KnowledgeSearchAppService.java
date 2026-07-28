@@ -67,10 +67,12 @@ public class KnowledgeSearchAppService {
         float[] queryVector = embeddingService.encode(query);
 
         // 使用专用 IO 线程池，避免 ForkJoinPool.commonPool() 被 DB 阻塞操作占满
-        CompletableFuture<List<ChunkHit>> vectorFuture = CompletableFuture.supplyAsync(
-            () -> chunkRepository.vectorSearch(queryVector, topK * 2, kbId), searchExecutor);
-        CompletableFuture<List<ChunkHit>> textFuture = CompletableFuture.supplyAsync(
-            () -> chunkRepository.fullTextSearch(query, topK * 2, kbId), searchExecutor);
+        CompletableFuture<List<ChunkHit>> vectorFuture = CompletableFuture.supplyAsync(() ->
+                        chunkRepository.vectorSearch(queryVector, topK * 2, kbId)
+                , searchExecutor);
+        CompletableFuture<List<ChunkHit>> textFuture = CompletableFuture.supplyAsync(() ->
+                        chunkRepository.fullTextSearch(query, topK * 2, kbId)
+                , searchExecutor);
 
         // orTimeout + 超时降级：慢查询时返回空列表而非挂起请求线程
         List<ChunkHit> vectorHits = safeGet(vectorFuture, "向量检索", kbId);
