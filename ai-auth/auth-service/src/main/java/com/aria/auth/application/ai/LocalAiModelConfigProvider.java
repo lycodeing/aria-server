@@ -68,6 +68,15 @@ public class LocalAiModelConfigProvider implements AiModelConfigProvider {
     }
 
     @Override
+    public AiModelConfig getActiveReranker() {
+        AiModelConfigDO active = service.getActiveRerankerConfig();
+        if (active == null) {
+            throw new IllegalStateException("本地未找到激活的 RERANKER 模型配置，请在后台设置默认 RERANKER 配置");
+        }
+        return toConfig(active, AiModelScopeDefaults.RERANKER);
+    }
+
+    @Override
     public void invalidate() {
         // 本地实现无本地缓存；配置变更由 AiModelConfigService 广播 Pub/Sub，
         // 下游服务（conversation/knowledge）的 RemoteAiModelConfigProvider 会自行失效。
@@ -80,6 +89,11 @@ public class LocalAiModelConfigProvider implements AiModelConfigProvider {
 
     @Override
     public void invalidateRouter() {
+        // 同 {@link #invalidate()}，本地无缓存需要清理。
+    }
+
+    @Override
+    public void invalidateReranker() {
         // 同 {@link #invalidate()}，本地无缓存需要清理。
     }
 

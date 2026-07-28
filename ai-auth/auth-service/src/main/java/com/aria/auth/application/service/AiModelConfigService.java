@@ -192,6 +192,19 @@ public class AiModelConfigService {
     }
 
     /**
+     * 查询当前默认 RERANKER 配置（Cross-Encoder 精排模型，供 knowledge-service 拉取）。
+     * 返回 null 表示无激活配置；knowledge-service 检测到 null 时降级跳过精排。
+     */
+    public AiModelConfigDO getActiveRerankerConfig() {
+        return mapper.selectOne(
+                new LambdaQueryWrapper<AiModelConfigDO>()
+                        .eq(AiModelConfigDO::getModelType, "RERANKER")
+                        .eq(AiModelConfigDO::getIsDefault, true)
+                        .eq(AiModelConfigDO::getIsEnabled, true)
+                        .isNull(AiModelConfigDO::getDeletedAt));
+    }
+
+    /**
      * 解密 API Key，支持 PLAINTEXT: 和 AES: 两种格式。
      * <ul>
      *   <li>{@code PLAINTEXT:{raw}}  — 开发环境明文存储，直接返回原始值</li>
@@ -310,6 +323,8 @@ public class AiModelConfigService {
      * <ul>
      *   <li>CHAT：向 /v1/chat/completions 发送一条非流式极简请求，验证 API Key 和地址有效性</li>
      *   <li>EMBEDDING：向 /v1/embeddings 发送一条测试文本，验证向量服务可访问</li>
+     *   <li>RERANKER：暂不支持，返回提示信息（Reranker /rerank 端点格式与 CHAT/EMBEDDING 不同，
+     *       TODO: Phase-2 实现 POST /rerank 连通性测试）</li>
      * </ul>
      *
      * @param id 配置 ID
@@ -317,6 +332,17 @@ public class AiModelConfigService {
      */
     public Map<String, Object> testConnection(Long id) {
         AiModelConfigDO cfg = getOrThrow(id);
+
+        // TODO: RERANKER 连通性测试需单独实现（POST /rerank，格式与 CHAT/EMBEDDING 不同）
+        // 当前返回 success:true + 说明，避免误用 /v1/chat/completions 对 Reranker 服务测试并误报失败
+        if ("RERANKER".equalsIgnoreCase(cfg.getModelType())) {
+            return Map.of(
+                "success", true,
+                "latencyMs", 0L,
+                "message", "RERANKER 类型暂不支持连接测试（Phase-2 实现），请启动服务后通过知识库检索验证效果"
+            );
+        }
+
         String apiKey = decryptApiKey(cfg.getApiKeyEnc());
         String baseUrl = normalizeBaseUrl(cfg.getBaseUrl());
 
@@ -355,8 +381,7 @@ public class AiModelConfigService {
         boolean isEmbedding = "EMBEDDING".equalsIgnoreCase(cfg.getModelType());
         if (isEmbedding) {
             // Embedding 测试：发一条极短文本
-            return String.format("{\"model\":\"%s\",\"input\":\"test\"}", cfg.getModelName());
-        } else {
+            return String.format("{\"model\":\"%s\",\"input\":\"test\"}", cfg.getModelName());        } else {
             // Chat 测试：发一条极简消息，max_tokens=1 降低延迟
             return String.format(
                     "{\"model\":\"%s\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}],\"max_tokens\":1,\"stream\":false}",

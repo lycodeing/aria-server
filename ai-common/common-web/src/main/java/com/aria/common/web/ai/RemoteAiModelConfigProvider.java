@@ -42,6 +42,7 @@ public class RemoteAiModelConfigProvider implements AiModelConfigProvider, Messa
     private static final String CHAT_CACHE_KEY      = "aria:ai:model:active";
     private static final String EMBEDDING_CACHE_KEY = "aria:ai:model:embedding:active";
     private static final String ROUTER_CACHE_KEY    = "aria:ai:model:router:active";
+    private static final String RERANKER_CACHE_KEY  = "aria:ai:model:reranker:active";
     private static final Duration CACHE_TTL         = Duration.ofMinutes(5);
     private static final String PUBSUB_TOPIC        = "aria:config:ai-changed";
 
@@ -100,15 +101,30 @@ public class RemoteAiModelConfigProvider implements AiModelConfigProvider, Messa
         log.info("[AiConfig] ROUTER 配置缓存已失效，下次请求将重新拉取");
     }
 
+    // ---- RERANKER 配置 ----
+
+    @Override
+    public AiModelConfig getActiveReranker() {
+        return cache.getOrLoad(RERANKER_CACHE_KEY, AiModelConfig.class, CACHE_TTL,
+                () -> loadFromRemote(ModelScope.RERANKER, AiModelScopeDefaults.RERANKER));
+    }
+
+    @Override
+    public void invalidateReranker() {
+        cache.delete(RERANKER_CACHE_KEY);
+        log.info("[AiConfig] RERANKER 配置缓存已失效，下次请求将重新拉取");
+    }
+
     // ---- Redis Pub/Sub ----
 
-    /** 配置变更通知：同时失效 CHAT + EMBEDDING + ROUTER 三个缓存。 */
+    /** 配置变更通知：同时失效 CHAT + EMBEDDING + ROUTER + RERANKER 四个缓存。 */
     @Override
     public void onMessage(Message message, byte[] pattern) {
-        log.info("[AiConfig] 收到配置变更通知，清除 CHAT + EMBEDDING + ROUTER 缓存");
+        log.info("[AiConfig] 收到配置变更通知，清除 CHAT + EMBEDDING + ROUTER + RERANKER 缓存");
         invalidate();
         invalidateEmbedding();
         invalidateRouter();
+        invalidateReranker();
     }
 
     // ---- 内部工具 ----

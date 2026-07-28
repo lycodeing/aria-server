@@ -1,8 +1,10 @@
 package com.aria.knowledge;
 
+import com.aria.knowledge.infrastructure.config.SearchProperties;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.retry.annotation.EnableRetry;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
@@ -17,6 +19,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableScheduling
 @EnableRetry
 @MapperScan("com.aria.knowledge.infrastructure.persistence.mapper")
+@EnableConfigurationProperties(SearchProperties.class)
 public class KnowledgeApplication {
 
     public static void main(String[] args) {

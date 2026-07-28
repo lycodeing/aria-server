@@ -3,15 +3,16 @@ package com.aria.common.web.ai;
 /**
  * AI 模型作用域缺省参数。
  *
- * <p>为 CHAT / EMBEDDING / ROUTER 三种作用域提供统一的 temperature、maxTokens、
+ * <p>为 CHAT / EMBEDDING / ROUTER / RERANKER 四种作用域提供统一的 temperature、maxTokens、
  * timeoutSec 缺省值。<strong>所有</strong> 需要为 {@link AiModelConfig} 空字段兜底
  * 的地方都必须通过此枚举读取，避免魔法值散落在服务端 Controller 与客户端 Provider 两侧。
  *
  * <p>缺省语义：
  * <ul>
- *   <li>{@link #CHAT} — 对话主模型，倾向创造性，超时 60s</li>
- *   <li>{@link #EMBEDDING} — 向量嵌入，确定性输出，超时 30s；maxTokens=0 表示不限制</li>
- *   <li>{@link #ROUTER} — 域路由小模型，低延迟低成本，超时 5s，输出 32 tokens</li>
+ *   <li>{@link #CHAT}     — 对话主模型，倾向创造性，超时 60s</li>
+ *   <li>{@link #EMBEDDING}— 向量嵌入，确定性输出，超时 30s；maxTokens=0 表示不限制</li>
+ *   <li>{@link #ROUTER}   — 域路由小模型，低延迟低成本，超时 5s，输出 32 tokens</li>
+ *   <li>{@link #RERANKER} — Cross-Encoder 精排模型，不涉及生成，超时 10s；temperature/maxTokens 无意义置 0</li>
  * </ul>
  *
  * @author lycodeing
@@ -26,7 +27,14 @@ public enum AiModelScopeDefaults {
     EMBEDDING(0.0D, 0, 30),
 
     /** 域路由小模型缺省参数。 */
-    ROUTER(0.0D, 32, 5);
+    ROUTER(0.0D, 32, 5),
+
+    /**
+     * 重排序模型缺省参数。
+     * temperature / maxTokens 对 Reranker（Cross-Encoder）无意义，均置 0；
+     * timeoutSec=10 与原 @Value 默认值保持一致。
+     */
+    RERANKER(0.0D, 0, 10);
 
     private final Double defaultTemperature;
     private final Integer defaultMaxTokens;

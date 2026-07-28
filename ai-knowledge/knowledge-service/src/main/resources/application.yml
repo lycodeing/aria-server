@@ -96,6 +96,14 @@ knowledge:
     #   jieba  — 需安装 pg_jieba 扩展，中文分词效果好（生产推荐）
     # 生产环境通过 application-prod.yml 覆盖为 jieba
     fts-config: simple
+    # 向量 ANN 召回数量（独立于 topK，BAAI 建议送 Reranker 前 100~200 条）
+    recall-k-vector: 80
+    # BM25 全文召回数量（BM25 略多，反映中文客服场景的字面匹配需求）
+    recall-k-text: 100
+    # RRF 融合后送 Reranker 的候选上限（受 GPU 算力约束）
+    reranker-candidate-limit: 200
+    # RRF 平滑系数 K（40 比默认 60 在 topK=5~20 场景头部区分度更好）
+    rrf-k: 40
   # 文档摄取 MQ 配置（RabbitMQ，替换原 Redis Streams 摄取队列）
   ingest:
     exchange: knowledge.doc.ingest
@@ -114,12 +122,8 @@ knowledge:
     # 以下为运维调优参数，与模型配置无关
     batch-size: 32
     timeout-seconds: 30
-  reranker:
-    # 默认关闭，启用需在 application-prod.yml 中设置 enabled: true 及对应服务地址
-    enabled: false
-    base-url: http://localhost:8001
-    model-name: bge-reranker-v2-m3
-    timeout-seconds: 10
+  # Reranker 配置已迁移到 auth-service AI 模型配置（RERANKER 类型），
+  # base-url / model-name / api-key 在后台统一管理，支持热切换，无需重启。
 
 # -------- MinIO 对象存储配置 --------
 minio:
@@ -166,3 +170,23 @@ ctyun:
     base-url: https://wishub-x6.ctyun.cn/v1
     api-key: ""
     model: DeepSeek-V4-Flash
+
+# -------- Resilience4j 熔断配置 --------
+resilience4j:
+  circuitbreaker:
+    instances:
+      reranker:
+        # 滑动窗口大小（最近 20 次调用）
+        sliding-window-size: 20
+        # 错误率阈值：50% 失败时开路
+        failure-rate-threshold: 50
+        # 慢调用阈值：超过 5s 视为慢调用（GPU 推理典型超时）
+        slow-call-duration-threshold: 5s
+        # 慢调用比例阈值：80% 慢调用时开路
+        slow-call-rate-threshold: 80
+        # 开路后等待 30s 再进入半开状态
+        wait-duration-in-open-state: 30s
+        # 半开状态允许通过的请求数
+        permitted-number-of-calls-in-half-open-state: 3
+        # 最小调用数（窗口内至少 5 次调用才计算错误率）
+        minimum-number-of-calls: 5

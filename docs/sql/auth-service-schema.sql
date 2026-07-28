@@ -61,7 +61,7 @@ CREATE TABLE cs_auth.ai_model_config (
     updated_at timestamp without time zone DEFAULT now() NOT NULL,
     deleted_at timestamp without time zone,
     model_type character varying(20) DEFAULT 'CHAT'::character varying NOT NULL,
-    CONSTRAINT ai_model_config_model_type_check CHECK (((model_type)::text = ANY ((ARRAY['CHAT'::character varying, 'EMBEDDING'::character varying, 'ROUTER'::character varying])::text[])))
+    CONSTRAINT ai_model_config_model_type_check CHECK (((model_type)::text = ANY ((ARRAY['CHAT'::character varying, 'EMBEDDING'::character varying, 'ROUTER'::character varying, 'RERANKER'::character varying])::text[])))
 );
 
 --
@@ -86,7 +86,7 @@ COMMENT ON COLUMN cs_auth.ai_model_config.is_default IS '是否为默认模型�
 -- Name: COLUMN ai_model_config.model_type; Type: COMMENT; Schema: cs_auth; Owner: -
 --
 
-COMMENT ON COLUMN cs_auth.ai_model_config.model_type IS 'CHAT=对话大模型, EMBEDDING=向量模型, ROUTER=域路由小模型';
+COMMENT ON COLUMN cs_auth.ai_model_config.model_type IS 'CHAT=对话大模型, EMBEDDING=向量模型, ROUTER=域路由小模型, RERANKER=重排序模型';
 
 --
 -- Name: ai_model_config_id_seq; Type: SEQUENCE; Schema: cs_auth; Owner: -
