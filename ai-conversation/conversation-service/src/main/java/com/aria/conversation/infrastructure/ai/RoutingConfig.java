@@ -4,6 +4,9 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * 路由阈值配置值对象。
  *
@@ -38,6 +41,18 @@ public class RoutingConfig {
         c.getIntent().setEmbeddingThreshold(p.getIntent().getEmbeddingThreshold());
         c.getIntent().setMinLlmConfidence(p.getIntent().getMinLlmConfidence());
         c.getIntent().setMaxExamplesToInject(p.getIntent().getMaxExamplesToInject());
+        // C3 修复：新增的 8 个多意图字段也需要从 RoutingProperties 同步
+        c.getIntent().setMultiIntentEnabled(p.getIntent().isMultiIntentEnabled());
+        c.getIntent().setEmbeddingGlobalThreshold(p.getIntent().getEmbeddingGlobalThreshold());
+        c.getIntent().setEmbeddingHighConfidence(p.getIntent().getEmbeddingHighConfidence());
+        // embeddingThresholds 是 Map，YAML 可配置，需同步（C3 遗漏补充）
+        if (p.getIntent().getEmbeddingThresholds() != null) {
+            c.getIntent().setEmbeddingThresholds(new java.util.HashMap<>(p.getIntent().getEmbeddingThresholds()));
+        }
+        c.getIntent().setLlmRagEnabled(p.getIntent().isLlmRagEnabled());
+        c.getIntent().setLlmRagTopK(p.getIntent().getLlmRagTopK());
+        c.getIntent().setAutoAccumulateEnabled(p.getIntent().isAutoAccumulateEnabled());
+        c.getIntent().setAutoAccumulateMinConfidence(p.getIntent().getAutoAccumulateMinConfidence());
         c.getDomain().setRuleEnabled(p.getDomain().isRuleEnabled());
         return c;
     }
@@ -51,9 +66,13 @@ public class RoutingConfig {
          */
         private boolean embeddingEnabled = false;
         /**
-         * 向量相似度命中阈值，低于此值继续走 LLM，范围 0.0~1.0，推荐 0.75
+         * 向量相似度命中阈值（已废弃），低于此值继续走 LLM。
+         * 请改用 {@link #embeddingGlobalThreshold}，此字段保留仅为向后兼容。
+         *
+         * @deprecated 使用 embeddingGlobalThreshold 替代
          */
-        private double embeddingThreshold = 0.75;
+        @Deprecated
+        private double embeddingThreshold = IntentClassificationConstants.DEFAULT_EMBEDDING_THRESHOLD;
         /**
          * LLM 意图分类置信度下限，低于此值降级为 UNKNOWN；0.0 表示关闭阈值检查
          */
@@ -61,7 +80,42 @@ public class RoutingConfig {
         /**
          * few-shot prompt 中每个意图最多注入的示例句子条数，过多会增加 token 消耗
          */
-        private int maxExamplesToInject = 5;
+        private int maxExamplesToInject = IntentClassificationConstants.DEFAULT_MAX_EXAMPLES_TO_INJECT;
+
+        // ── 多意图新增字段（向后兼容：有默认值，旧 JSON 缺失时使用默认）────────
+
+        /**
+         * 多意图总开关：false 时退化为单意图模式，可无重启回滚。
+         */
+        private boolean multiIntentEnabled = true;
+        /**
+         * Tier2 全局默认相似度阈值，替代已废弃的 embeddingThreshold。
+         */
+        private double embeddingGlobalThreshold = IntentClassificationConstants.DEFAULT_EMBEDDING_THRESHOLD;
+        /**
+         * 超过此置信度则跳过 Tier3 LLM 调用（节省延迟）。
+         */
+        private double embeddingHighConfidence = IntentClassificationConstants.DEFAULT_HIGH_CONFIDENCE;
+        /**
+         * 意图级独立阈值（key=intentCode, value=阈值），覆盖全局阈值。
+         */
+        private Map<String, Double> embeddingThresholds = new HashMap<>();
+        /**
+         * 是否开启 Tier3 动态 RAG 注入（历史案例 Few-Shot 增强）。
+         */
+        private boolean llmRagEnabled = true;
+        /**
+         * Tier3 动态 RAG 每意图注入历史案例数。
+         */
+        private int llmRagTopK = IntentClassificationConstants.DEFAULT_LLM_RAG_TOP_K;
+        /**
+         * 是否开启高置信度结果自动积累到历史案例库。
+         */
+        private boolean autoAccumulateEnabled = true;
+        /**
+         * 自动积累的最低置信度门槛。
+         */
+        private double autoAccumulateMinConfidence = IntentClassificationConstants.DEFAULT_AUTO_ACCUMULATE_MIN_CONF;
     }
 
     @Getter
@@ -74,3 +128,4 @@ public class RoutingConfig {
         private boolean ruleEnabled = true;
     }
 }
+

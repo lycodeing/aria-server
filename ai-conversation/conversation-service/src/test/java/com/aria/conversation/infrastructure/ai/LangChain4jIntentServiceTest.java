@@ -20,9 +20,8 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.when;
-// RoutingConfig is in the same package — no import needed
 
-@DisplayName("LangChain4jIntentService")
+@DisplayName("LangChain4jIntentService 多意图分类")
 class LangChain4jIntentServiceTest {
 
     @Mock private DynamicModelFactory modelFactory;
@@ -41,31 +40,68 @@ class LangChain4jIntentServiceTest {
         MockitoAnnotations.openMocks(this);
         RoutingConfig config = new RoutingConfig();
         when(routingConfigProvider.getConfig()).thenReturn(config);
-        service = new LangChain4jIntentService(modelFactory, domainRepository, new ObjectMapper(), routingConfigProvider);
+        service = new LangChain4jIntentService(
+                modelFactory, domainRepository, new ObjectMapper(), routingConfigProvider);
     }
 
     @Test
-    @DisplayName("classify: LLM 返回合法意图 JSON → 正确 IntentResult")
-    void classify_validResponse_returnsCorrectResult() {
-        ChatModel mock = ChatModelMock.thatAlwaysResponds("{\"intent\":\"FAQ_QUERY\",\"confidence\":0.9}");
+    @DisplayName("classifyMulti: LLM 返回单意图 JSON 数组 → 正确解析")
+    void classifyMulti_singleIntent_returnsCorrectResult() {
+        ChatModel mock = ChatModelMock.thatAlwaysResponds(
+                "{\"intents\":[{\"intent\":\"FAQ_QUERY\",\"confidence\":0.9}]}");
         when(modelFactory.getChatModel()).thenReturn(mock);
 
         DomainConfig domain = new DomainConfig(
                 DomainCodes.SYSTEM_DOMAIN, "系统域", null, null, null,
-                List.of(intentConfig("FAQ_QUERY", "用户咨询产品服务问题"),
-                        intentConfig("TRANSFER_REQUEST", "用户要求转人工")));
+                List.of(intentConfig("FAQ_QUERY", "知识问答"),
+                        intentConfig("TRANSFER_REQUEST", "转人工")));
         when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN)).thenReturn(Optional.of(domain));
 
-        IntentResult result = service.classify("退款政策是什么？");
+        List<IntentResult> results = service.classifyMulti("退款政策是什么？");
 
-        assertThat(result.intent()).isEqualTo(IntentType.FAQ_QUERY);
-        assertThat(result.confidence()).isEqualTo(0.9);
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).intent()).isEqualTo(IntentType.FAQ_QUERY);
+        assertThat(results.get(0).confidence()).isEqualTo(0.9);
     }
 
     @Test
-    @DisplayName("classify: LLM 返回非法意图字符串 → 映射为 FAQ_QUERY")
-    void classify_invalidIntentString_returnsUnknown() {
-        ChatModel mock = ChatModelMock.thatAlwaysResponds("{\"intent\":\"BANANA\",\"confidence\":0.8}");
+    @DisplayName("classifyMulti: LLM 返回多意图 JSON 数组 → 全部解析")
+    void classifyMulti_multipleIntents_returnsAll() {
+        ChatModel mock = ChatModelMock.thatAlwaysResponds(
+                "{\"intents\":[" +
+                "{\"intent\":\"COMPLAINT\",\"confidence\":0.95}," +
+                "{\"intent\":\"FAQ_QUERY\",\"confidence\":0.82}]}");
+        when(modelFactory.getChatModel()).thenReturn(mock);
+
+        DomainConfig domain = new DomainConfig(
+                DomainCodes.SYSTEM_DOMAIN, "系统域", null, null, null,
+                List.of(intentConfig("COMPLAINT", "投诉"),
+                        intentConfig("FAQ_QUERY", "知识问答")));
+        when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN)).thenReturn(Optional.of(domain));
+
+        List<IntentResult> results = service.classifyMulti("我要投诉，顺便查一下物流");
+
+        assertThat(results).hasSize(2);
+        assertThat(results.stream().map(IntentResult::intent))
+                .containsExactlyInAnyOrder(IntentType.COMPLAINT, IntentType.FAQ_QUERY);
+    }
+
+    @Test
+    @DisplayName("classifyMulti: __system__ 域不存在 → [UNKNOWN]，不抛异常")
+    void classifyMulti_domainNotFound_returnsUnknown() {
+        when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN)).thenReturn(Optional.empty());
+
+        List<IntentResult> results = service.classifyMulti("任意消息");
+
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0)).isEqualTo(IntentResult.UNKNOWN);
+    }
+
+    @Test
+    @DisplayName("classifyMulti: LLM 返回未知意图 code → UNKNOWN（不静默映射为 FAQ_QUERY）")
+    void classifyMulti_unknownIntentCode_returnsUnknown() {
+        ChatModel mock = ChatModelMock.thatAlwaysResponds(
+                "{\"intents\":[{\"intent\":\"BANANA\",\"confidence\":0.8}]}");
         when(modelFactory.getChatModel()).thenReturn(mock);
 
         DomainConfig domain = new DomainConfig(
@@ -73,52 +109,47 @@ class LangChain4jIntentServiceTest {
                 List.of(intentConfig("FAQ_QUERY", "知识问答")));
         when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN)).thenReturn(Optional.of(domain));
 
-        IntentResult result = service.classify("随便问个问题");
+        List<IntentResult> results = service.classifyMulti("随便问个问题");
 
-        assertThat(result.intent()).isEqualTo(IntentType.FAQ_QUERY);
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).intent()).isEqualTo(IntentType.UNKNOWN);
     }
 
     @Test
-    @DisplayName("classify: __system__ 域不存在 → UNKNOWN，不抛异常")
-    void classify_domainNotFound_returnsUnknown() {
-        when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN)).thenReturn(Optional.empty());
-
-        IntentResult result = service.classify("任意消息");
-
-        assertThat(result).isEqualTo(IntentResult.UNKNOWN);
-    }
-
-    @Test
-    @DisplayName("buildPrompt: exampleQueries 作为 few-shot 示例注入 prompt")
-    void buildPrompt_injectsExamples() {
+    @DisplayName("buildMultiPrompt: exampleQueries 注入静态示例")
+    void buildMultiPrompt_injectsExamples() {
         IntentConfig intentWithExamples = new IntentConfig(
                 "FAQ_QUERY", "FAQ_QUERY", "知识问答",
                 List.of("退款政策是什么", "查物流", "商品质量问题"),
                 false, false, null,
                 List.of(), List.of(), List.of(), List.of(), 0);
-        IntentConfig intentNoExamples = new IntentConfig(
-                "UNKNOWN", "UNKNOWN", "无法判断",
-                List.of(),
-                false, false, null,
-                List.of(), List.of(), List.of(), List.of(), 0);
 
-        // buildPrompt is package-private — accessible from the same package
-        String prompt = service.buildPrompt(List.of(intentWithExamples, intentNoExamples));
+        String prompt = service.buildMultiPrompt(List.of(intentWithExamples));
 
         assertThat(prompt).contains("退款政策是什么");
         assertThat(prompt).contains("查物流");
-        assertThat(prompt).contains("商品质量问题");
-        // Default maxExamplesToInject=5, all 3 examples should appear
-        assertThat(prompt).contains("FAQ_QUERY");
-        // Intent with no examples should NOT have （示例：） appended
-        assertThat(prompt).doesNotContain("（示例：）");
+        assertThat(prompt).contains("intents");  // 多意图 JSON 格式标识
     }
 
     @Test
-    @DisplayName("parseResponse: 自定义 code 映射为 FAQ_QUERY 分叉，intentCode 保留原始值")
-    void parseResponse_customCode_mapToFaqQuery() {
-        IntentResult result = service.parseResponse("{\"intent\":\"query_order\",\"confidence\":0.85}");
-        assertThat(result.intent()).isEqualTo(IntentType.FAQ_QUERY);
-        assertThat(result.intentCode()).isEqualTo("query_order");
+    @DisplayName("parseMultiResponse: 自定义业务 code → UNKNOWN，intentCode 保留原始值")
+    void parseMultiResponse_customCode_intentCodePreserved() {
+        List<IntentResult> results = service.parseMultiResponse(
+                "{\"intents\":[{\"intent\":\"query_order\",\"confidence\":0.85}]}");
+
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).intent()).isEqualTo(IntentType.UNKNOWN);
+        assertThat(results.get(0).intentCode()).isEqualTo("query_order");
+    }
+
+    @Test
+    @DisplayName("parseMultiResponse: 兼容旧格式单意图 JSON 兜底")
+    void parseMultiResponse_legacySingleFormat_fallsBack() {
+        // LLM 偶尔返回旧格式，应优雅兜底
+        List<IntentResult> results = service.parseMultiResponse(
+                "{\"intent\":\"FAQ_QUERY\",\"confidence\":0.9}");
+
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).intent()).isEqualTo(IntentType.FAQ_QUERY);
     }
 }

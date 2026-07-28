@@ -5,8 +5,8 @@ import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.SessionStatus;
-import com.aria.conversation.domain.model.IntentResult;
-import com.aria.conversation.domain.service.IntentService;
+import com.aria.conversation.domain.model.MultiIntentResult;
+import com.aria.conversation.domain.service.MultiIntentService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,6 +17,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 对话路由分发器。
@@ -43,8 +44,8 @@ public class ChatAppService {
     private final FaqChatAppService       faqChatService;
     /** 域 Agent 流式对话执行器，处理携带工具的域内对话 */
     private final DomainAgentService      domainAgentService;
-    /** 意图分类服务，Tier1 关键词/正则 → Tier2 LLM 兜底 */
-    private final IntentService           intentService;
+    /** 多意图分类服务（三级级联：规则 → Embedding 原型 → LLM） */
+    private final MultiIntentService      multiIntentService;
     /** JSON 序列化工具，用于构造 SSE 事件载荷 */
     private final ObjectMapper            objectMapper;
 
@@ -74,25 +75,32 @@ public class ChatAppService {
     }
 
     /**
-     * 域路径处理：在 boundedElastic 线程完成阻塞操作（域会话管理 + 意图分类），
-     * 再根据意图决策走转人工或 DomainAgentService。
+     * 域路径处理：单一职责——确定活跃域、域感知意图分类、路由决策，三步串行。
+     *
+     * <p>域感知意图分类（{@link MultiIntentService#classifyMulti(String, String)}）合并了
+     * {@code __system__} 路由级意图和活跃域业务意图，LLM 拿到完整上下文。
+     * 两步都在同一 {@code boundedElastic} 线程上执行，避免了并行时意图分类看不到活跃域意图的问题。
      */
     private Flux<ChatEvent> streamDomain(String sessionId, String message, String domainCode) {
         return Mono.fromCallable(() -> {
-                    // 阻塞操作：Redis 读写 + 小模型推理 + 意图分类
+                    // 1. 确定活跃域（Redis + 关键词 + 小模型域路由，~50ms）
                     String activeDomain = domainSessionService.resolveActiveDomain(
                             sessionId, message, domainCode);
-                    IntentResult intent = intentService.classify(message);
-                    return new DomainRouteContext(activeDomain, intent);
+                    // 2. 域感知意图分类：__system__ 意图 + activeDomain 业务意图合并后分类
+                    MultiIntentResult multi = multiIntentService.classifyMulti(message, activeDomain);
+                    return Map.entry(activeDomain, multi);
                 })
                 .subscribeOn(Schedulers.boundedElastic())
-                .flatMapMany(ctx -> {
-                    if (ctx.intent().requiresTransfer()) {
-                        log.info("[Chat] domain 路径意图拦截 sessionId={} intent={}",
-                                sessionId, ctx.intent().intent());
-                        return faqChatService.handleTransfer(sessionId, ctx.intent());
+                .flatMapMany(entry -> {
+                    String activeDomain = entry.getKey();
+                    MultiIntentResult multi = entry.getValue();
+                    if (multi.requiresTransfer()) {
+                        log.info("[Chat] domain 路径多意图转人工拦截 sessionId={} primary={}",
+                                sessionId, multi.primaryIntent().intent());
+                        return faqChatService.handleTransfer(sessionId, multi.primaryIntent());
                     }
-                    return domainAgentService.streamChat(sessionId, ctx.activeDomain(), message);
+                    return domainAgentService.streamChat(
+                            sessionId, activeDomain, message, multi.intentCodes());
                 });
     }
 
@@ -211,11 +219,4 @@ public class ChatAppService {
     // 内部记录
     // -------------------------------------------------------
 
-    /**
-     * 域路径路由阶段中间结果，携带最终确定的活跃域编码和意图分类结果。
-     *
-     * @param activeDomain 经域路由决策后的最终活跃域编码
-     * @param intent       意图分类结果，决定后续走转人工还是 DomainAgentService
-     */
-    private record DomainRouteContext(String activeDomain, IntentResult intent) {}
 }

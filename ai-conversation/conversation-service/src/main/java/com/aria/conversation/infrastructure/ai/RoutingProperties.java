@@ -29,6 +29,24 @@ public class RoutingProperties {
         private double minLlmConfidence = 0.0;
         /** few-shot prompt 中每个意图最多注入的示例条数 */
         private int maxExamplesToInject = 5;
+
+        // C3 修复：与 RoutingConfig.Intent 保持同步，确保降级到 YAML 时多意图配置不丢失
+        /** 多意图总开关，false 时退化为单意图（可无重启回滚） */
+        private boolean multiIntentEnabled = true;
+        /** Tier2 全局默认相似度阈值（替代 embeddingThreshold）*/
+        private double embeddingGlobalThreshold = 0.75;
+        /** 超过此置信度则跳过 Tier3 LLM */
+        private double embeddingHighConfidence = 0.85;
+        /** 意图级独立阈值覆盖（key=intentCode, value=阈值），可通过 YAML 配置 */
+        private java.util.Map<String, Double> embeddingThresholds = new java.util.HashMap<>();
+        /** 是否开启 Tier3 动态 RAG 注入 */
+        private boolean llmRagEnabled = true;
+        /** Tier3 动态 RAG 每意图注入历史案例数 */
+        private int llmRagTopK = 2;
+        /** 是否开启高置信度结果自动积累 */
+        private boolean autoAccumulateEnabled = true;
+        /** 自动积累的最低置信度门槛 */
+        private double autoAccumulateMinConfidence = 0.95;
     }
 
     @Getter
@@ -37,10 +55,14 @@ public class RoutingProperties {
         /** 是否启用域路由规则层 */
         private boolean ruleEnabled = true;
         /**
-         * 域路由 LLM 置信度阈值（预留）。
+         * 域路由 LLM 置信度阈值（预留，暂不生效）。
          * 当前 LangChain4jDomainRoutingService 返回裸 domain code，不含 confidence，
-         * 此配置暂不生效。
+         * 此字段等待域路由重构后启用。
+         *
+         * @deprecated 暂未接入路由逻辑，占位保留，不建议修改。
+         * TODO: 域路由感知置信度后启用
          */
+        @Deprecated
         private double minLlmConfidence = 0.0;
     }
 }

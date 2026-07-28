@@ -1,6 +1,7 @@
 package com.aria.conversation.application.service;
 
 import com.aria.common.core.exception.BusinessException;
+import com.aria.conversation.domain.event.IntentConfigChangedEvent;
 import com.aria.conversation.infrastructure.dit.domain.DomainDO;
 import com.aria.conversation.infrastructure.dit.domain.IntentDO;
 import com.aria.conversation.infrastructure.dit.domain.IntentSlotDO;
@@ -17,6 +18,7 @@ import com.aria.conversation.infrastructure.dit.repository.SessionDomainSwitchRe
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,6 +42,7 @@ public class DitManageAppService {
     private final IntentToolMapper intentToolMapper;
     private final DomainRepository domainRepository; // 用于缓存失效
     private final SessionDomainSwitchRepository domainSwitchRepo;
+    private final ApplicationEventPublisher eventPublisher; // I2 修复：发布意图配置变更事件
 
     // ---- 领域 ----
 
@@ -372,6 +375,8 @@ public class DitManageAppService {
         DomainDO domain = domainMapper.selectById(intent.getDomainId());
         if (domain != null) {
             domainRepository.evict(domain.getCode());
+            // I2 修复：发布领域事件，触发原型向量异步重建
+            eventPublisher.publishEvent(new IntentConfigChangedEvent(domain.getCode()));
         }
     }
 }

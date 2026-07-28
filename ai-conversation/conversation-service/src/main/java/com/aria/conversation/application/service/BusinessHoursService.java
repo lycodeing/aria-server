@@ -71,17 +71,47 @@ public class BusinessHoursService implements IBusinessHoursCalculator {
         return "—";
     }
 
-    /** 供 SlaBreachEvaluator 使用，计算区间内业务时间秒数（按秒粒度累加）。 */
+    /**
+     * 供 SlaBreachEvaluator 使用，计算区间内业务时间秒数。
+     *
+     * <p>采用区间交集算法（O(天数 × 时间段数)），逐日加载当天排班，
+     * 计算 [start, end] 与各营业时间段的重叠秒数并累加。
+     * 相较按秒步进的 O(elapsed_seconds) 实现，性能提升数千倍。
+     */
     @Override
     public long calcBusinessSeconds(OffsetDateTime start, OffsetDateTime end) {
-        long seconds = 0;
-        ZonedDateTime cursor = start.atZoneSameInstant(ZONE);
+        ZonedDateTime startZ = start.atZoneSameInstant(ZONE);
         ZonedDateTime endZ   = end.atZoneSameInstant(ZONE);
-        while (cursor.isBefore(endZ)) {
-            if (isOpen(cursor)) seconds++;
-            cursor = cursor.plusSeconds(1);
+        if (!startZ.isBefore(endZ)) {
+            return 0;
         }
-        return seconds;
+
+        long totalSeconds = 0;
+        LocalDate day     = startZ.toLocalDate();
+        LocalDate lastDay = endZ.toLocalDate();
+
+        while (!day.isAfter(lastDay)) {
+            List<BusinessHoursScheduleEntity.TimeRange> ranges = loadTodayRanges(day);
+            if (ranges != null && !ranges.isEmpty()) {
+                for (BusinessHoursScheduleEntity.TimeRange range : ranges) {
+                    ZonedDateTime rangeStart = day.atTime(
+                            LocalTime.parse(range.getStart(), TIME_FMT)).atZone(ZONE);
+                    ZonedDateTime rangeEnd   = day.atTime(
+                            LocalTime.parse(range.getEnd(), TIME_FMT)).atZone(ZONE);
+
+                    // 与查询区间求交集
+                    ZonedDateTime overlapStart = rangeStart.isBefore(startZ) ? startZ : rangeStart;
+                    ZonedDateTime overlapEnd   = rangeEnd.isAfter(endZ)      ? endZ   : rangeEnd;
+
+                    if (overlapStart.isBefore(overlapEnd)) {
+                        totalSeconds += ChronoUnit.SECONDS.between(overlapStart, overlapEnd);
+                    }
+                }
+            }
+            day = day.plusDays(1);
+        }
+
+        return totalSeconds;
     }
 
     /** 管理员修改排班或节假日后调用，主动失效缓存。 */
@@ -91,6 +121,22 @@ public class BusinessHoursService implements IBusinessHoursCalculator {
 
     // ── 私有：加载当天生效时间段（含节假日覆盖） ──────────────────
 
+    /**
+     * 加载指定日期的有效营业时间段列表，优先级：Redis 缓存 → 节假日配置 → 周排班。
+     *
+     * <p>返回值语义：
+     * <ul>
+     *   <li>{@code null}              — 排班表无配置（视为全天开放，降级处理）</li>
+     *   <li>{@code Collections.emptyList()} — 该日为休息日或节假日关闭（全天不开放）</li>
+     *   <li>非空列表               — 当天各营业时段（HH:mm 格式，左闭右开区间）</li>
+     * </ul>
+     *
+     * <p>Redis 缓存 TTL 为当天剩余秒数（到次日零点失效），命中率高；
+     * 节假日配置优先于周排班，支持临时调班（WORKDAY / CUSTOM / CLOSED）。
+     *
+     * @param date 目标日期（Asia/Shanghai 时区）
+     * @return 时间段列表，{@code null} 表示无排班数据
+     */
     private List<BusinessHoursScheduleEntity.TimeRange> loadTodayRanges(LocalDate date) {
         String cacheKey = CACHE_KEY_PREFIX + date;
 

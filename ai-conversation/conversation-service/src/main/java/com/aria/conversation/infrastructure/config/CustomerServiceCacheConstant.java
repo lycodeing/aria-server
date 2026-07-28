@@ -29,6 +29,19 @@ public final class CustomerServiceCacheConstant {
      */
     public static final String DOMAIN_RULES = "domain_rules";
 
+    /**
+     * Tier2 意图原型向量 Redis HASH key。
+     * field=intentCode，value=PrototypeEntry JSON（含 vector/exampleCount/updatedAt）。
+     * 由 {@code IntentPrototypeStore} 使用。
+     */
+    public static final String INTENT_PROTOTYPES = "intent:prototypes";
+
+    /**
+     * 原型向量版本号 Redis key，IntentConfig 变更时更新。
+     * 由 {@code IntentPrototypeStore} 使用，供感知配置变更。
+     */
+    public static final String INTENT_PROTOTYPE_VERSION = "intent:prototype:version";
+
     private CustomerServiceCacheConstant() {
         throw new UnsupportedOperationException("CustomerServiceCacheConstant is a utility class");
     }

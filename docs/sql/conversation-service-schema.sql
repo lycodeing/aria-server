@@ -1232,3 +1232,33 @@ CREATE TRIGGER trg_cs_webhook_config_update_time
 ALTER TABLE cs_conversation.cs_sla_breach
     ADD COLUMN IF NOT EXISTS webhook_notified_at TIMESTAMPTZ;
 COMMENT ON COLUMN cs_conversation.cs_sla_breach.webhook_notified_at IS 'Webhook 推送时间，null=未推送';
+
+-- ============================================================
+-- 意图触发历史案例向量表（Tier3 LLM 动态 Few-Shot RAG 注入）
+-- 创建时间：2026-07-28
+-- ============================================================
+CREATE TABLE IF NOT EXISTS cs_conversation.intent_example_vectors (
+    id              BIGSERIAL PRIMARY KEY,
+    intent_code     VARCHAR(100) NOT NULL,
+    message_text    TEXT NOT NULL,
+    embedding       vector(1024) NOT NULL,
+    confirmed_by    VARCHAR(50),                      -- NULL 表示自动积累，非 NULL 表示人工确认
+    auto_confirmed  BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 向量余弦相似度索引（ivfflat，适合百万级以下数据）
+CREATE INDEX IF NOT EXISTS idx_intent_example_vectors_embedding
+    ON cs_conversation.intent_example_vectors USING ivfflat (embedding vector_cosine_ops)
+    WITH (lists = 50);
+
+-- intent_code 索引，供按意图过滤查询
+CREATE INDEX IF NOT EXISTS idx_intent_example_vectors_intent_code
+    ON cs_conversation.intent_example_vectors (intent_code);
+
+COMMENT ON TABLE  cs_conversation.intent_example_vectors IS '意图触发历史案例向量表，用于 Tier3 LLM 动态 Few-Shot RAG';
+COMMENT ON COLUMN cs_conversation.intent_example_vectors.intent_code   IS '意图 code，对应 IntentConfig.code';
+COMMENT ON COLUMN cs_conversation.intent_example_vectors.message_text  IS '原始用户消息文本';
+COMMENT ON COLUMN cs_conversation.intent_example_vectors.embedding     IS 'BGE-M3 生成的 1024 维 embedding，pgvector 格式';
+COMMENT ON COLUMN cs_conversation.intent_example_vectors.confirmed_by  IS 'NULL=高置信度自动积累；非NULL=人工确认者';
+COMMENT ON COLUMN cs_conversation.intent_example_vectors.auto_confirmed IS '是否为自动积累（非人工确认）';

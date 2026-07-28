@@ -27,9 +27,10 @@ import java.util.Map;
  * <p>自动升级：发布 {@link SlaEscalationRequestedEvent} 领域事件（domain 层），
  * 由 application 层的 SlaEscalationHandler 订阅处理，避免跨聚合直接调用。
  *
- * <p>注意：本类在 @Transactional 边界内被调用，
- * Spring 事件默认同步分发（事务提交前），autoEscalate 失败时事务回滚可能产生幽灵通知。
- * 此为已知权衡，可接受。
+ * <p>注意：{@link SlaBreachDetector#check} 未包裹在 {@code @Transactional} 事务内，
+ * {@link SlaBreachRecorder#record} 按条独立 insert，无整体回滚保证。
+ * 若某条 insert 后续失败，已持久化的违规记录不会回滚；
+ * 而 SSE/Webhook 推送为外部调用，同样无法回滚，属已知权衡，可接受。
  */
 @Slf4j
 @Component

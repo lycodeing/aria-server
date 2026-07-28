@@ -1,6 +1,6 @@
 package com.aria.conversation.application.service;
 
-import com.aria.conversation.domain.service.IntentService;
+import com.aria.conversation.domain.service.MultiIntentService;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
 import com.aria.conversation.infrastructure.persistence.ConversationPersistRepository;
@@ -29,7 +29,7 @@ class FaqChatAppServiceSessionTest {
     @Mock private DynamicModelFactory           aiClient;
     @Mock private ConversationHistoryRepository historyRepository;
     @Mock private KnowledgeServiceClient        knowledgeServiceClient;
-    @Mock private IntentService                 intentService;
+    @Mock private MultiIntentService                multiIntentService;
     @Mock private SessionQueueService           sessionQueueService;
     @Mock private CsatService                   csatService;
     @Mock private ConversationPersistRepository persistRepository;
@@ -41,7 +41,7 @@ class FaqChatAppServiceSessionTest {
     void setUp() {
         service = new FaqChatAppService(
                 aiClient, historyRepository, knowledgeServiceClient,
-                intentService, sessionQueueService, objectMapper,
+                multiIntentService, sessionQueueService, objectMapper,
                 csatService, persistRepository);
     }
 
