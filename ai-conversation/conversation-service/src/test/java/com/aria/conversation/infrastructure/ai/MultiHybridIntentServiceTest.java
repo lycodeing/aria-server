@@ -1,6 +1,7 @@
 package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.domain.model.*;
+import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
 import com.aria.conversation.infrastructure.embedding.EmbeddingService;
 import com.aria.conversation.infrastructure.example.IntentExampleVectorRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -27,6 +28,7 @@ class MultiHybridIntentServiceTest {
     @Mock private RoutingConfigProvider routingConfigProvider;
     @Mock private IntentExampleVectorRepository exampleVectorRepo;
     @Mock private EmbeddingService embeddingService;
+    @Mock private DomainRepository domainRepository;
 
     private MultiHybridIntentService service;
 
@@ -37,11 +39,13 @@ class MultiHybridIntentServiceTest {
         config.getIntent().setEmbeddingEnabled(true);
         config.getIntent().setEmbeddingHighConfidence(0.85);
         when(routingConfigProvider.getConfig()).thenReturn(config);
+        // 默认 domainRepository 返回 empty，loadMergedIntents 用空列表兜底
+        lenient().when(domainRepository.findByCode(any())).thenReturn(java.util.Optional.empty());
 
         service = new MultiHybridIntentService(
                 ruleMatcher, embeddingMatcher, llmClassifier,
                 routingConfigProvider, new SimpleMeterRegistry(),
-                exampleVectorRepo, embeddingService);
+                exampleVectorRepo, embeddingService, domainRepository);
     }
 
     @Test
@@ -77,13 +81,13 @@ class MultiHybridIntentServiceTest {
     void classifyMulti_noTier1Tier2_fallsBackToLlm() {
         when(ruleMatcher.matchAll(any())).thenReturn(List.of());
         when(embeddingMatcher.match(any())).thenReturn(List.of());
-        when(llmClassifier.classifyMulti(any())).thenReturn(List.of(
+        when(llmClassifier.classifyMulti(any(), any())).thenReturn(List.of(
                 new IntentResult(IntentType.CHITCHAT, "chitchat", 0.95)));
 
         var result = service.classifyMulti("哈哈哈");
 
         assertThat(result.sourceTier()).isEqualTo("LLM");
-        verify(llmClassifier).classifyMulti(any());
+        verify(llmClassifier).classifyMulti(any(), any());
     }
 
     @Test

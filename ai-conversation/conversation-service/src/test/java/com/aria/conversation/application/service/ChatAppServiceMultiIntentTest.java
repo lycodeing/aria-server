@@ -52,7 +52,7 @@ class ChatAppServiceMultiIntentTest {
                 new IntentResult(IntentType.COMPLAINT, "complaint", 1.0),
                 new IntentResult(IntentType.FAQ_QUERY, "query_logistics", 0.88)
         ), "RULE", 30L);
-        when(multiIntentService.classifyMulti("投诉加查物流")).thenReturn(multi);
+        when(multiIntentService.classifyMulti("投诉加查物流", "ec")).thenReturn(multi);
         when(faqChatService.handleTransfer(eq("s1"), any()))
                 .thenReturn(Flux.just(ChatEvent.transfer("{}")));
 
@@ -74,7 +74,7 @@ class ChatAppServiceMultiIntentTest {
                 new IntentResult(IntentType.FAQ_QUERY, "query_logistics", 1.0),
                 new IntentResult(IntentType.FAQ_QUERY, "cancel_order", 0.81)
         ), "EMBEDDING", 30L);
-        when(multiIntentService.classifyMulti("查物流取消订单")).thenReturn(multi);
+        when(multiIntentService.classifyMulti("查物流取消订单", "ec")).thenReturn(multi);
         when(domainAgentService.streamChat(eq("s2"), eq("ec"), eq("查物流取消订单"), any()))
                 .thenReturn(Flux.just(ChatEvent.token("处理中", objectMapper)));
 
@@ -91,7 +91,7 @@ class ChatAppServiceMultiIntentTest {
         when(sessionQueueService.isActive("s3")).thenReturn(false);
         when(domainSessionService.resolveActiveDomain("s3", "查订单", "ec"))
                 .thenReturn("ec");
-        when(multiIntentService.classifyMulti("查订单"))
+        when(multiIntentService.classifyMulti("查订单", "ec"))
                 .thenReturn(multiOf(IntentType.FAQ_QUERY, "faq_query"));
         when(domainAgentService.streamChat(eq("s3"), eq("ec"), eq("查订单"), any()))
                 .thenReturn(Flux.just(ChatEvent.token("好的", objectMapper)));
