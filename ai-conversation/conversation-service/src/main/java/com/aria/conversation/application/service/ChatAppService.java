@@ -17,6 +17,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 对话路由分发器。
@@ -74,23 +75,25 @@ public class ChatAppService {
     }
 
     /**
-     * 域路径处理：域路由和多意图分类完全独立，用 {@code Mono.zip} 并行执行，
-     * 延迟从 T(domain)+T(intent) 降为 max(T(domain), T(intent))。
+     * 域路径处理：单一职责——确定活跃域、域感知意图分类、路由决策，三步串行。
+     *
+     * <p>域感知意图分类（{@link MultiIntentService#classifyMulti(String, String)}）合并了
+     * {@code __system__} 路由级意图和活跃域业务意图，LLM 拿到完整上下文。
+     * 两步都在同一 {@code boundedElastic} 线程上执行，避免了并行时意图分类看不到活跃域意图的问题。
      */
     private Flux<ChatEvent> streamDomain(String sessionId, String message, String domainCode) {
-        // 两路独立阻塞操作，各自跑在独立线程上，互不等待
-        Mono<String> domainMono = Mono.fromCallable(
-                        () -> domainSessionService.resolveActiveDomain(sessionId, message, domainCode))
-                .subscribeOn(Schedulers.boundedElastic());
-
-        Mono<MultiIntentResult> intentMono = Mono.fromCallable(
-                        () -> multiIntentService.classifyMulti(message))
-                .subscribeOn(Schedulers.boundedElastic());
-
-        return Mono.zip(domainMono, intentMono)
-                .flatMapMany(tuple -> {
-                    String activeDomain = tuple.getT1();
-                    MultiIntentResult multi = tuple.getT2();
+        return Mono.fromCallable(() -> {
+                    // 1. 确定活跃域（Redis + 关键词 + 小模型域路由，~50ms）
+                    String activeDomain = domainSessionService.resolveActiveDomain(
+                            sessionId, message, domainCode);
+                    // 2. 域感知意图分类：__system__ 意图 + activeDomain 业务意图合并后分类
+                    MultiIntentResult multi = multiIntentService.classifyMulti(message, activeDomain);
+                    return Map.entry(activeDomain, multi);
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(entry -> {
+                    String activeDomain = entry.getKey();
+                    MultiIntentResult multi = entry.getValue();
                     if (multi.requiresTransfer()) {
                         log.info("[Chat] domain 路径多意图转人工拦截 sessionId={} primary={}",
                                 sessionId, multi.primaryIntent().intent());

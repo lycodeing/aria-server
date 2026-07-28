@@ -1,9 +1,13 @@
 package com.aria.conversation.infrastructure.ai;
 
+import com.aria.conversation.domain.model.DomainCodes;
 import com.aria.conversation.domain.model.IntentResult;
 import com.aria.conversation.domain.model.IntentType;
 import com.aria.conversation.domain.model.MultiIntentResult;
 import com.aria.conversation.domain.service.MultiIntentService;
+import com.aria.conversation.infrastructure.dit.config.DomainConfig;
+import com.aria.conversation.infrastructure.dit.config.IntentConfig;
+import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
 import com.aria.conversation.infrastructure.embedding.EmbeddingService;
 import com.aria.conversation.infrastructure.example.IntentExampleVectorRepository;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -41,21 +45,33 @@ public class MultiHybridIntentService implements MultiIntentService {
     private final MultiIntentClassifier llmClassifier;
     private final RoutingConfigProvider routingConfigProvider;
     private final MeterRegistry meterRegistry;
-    private final IntentExampleVectorRepository exampleVectorRepo;  // 高置信度自动积累
-    private final EmbeddingService embeddingService;                 // 生成积累向量
+    private final IntentExampleVectorRepository exampleVectorRepo;
+    private final EmbeddingService embeddingService;
+    private final DomainRepository domainRepository;  // 加载活跃域意图，合并后传给 Tier3
 
     @Override
     public MultiIntentResult classifyMulti(String userMessage) {
         long start = System.currentTimeMillis();
         try {
-            return doClassify(userMessage, start);
+            return doClassify(userMessage, null, start);
         } catch (Exception e) {
             log.error("[MultiHybrid] 意图分类异常，降级 UNKNOWN. msg={}", userMessage, e);
             return MultiIntentResult.UNKNOWN;
         }
     }
 
-    private MultiIntentResult doClassify(String userMessage, long start) {
+    @Override
+    public MultiIntentResult classifyMulti(String userMessage, String domainCode) {
+        long start = System.currentTimeMillis();
+        try {
+            return doClassify(userMessage, domainCode, start);
+        } catch (Exception e) {
+            log.error("[MultiHybrid] 意图分类异常，降级 UNKNOWN. msg={}", userMessage, e);
+            return MultiIntentResult.UNKNOWN;
+        }
+    }
+
+    private MultiIntentResult doClassify(String userMessage, String domainCode, long start) {
         RoutingConfig.Intent cfg = routingConfigProvider.getConfig().getIntent();
 
         // 退化模式：multiIntentEnabled=false 时降为单意图
@@ -65,7 +81,9 @@ public class MultiHybridIntentService implements MultiIntentService {
             return new MultiIntentResult(List.of(single), ClassificationTierConstants.RULE, 0L);
         }
 
-        // LinkedHashMap 保证插入顺序，同 intentCode 以先到的 Tier 为准
+        // 合并意图列表：__system__ 路由级意图 + 活跃域业务意图（Tier3 Prompt 使用）
+        List<IntentConfig> mergedIntents = loadMergedIntents(domainCode);
+
         Map<String, IntentResult> merged = new LinkedHashMap<>();
         String reachedTier = ClassificationTierConstants.RULE;
 
@@ -102,7 +120,8 @@ public class MultiHybridIntentService implements MultiIntentService {
         if (shouldFallbackToLlm(merged, cfg)) {
             try {
                 reachedTier = ClassificationTierConstants.LLM;
-                List<IntentResult> llmResults = llmClassifier.classifyMulti(userMessage);
+                // Tier3 使用合并后的意图列表，LLM Prompt 包含完整业务意图上下文
+                List<IntentResult> llmResults = llmClassifier.classifyMulti(userMessage, mergedIntents);
                 // LLM 结果：仅补充，不覆盖 Tier1/Tier2 已有的高置信度结果
                 llmResults.forEach(r -> merged.merge(r.intentCode(), r,
                         (ex, nr) -> ex.confidence() >= nr.confidence() ? ex : nr));
@@ -149,6 +168,44 @@ public class MultiHybridIntentService implements MultiIntentService {
             log.warn("[MultiHybrid] 退化模式规则层异常", e);
             return List.of();
         }
+    }
+
+    /**
+     * 加载合并意图列表：{@code __system__} 路由级意图 + 活跃域业务意图。
+     *
+     * <p>去重规则：同 intentCode 以 {@code __system__} 域为准（路由优先级更高）。
+     * {@code domainCode} 为 null 时只返回 {@code __system__} 意图。
+     */
+    private List<IntentConfig> loadMergedIntents(String domainCode) {
+        List<IntentConfig> systemIntents = domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN)
+                .map(DomainConfig::intents)
+                .orElse(List.of());
+
+        if (domainCode == null || domainCode.isBlank()) {
+            return systemIntents;
+        }
+
+        List<IntentConfig> domainIntents = domainRepository.findByCode(domainCode)
+                .map(DomainConfig::intents)
+                .orElse(List.of());
+
+        if (domainIntents.isEmpty()) {
+            return systemIntents;
+        }
+
+        // 合并：以 intentCode 去重，__system__ 的优先（路由级）
+        java.util.Set<String> systemCodes = systemIntents.stream()
+                .map(IntentConfig::code)
+                .collect(java.util.stream.Collectors.toSet());
+
+        List<IntentConfig> merged = new java.util.ArrayList<>(systemIntents);
+        domainIntents.stream()
+                .filter(i -> !systemCodes.contains(i.code()))
+                .forEach(merged::add);
+
+        log.debug("[MultiHybrid] 合并意图 system={} domain={} total={}",
+                systemIntents.size(), domainIntents.size(), merged.size());
+        return merged;
     }
 
     private void recordMetrics(String tier, int intentCount, long elapsedMs) {
