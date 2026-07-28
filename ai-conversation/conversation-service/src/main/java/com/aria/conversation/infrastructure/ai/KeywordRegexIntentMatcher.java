@@ -14,9 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.commons.lang3.StringUtils;
 import org.springframework.stereotype.Component;
 
-import java.util.Comparator;
-import java.util.List;
-import java.util.Optional;
+import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
@@ -64,7 +62,7 @@ public class KeywordRegexIntentMatcher {
         }
         String lower = userMessage.toLowerCase();
         // LinkedHashMap 保证插入顺序（按 sortOrder），同 code 只保留第一条命中
-        java.util.Map<String, IntentResult> resultMap = new java.util.LinkedHashMap<>();
+        Map<String, IntentResult> resultMap = new LinkedHashMap<>();
 
         for (IntentRuleEntry entry : loadRules()) {
             if (resultMap.containsKey(entry.intentCode())) {

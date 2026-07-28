@@ -50,14 +50,14 @@ public final class SystemPromptBuilder {
         String ragSection = buildRagSection(hits);
         if (ragSection != null) sections.add(ragSection);
 
-        // 2. 추가 지령 (있을 때만)
+        // 2. 附加指令（如有）
         if (addon != null && !addon.isBlank()) sections.add(addon);
 
-        // 3. 기본 프롬프트 (항상 포함)
+        // 3. 默认提示（始终包含）
         sections.add(basePrompt != null ? basePrompt : DEFAULT_BASE_PROMPT);
 
         String prompt = String.join("\n", sections);
-        // DEBUG 레벨 사용: System Prompt는 수백 토큰짜리 문자열 — INFO로 찍으면 프로덕션 로그 도배
+
         log.debug("[SystemPrompt] built: length={} hasRag={} hasAddon={}",
                 prompt.length(), ragSection != null, addon != null && !addon.isBlank());
         return prompt;
