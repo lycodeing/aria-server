@@ -25,6 +25,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -123,20 +124,82 @@ public class DomainAgentService {
     }
 
     /**
-     * 多意图重载：携带 intentCodes，Agent 可根据意图列表做精细化回复。
+     * 多意图重载：将 intentCodes 注入 System Prompt，让 Agent 明确知道需要回答哪几个问题。
      *
-     * <p>当前实现代理无意图版本，intentCodes 透传至日志供后续扩展（如动态注入 System Prompt）。
+     * <p>与无意图版本的唯一区别：System Prompt 追加了意图提示块，
+     * 避免 LLM 只回答第一个意图而遗漏其他意图。
      *
-     * @param sessionId   会话 ID
-     * @param domainCode  当前活跃域 code
-     * @param userMessage 用户消息文本
      * @param intentCodes 当前消息的所有意图 code 列表（如 ["query_logistics", "cancel_order"]）
-     * @return AI token 事件与工具事件的合并流
      */
     public Flux<ChatEvent> streamChat(String sessionId, String domainCode,
                                       String userMessage, List<String> intentCodes) {
-        log.debug("[DomainAgent] multi-intent codes={} sessionId={}", intentCodes, sessionId);
-        return streamChat(sessionId, domainCode, userMessage);
+        if (intentCodes == null || intentCodes.isEmpty()) {
+            return streamChat(sessionId, domainCode, userMessage);
+        }
+        log.info("[DomainAgent] start (multi-intent) sessionId={} domain={} intentCount={}",
+                sessionId, domainCode, intentCodes.size());
+
+        List<DomainSummary> allDomains = domainRepo.findAllEnabledSummary().stream()
+                .map(d -> new DomainSummary(d.getCode(), d.getDescription()))
+                .toList();
+
+        List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(userMessage);
+
+        // 域列表 + 意图提示合并为 addon
+        String domainAddon = buildDomainAddon(allDomains);
+        String intentAddon = buildIntentAddon(intentCodes, domainCode);
+        String combinedAddon = (domainAddon != null ? domainAddon + "\n\n" : "") + intentAddon;
+        String systemPrompt = SystemPromptBuilder.build(hits, combinedAddon, null);
+
+        Sinks.Many<ChatEvent> eventSink = Sinks.many().unicast().onBackpressureBuffer();
+        List<ToolConfig> domainTools = getToolsForDomain(domainCode);
+        InvocationParameters params = new InvocationParameters(
+                sessionId, domainCode, userMessage, allDomains, eventSink);
+        BuiltinTools builtinTools = new BuiltinTools(
+                params, sessionDomainRepo, domainSwitchRepo, objectMapper, sessionQueueService);
+
+        DomainAssistant assistant = AiServices.builder(DomainAssistant.class)
+                .streamingChatModel(modelFactory.getStreamingChatModel())
+                .systemMessageProvider(id -> systemPrompt)
+                .chatMemoryProvider(id -> MessageWindowChatMemory.builder()
+                        .id(id).maxMessages(CHAT_MEMORY_MAX_MESSAGES)
+                        .chatMemoryStore(memoryStore).build())
+                .toolProvider(toolProviderFactory.build(domainTools, eventSink, builtinTools))
+                .build();
+
+        Flux<ChatEvent> tokenFlux = assistant.chat(sessionId, userMessage)
+                .map(content -> ChatEvent.token(content, objectMapper))
+                .doFinally(signal -> {
+                    log.info("[DomainAgent] done (multi-intent) sessionId={} signal={}", sessionId, signal);
+                    eventSink.tryEmitComplete();
+                });
+
+        return Flux.merge(tokenFlux, eventSink.asFlux())
+                .doOnError(e -> log.error("[DomainAgent] error sessionId={}", sessionId, e))
+                .onErrorResume(e -> Flux.just(ChatEvent.error(e.getMessage(), objectMapper)));
+    }
+
+    /**
+     * 根据意图 code 列表构建意图感知提示块，告知 LLM 需要逐一回答所有意图。
+     *
+     * <p>尝试从域配置加载意图名称（友好提示），失败时降级为直接显示 intentCode。
+     */
+    private String buildIntentAddon(List<String> intentCodes, String domainCode) {
+        Map<String, String> intentNameMap = domainRepo.findByCode(domainCode)
+                .map(dc -> dc.intents().stream()
+                        .collect(Collectors.toMap(
+                                ic -> ic.code().toLowerCase(),
+                                ic -> ic.name() != null ? ic.name() : ic.code(),
+                                (a, b) -> a)))
+                .orElse(Map.of());
+
+        StringBuilder sb = new StringBuilder("【多意图指令】当前用户消息包含以下意图，请逐一完整回答，不要遗漏：\n");
+        for (String code : intentCodes) {
+            String name = intentNameMap.getOrDefault(code.toLowerCase(), code);
+            sb.append("- ").append(name).append("\n");
+        }
+        sb.append("请确保每个意图都有对应的回答。");
+        return sb.toString();
     }
 
     private List<ToolConfig> getToolsForDomain(String domainCode) {
