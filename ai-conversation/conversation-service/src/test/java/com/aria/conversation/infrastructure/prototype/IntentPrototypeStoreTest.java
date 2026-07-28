@@ -17,13 +17,10 @@ import org.redisson.api.RMap;
 import org.redisson.api.RedissonClient;
 
 import java.util.List;
-import java.util.Optional;
 
-import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.*;
-import static org.mockito.Mockito.lenient;
 
 @ExtendWith(MockitoExtension.class)
 @DisplayName("IntentPrototypeStore 原型向量存储")
@@ -39,12 +36,9 @@ class IntentPrototypeStoreTest {
 
     @BeforeEach
     void setUp() {
-        // lenient: rebuild() 仅在 protoMap 非空时调用 getMap()，
-        // 无 examples 的测试不调用此方法，strict stubbing 会报 UnnecessaryStubbingException
         lenient().when(redissonClient.<String, String>getMap(CustomerServiceCacheConstant.INTENT_PROTOTYPES))
                 .thenReturn(rMap);
-        store = new IntentPrototypeStore(redissonClient, embeddingService,
-                domainRepository, objectMapper);
+        store = new IntentPrototypeStore(redissonClient, embeddingService, domainRepository, objectMapper);
     }
 
     private IntentConfig buildIntent(String code, List<String> examples) {
@@ -52,10 +46,14 @@ class IntentPrototypeStoreTest {
                 List.of(), List.of(), List.of(), List.of(), 1);
     }
 
+    private DomainConfig buildDomain(String code, List<IntentConfig> intents) {
+        return new DomainConfig(code, code, null, null, null, intents);
+    }
+
     @Test
-    @DisplayName("rebuild: __system__ 域不存在时不写 Redis")
-    void rebuild_noSystemDomain_doesNotWriteRedis() {
-        when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN)).thenReturn(Optional.empty());
+    @DisplayName("rebuild: 无可用域时不写 Redis（I1修复：改为 findAllEnabled）")
+    void rebuild_noDomains_doesNotWriteRedis() {
+        when(domainRepository.findAllEnabled()).thenReturn(List.of());
 
         store.rebuild();
 
@@ -66,10 +64,8 @@ class IntentPrototypeStoreTest {
     @DisplayName("rebuild: 有 exampleQueries 的意图被写入 Redis")
     void rebuild_withExamples_writesPrototypesToRedis() throws Exception {
         var intent = buildIntent("FAQ_QUERY", List.of("查订单", "看物流"));
-        var domain = new DomainConfig(DomainCodes.SYSTEM_DOMAIN, "system",
-                null, null, null, List.of(intent));
-        when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN))
-                .thenReturn(Optional.of(domain));
+        when(domainRepository.findAllEnabled()).thenReturn(
+                List.of(buildDomain(DomainCodes.SYSTEM_DOMAIN, List.of(intent))));
         when(embeddingService.encode(any())).thenReturn(new float[]{1.0f, 0.0f});
         when(objectMapper.writeValueAsString(any())).thenReturn("{\"vector\":[1.0,0.0]}");
 
@@ -80,12 +76,10 @@ class IntentPrototypeStoreTest {
 
     @Test
     @DisplayName("rebuild: 无 exampleQueries 的意图不写入 Redis")
-    void rebuild_noExamples_skipsIntent() throws Exception {
-        var intent = buildIntent("COMPLAINT", List.of()); // 无 examples
-        var domain = new DomainConfig(DomainCodes.SYSTEM_DOMAIN, "system",
-                null, null, null, List.of(intent));
-        when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN))
-                .thenReturn(Optional.of(domain));
+    void rebuild_noExamples_skipsIntent() {
+        var intent = buildIntent("COMPLAINT", List.of());
+        when(domainRepository.findAllEnabled()).thenReturn(
+                List.of(buildDomain(DomainCodes.SYSTEM_DOMAIN, List.of(intent))));
 
         store.rebuild();
 
@@ -93,20 +87,35 @@ class IntentPrototypeStoreTest {
     }
 
     @Test
+    @DisplayName("rebuild: 跨多个域的意图都被构建（I1修复验证）")
+    void rebuild_multiDomain_buildsAllIntents() throws Exception {
+        var systemIntent = buildIntent("FAQ_QUERY", List.of("查订单"));
+        var domainIntent = buildIntent("query_logistics", List.of("查物流"));
+        when(domainRepository.findAllEnabled()).thenReturn(List.of(
+                buildDomain(DomainCodes.SYSTEM_DOMAIN, List.of(systemIntent)),
+                buildDomain("ecommerce", List.of(domainIntent))));
+        when(embeddingService.encode(any())).thenReturn(new float[]{1.0f, 0.0f});
+        when(objectMapper.writeValueAsString(any())).thenReturn("{\"vector\":[1.0,0.0]}");
+
+        store.rebuild();
+
+        verify(rMap).putAll(argThat(map ->
+                map.containsKey("FAQ_QUERY") && map.containsKey("query_logistics")));
+    }
+
+    @Test
     @DisplayName("rebuild: JsonProcessingException 时跳过该意图，不中断整体")
     void rebuild_jsonException_skipsIntentContinues() throws Exception {
         var i1 = buildIntent("FAQ_QUERY", List.of("查订单"));
         var i2 = buildIntent("COMPLAINT", List.of("投诉"));
-        var domain = new DomainConfig(DomainCodes.SYSTEM_DOMAIN, "system",
-                null, null, null, List.of(i1, i2));
-        when(domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN))
-                .thenReturn(Optional.of(domain));
+        when(domainRepository.findAllEnabled()).thenReturn(
+                List.of(buildDomain(DomainCodes.SYSTEM_DOMAIN, List.of(i1, i2))));
         when(embeddingService.encode(any())).thenReturn(new float[]{1.0f, 0.0f});
         when(objectMapper.writeValueAsString(any()))
                 .thenThrow(new com.fasterxml.jackson.core.JsonProcessingException("mock") {})
                 .thenReturn("{\"vector\":[1.0,0.0]}");
 
-        store.rebuild(); // 不应抛异常，COMPLAINT 仍然写入
+        store.rebuild();
 
         verify(rMap).putAll(argThat(map -> map.containsKey("COMPLAINT") && !map.containsKey("FAQ_QUERY")));
     }

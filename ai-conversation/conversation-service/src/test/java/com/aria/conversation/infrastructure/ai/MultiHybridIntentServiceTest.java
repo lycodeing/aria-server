@@ -2,8 +2,6 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.domain.model.*;
 import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
-import com.aria.conversation.infrastructure.embedding.EmbeddingService;
-import com.aria.conversation.infrastructure.example.IntentExampleVectorRepository;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -26,9 +24,8 @@ class MultiHybridIntentServiceTest {
     @Mock private EmbeddingPrototypeIntentMatcher embeddingMatcher;
     @Mock private MultiIntentClassifier llmClassifier;
     @Mock private RoutingConfigProvider routingConfigProvider;
-    @Mock private IntentExampleVectorRepository exampleVectorRepo;
-    @Mock private EmbeddingService embeddingService;
     @Mock private DomainRepository domainRepository;
+    @Mock private IntentAccumulationService accumulationService;
 
     private MultiHybridIntentService service;
 
@@ -45,7 +42,7 @@ class MultiHybridIntentServiceTest {
         service = new MultiHybridIntentService(
                 ruleMatcher, embeddingMatcher, llmClassifier,
                 routingConfigProvider, new SimpleMeterRegistry(),
-                exampleVectorRepo, embeddingService, domainRepository);
+                domainRepository, accumulationService);
     }
 
     @Test
