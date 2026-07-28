@@ -110,33 +110,41 @@ public class IntentPrototypeStore {
 
     /**
      * 重建所有意图的原型向量，写入 Redis。
-     * 遍历 __system__ 域所有意图，批量调用 EmbeddingService，计算均值并归一化。
+     *
+     * <p>遍历所有启用域（含 {@code __system__} 域），为每个意图的 exampleQueries 计算均值原型向量。
+     * 多个域可能定义同名 intentCode，后加载的域会覆盖先加载的（建议业务意图在域级定义，路由意图在 __system__ 定义）。
+     *
+     * <p>I1 修复：原仅遍历 __system__ 域，域级业务意图（如 query_logistics）的原型不被构建，
+     * 导致 Tier2 对域路径业务意图完全盲目，改为遍历所有启用域。
      */
     public void rebuild() {
-        DomainConfig system = domainRepository.findByCode(DomainCodes.SYSTEM_DOMAIN).orElse(null);
-        if (system == null) {
-            log.warn("[PrototypeStore] __system__ 域不存在，跳过重建");
+        List<com.aria.conversation.infrastructure.dit.config.DomainConfig> allDomains =
+                domainRepository.findAllEnabled();
+
+        if (allDomains.isEmpty()) {
+            log.warn("[PrototypeStore] 无可用域，跳过重建");
             return;
         }
 
         Map<String, String> protoMap = new HashMap<>();
-        for (IntentConfig intent : system.intents()) {
-            List<String> examples = intent.exampleQueries();
-            if (examples == null || examples.isEmpty()) {
-                continue;
-            }
-            List<float[]> vectors = examples.stream()
-                    .map(embeddingService::encode)
-                    .toList();
-            float[] prototype = VectorMathUtils.meanAndNormalize(vectors);
-            PrototypeEntry entry = new PrototypeEntry(prototype, examples.size(),
-                    Instant.now().toString());
-            try {
-                protoMap.put(intent.code(), objectMapper.writeValueAsString(entry));
-            } catch (JsonProcessingException e) {
-                // C7 修复：受检异常显式处理，跳过该意图，不中断整体重建
-                log.warn("[PrototypeStore] 意图 {} 原型序列化失败，跳过. error={}",
-                        intent.code(), e.getMessage());
+        for (var domain : allDomains) {
+            for (IntentConfig intent : domain.intents()) {
+                List<String> examples = intent.exampleQueries();
+                if (examples == null || examples.isEmpty()) {
+                    continue;
+                }
+                List<float[]> vectors = examples.stream()
+                        .map(embeddingService::encode)
+                        .toList();
+                float[] prototype = VectorMathUtils.meanAndNormalize(vectors);
+                PrototypeEntry entry = new PrototypeEntry(prototype, examples.size(),
+                        Instant.now().toString());
+                try {
+                    protoMap.put(intent.code(), objectMapper.writeValueAsString(entry));
+                } catch (JsonProcessingException e) {
+                    log.warn("[PrototypeStore] 意图 {} 原型序列化失败，跳过. error={}",
+                            intent.code(), e.getMessage());
+                }
             }
         }
 

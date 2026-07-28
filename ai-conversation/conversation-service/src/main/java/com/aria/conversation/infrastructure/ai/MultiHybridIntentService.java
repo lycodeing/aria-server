@@ -2,25 +2,24 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.domain.model.DomainCodes;
 import com.aria.conversation.domain.model.IntentResult;
-import com.aria.conversation.domain.model.IntentType;
 import com.aria.conversation.domain.model.MultiIntentResult;
 import com.aria.conversation.domain.service.MultiIntentService;
 import com.aria.conversation.infrastructure.dit.config.DomainConfig;
 import com.aria.conversation.infrastructure.dit.config.IntentConfig;
 import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
-import com.aria.conversation.infrastructure.embedding.EmbeddingService;
-import com.aria.conversation.infrastructure.example.IntentExampleVectorRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Primary;
-import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * 多意图三级级联协调器（@Primary），实现 {@link MultiIntentService}。
@@ -31,6 +30,9 @@ import java.util.concurrent.TimeUnit;
  *   Tier 2: EmbeddingPrototypeIntentMatcher        [~30ms, embeddingEnabled=true 时执行]
  *   Tier 3: MultiIntentClassifier（LLM）           [200-800ms, 置信度不足时兜底]
  * </pre>
+ *
+ * <p>高置信度自动积累通过 {@link IntentAccumulationService} 异步完成，
+ * 使用独立 Bean 注入是正确拦截 {@code @Async} 代理的必要条件。
  *
  * <p>灰度开关：{@code multiIntentEnabled=false} 时退化为单意图，可无重启回滚。
  */
@@ -45,9 +47,9 @@ public class MultiHybridIntentService implements MultiIntentService {
     private final MultiIntentClassifier llmClassifier;
     private final RoutingConfigProvider routingConfigProvider;
     private final MeterRegistry meterRegistry;
-    private final IntentExampleVectorRepository exampleVectorRepo;
-    private final EmbeddingService embeddingService;
-    private final DomainRepository domainRepository;  // 加载活跃域意图，合并后传给 Tier3
+    private final DomainRepository domainRepository;
+    /** 独立 Bean，确保 @Async 代理正确拦截（不可改为 this. 自调用） */
+    private final IntentAccumulationService accumulationService;
 
     @Override
     public MultiIntentResult classifyMulti(String userMessage) {
@@ -85,13 +87,17 @@ public class MultiHybridIntentService implements MultiIntentService {
         String reachedTier = ClassificationTierConstants.RULE;
 
         applyTier1(userMessage, merged);
-        if (cfg.isEmbeddingEnabled() && applyTier2(userMessage, merged)) reachedTier = ClassificationTierConstants.EMBEDDING;
-        if (shouldFallbackToLlm(merged, cfg) && applyTier3(userMessage, mergedIntents, merged, cfg)) reachedTier = ClassificationTierConstants.LLM;
+        if (cfg.isEmbeddingEnabled() && applyTier2(userMessage, merged))
+            reachedTier = ClassificationTierConstants.EMBEDDING;
+        if (shouldFallbackToLlm(merged, cfg) && applyTier3(userMessage, mergedIntents, merged, cfg))
+            reachedTier = ClassificationTierConstants.LLM;
 
         List<IntentResult> finalResults = merged.isEmpty()
                 ? List.of(IntentResult.UNKNOWN) : List.copyOf(merged.values());
         long elapsed = System.currentTimeMillis() - start;
-        log.info("[MultiHybrid] 分类完成 tier={} intentCount={} cost={}ms", reachedTier, finalResults.size(), elapsed);
+        // I3 修复：分类结果是高频日志，INFO 会在生产环境产生大量噪音，改为 DEBUG
+        log.debug("[MultiHybrid] 分类完成 tier={} intentCount={} cost={}ms",
+                reachedTier, finalResults.size(), elapsed);
         recordMetrics(reachedTier, finalResults.size(), elapsed);
         return new MultiIntentResult(finalResults, reachedTier, elapsed);
     }
@@ -128,7 +134,7 @@ public class MultiHybridIntentService implements MultiIntentService {
     }
 
     /**
-     * Tier3：LLM 兜底，补充结果写入 merged，并异步积累高置信度案例。
+     * Tier3：LLM 兜底，补充结果写入 merged，并通过独立 Bean 异步积累高置信度案例。
      *
      * @return true 表示本层被触发（调用方据此更新 reachedTier）
      */
@@ -139,7 +145,8 @@ public class MultiHybridIntentService implements MultiIntentService {
             llmResults.forEach(r -> merged.merge(r.intentCode(), r,
                     (ex, nr) -> ex.confidence() >= nr.confidence() ? ex : nr));
             log.debug("[MultiHybrid] Tier3 LLM 补充后共 {} 个意图", merged.size());
-            autoAccumulate(llmResults, userMessage, cfg);
+            // C1 修复：通过注入的独立 Bean 调用，Spring 代理正确拦截 @Async，不阻塞主路径
+            accumulationService.asyncAccumulate(llmResults, userMessage, cfg);
             return true;
         } catch (Exception e) {
             log.warn("[MultiHybrid] Tier3 LLM 层异常，使用已有结果. msg={}", userMessage, e);
@@ -147,17 +154,7 @@ public class MultiHybridIntentService implements MultiIntentService {
         }
     }
 
-    /**
-     * 判断是否需要降级到 Tier3 LLM。
-     *
-     * <p>满足以下任一条件则跳过 LLM：
-     * <ul>
-     *   <li>已有需要转人工的意图（最紧急，不需要 LLM 确认）</li>
-     *   <li>已有置信度 >= embeddingHighConfidence 的意图</li>
-     * </ul>
-     */
-    private boolean shouldFallbackToLlm(Map<String, IntentResult> merged,
-                                         RoutingConfig.Intent cfg) {
+    private boolean shouldFallbackToLlm(Map<String, IntentResult> merged, RoutingConfig.Intent cfg) {
         if (merged.isEmpty()) return true;
         if (merged.values().stream().anyMatch(IntentResult::requiresTransfer)) return false;
         double highConf = cfg.getEmbeddingHighConfidence();
@@ -196,12 +193,12 @@ public class MultiHybridIntentService implements MultiIntentService {
             return systemIntents;
         }
 
-        // 合并：以 intentCode 去重，__system__ 的优先（路由级）
-        java.util.Set<String> systemCodes = systemIntents.stream()
+        // I2 修复：使用 import 而非 FQN（Set/ArrayList/Collectors 已在文件顶部 import）
+        Set<String> systemCodes = systemIntents.stream()
                 .map(IntentConfig::code)
-                .collect(java.util.stream.Collectors.toSet());
+                .collect(Collectors.toSet());
 
-        List<IntentConfig> merged = new java.util.ArrayList<>(systemIntents);
+        List<IntentConfig> merged = new ArrayList<>(systemIntents);
         domainIntents.stream()
                 .filter(i -> !systemCodes.contains(i.code()))
                 .forEach(merged::add);
@@ -219,37 +216,6 @@ public class MultiHybridIntentService implements MultiIntentService {
                     .record(elapsedMs, TimeUnit.MILLISECONDS);
         } catch (Exception e) {
             log.debug("[MultiHybrid] Micrometer 指标记录失败（非关键）", e);
-        }
-    }
-
-    /**
-     * 将 Tier3 LLM 高置信度结果异步积累到历史案例库（数据飞轮）。
-     *
-     * <p>{@code @Async} 在独立线程执行，不阻塞主路径延迟。
-     * {@link IntentExampleVectorRepository#saveIfAbsent} 底层 ON CONFLICT DO NOTHING，幂等安全。
-     */
-    @Async("prototypeRebuildExecutor")
-    protected void autoAccumulate(List<IntentResult> llmResults,
-                                   String userMessage,
-                                   RoutingConfig.Intent cfg) {
-        if (!cfg.isAutoAccumulateEnabled()) {
-            return;
-        }
-        double threshold = cfg.getAutoAccumulateMinConfidence();
-        for (IntentResult r : llmResults) {
-            if (r.intent() == IntentType.UNKNOWN || r.confidence() < threshold) {
-                continue;
-            }
-            try {
-                float[] embedding = embeddingService.encode(userMessage);
-                exampleVectorRepo.saveIfAbsent(r.intentCode(), userMessage, embedding, true);
-                log.debug("[AutoAccumulate] 积累案例 intentCode={} confidence={}",
-                        r.intentCode(), String.format("%.3f", r.confidence()));
-                meterRegistry.counter("intent.example.accumulate.total",
-                        "intent_code", r.intentCode()).increment();
-            } catch (Exception e) {
-                log.warn("[AutoAccumulate] 积累失败 intentCode={}", r.intentCode(), e);
-            }
         }
     }
 }
