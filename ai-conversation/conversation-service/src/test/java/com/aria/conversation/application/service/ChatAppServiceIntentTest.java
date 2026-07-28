@@ -82,7 +82,7 @@ class ChatAppServiceIntentTest {
         when(sessionQueueService.isActive("s3")).thenReturn(false);
         when(domainSessionService.resolveActiveDomain("s3", "转人工", "ecommerce"))
                 .thenReturn("ecommerce");
-        when(multiIntentService.classifyMulti("转人工"))
+        when(multiIntentService.classifyMulti("转人工", "ecommerce"))
                 .thenReturn(singleResult(IntentType.TRANSFER_REQUEST, "transfer_request"));
         when(faqChatService.handleTransfer(eq("s3"), any()))
                 .thenReturn(Flux.just(ChatEvent.transfer("{}")));
@@ -99,7 +99,7 @@ class ChatAppServiceIntentTest {
         when(sessionQueueService.isActive("s4")).thenReturn(false);
         when(domainSessionService.resolveActiveDomain("s4", "查订单", "ecommerce"))
                 .thenReturn("ecommerce");
-        when(multiIntentService.classifyMulti("查订单"))
+        when(multiIntentService.classifyMulti("查订单", "ecommerce"))
                 .thenReturn(singleResult(IntentType.FAQ_QUERY, "faq_query"));
         when(domainAgentService.streamChat(eq("s4"), eq("ecommerce"), eq("查订单"), any()))
                 .thenReturn(Flux.just(ChatEvent.token("好的", objectMapper)));

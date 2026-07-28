@@ -43,7 +43,20 @@ public class LangChain4jIntentService implements MultiIntentClassifier {
                 log.warn("[Intent] __system__ 域不存在或意图列表为空");
                 return List.of(IntentResult.UNKNOWN);
             }
-            String systemPrompt = buildMultiPrompt(domain.intents());
+            return classifyMulti(userMessage, domain.intents());
+        } catch (Exception e) {
+            log.warn("[Intent] 多意图分类失败，降级为 UNKNOWN. message={}", userMessage, e);
+            return List.of(IntentResult.UNKNOWN);
+        }
+    }
+
+    @Override
+    public List<IntentResult> classifyMulti(String userMessage, List<IntentConfig> intents) {
+        try {
+            if (intents == null || intents.isEmpty()) {
+                return List.of(IntentResult.UNKNOWN);
+            }
+            String systemPrompt = buildMultiPrompt(intents);
             List<ChatMessage> messages = List.of(
                     SystemMessage.from(systemPrompt),
                     UserMessage.from(userMessage)
@@ -51,7 +64,7 @@ public class LangChain4jIntentService implements MultiIntentClassifier {
             String response = modelFactory.getChatModel().chat(messages).aiMessage().text();
             return parseMultiResponse(response);
         } catch (Exception e) {
-            log.warn("[Intent] 多意图分类失败，降级为 UNKNOWN. message={}", userMessage, e);
+            log.warn("[Intent] 多意图分类失败（域感知），降级为 UNKNOWN. message={}", userMessage, e);
             return List.of(IntentResult.UNKNOWN);
         }
     }
