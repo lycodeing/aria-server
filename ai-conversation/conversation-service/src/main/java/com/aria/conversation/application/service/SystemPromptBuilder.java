@@ -1,18 +1,28 @@
 package com.aria.conversation.application.service;
 
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
+import lombok.extern.slf4j.Slf4j;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 系统提示词（System Prompt）构造工具类。
+ * 시스템 프롬프트(System Prompt) 구조 빌더.
  *
- * <p>封装 RAG 参考资料拼接逻辑，供 {@code DomainAgentService} 和
- * {@code ChatAppService} 共享使用，避免重复代码。
+ * <p>RAG 참고자료, 추가 지령(addon), 기본 프롬프트 세 섹션을 조합한다.
+ * 각 섹션은 독립적으로 null/빈값 가능 — 없는 섹션은 조용히 제외된다.
+ *
+ * <pre>
+ * 조합 구조:
+ *   [참고자료 섹션]  (RAG hits 있을 때만)
+ *   [addon 섹션]    (addon 있을 때만)
+ *   [basePrompt]   (항상 포함, null이면 DEFAULT_BASE_PROMPT)
+ * </pre>
  */
+@Slf4j
 public final class SystemPromptBuilder {
 
-    /** 默认基础 system prompt */
+    /** 기본 System Prompt */
     public static final String DEFAULT_BASE_PROMPT =
             """
             你是一名专业的智能客服助手。请用简洁、友好的语言回答用户问题。回答要简明扼要，避免冗长说明。
@@ -23,43 +33,68 @@ public final class SystemPromptBuilder {
             - 切换成功后只需简短告知用户「已为您切换到XX服务，请重新描述您的问题」，不要再调用其他业务工具。
             - 同一轮对话中，域切换与业务查询（天气、订单等）互斥，不能同时进行。""";
 
-    private SystemPromptBuilder() { /* 工具类，不允许实例化 */ }
+    private SystemPromptBuilder() {}
 
     /**
      * 基于 RAG 检索结果和可选附加指令构造完整的 system prompt。
      *
-     * @param hits     RAG 检索命中结果（可为 null 或空）
-     * @param addon    附加指令（可为 null）
+     * @param hits       RAG 检索命中结果（可为 null 或空）
+     * @param addon      附加指令块（可为 null）
      * @param basePrompt 基础 system prompt（传 null 时使用 {@link #DEFAULT_BASE_PROMPT}）
      * @return 拼接后的完整 system prompt
      */
     public static String build(List<KnowledgeSearchResult.Hit> hits, String addon, String basePrompt) {
-        StringBuilder sb = new StringBuilder();
-        if (hits != null && !hits.isEmpty()) {
-            sb.append("【参考资料】（请优先依据以下内容回答，无需在回答中标注来源编号）\n\n");
-            for (int i = 0; i < hits.size(); i++) {
-                KnowledgeSearchResult.Hit h = hits.get(i);
-                String label = (h.getBreadcrumb() != null && !h.getBreadcrumb().isBlank())
-                        ? h.getBreadcrumb() : "文档片段";
-                sb.append("[").append(i + 1).append("] ").append(label).append("\n")
-                  .append(h.getContent() != null ? h.getContent() : "").append("\n\n");
-            }
-            sb.append("---\n");
+        List<String> sections = new ArrayList<>();
+
+        // 1. RAG参考资料部分（如有）
+        String ragSection = buildRagSection(hits);
+        if (ragSection != null) sections.add(ragSection);
+
+        // 2. 추가 지령 (있을 때만)
+        if (addon != null && !addon.isBlank()) sections.add(addon);
+
+        // 3. 기본 프롬프트 (항상 포함)
+        sections.add(basePrompt != null ? basePrompt : DEFAULT_BASE_PROMPT);
+
+        String prompt = String.join("\n", sections);
+        // DEBUG 레벨 사용: System Prompt는 수백 토큰짜리 문자열 — INFO로 찍으면 프로덕션 로그 도배
+        log.debug("[SystemPrompt] built: length={} hasRag={} hasAddon={}",
+                prompt.length(), ragSection != null, addon != null && !addon.isBlank());
+        return prompt;
+    }
+
+    /**
+     * 간단 오버로드：addon 없이 RAG hits만 사용 (기본 base prompt 적용).
+     */
+    public static String build(List<KnowledgeSearchResult.Hit> hits) {
+        return build(hits, null, DEFAULT_BASE_PROMPT);
+    }
+
+    /**
+     * RAG 참고자료 섹션 构建。
+     *
+     * @return 참고자료 텍스트（hits가 없으면 null → 호출자가 섹션 제외）
+     */
+    private static String buildRagSection(List<KnowledgeSearchResult.Hit> hits) {
+        if (hits == null || hits.isEmpty()) return null;
+
+        StringBuilder sb = new StringBuilder(
+                "【参考资料】（请优先依据以下内容回答，无需在回答中标注来源编号）\n\n");
+        for (int i = 0; i < hits.size(); i++) {
+            sb.append(formatHit(i + 1, hits.get(i)));
         }
-        if (addon != null && !addon.isBlank()) {
-            sb.append(addon).append("\n");
-        }
-        sb.append(basePrompt != null ? basePrompt : DEFAULT_BASE_PROMPT);
+        sb.append("---");
         return sb.toString();
     }
 
     /**
-     * 基于 RAG 检索结果构造 system prompt（无附加指令，使用默认 base prompt）。
-     *
-     * @param hits RAG 检索命中结果（可为 null 或空）
-     * @return 拼接后的完整 system prompt
+     * 단일 RAG hit을 번호 포함 텍스트 블록으로 포맷.
+     * breadcrumb이 없으면 "文档片段" 레이블 사용.
      */
-    public static String build(List<KnowledgeSearchResult.Hit> hits) {
-        return build(hits, null, DEFAULT_BASE_PROMPT);
+    private static String formatHit(int index, KnowledgeSearchResult.Hit hit) {
+        String label = (hit.getBreadcrumb() != null && !hit.getBreadcrumb().isBlank())
+                ? hit.getBreadcrumb() : "文档片段";
+        String content = hit.getContent() != null ? hit.getContent() : "";
+        return "[" + index + "] " + label + "\n" + content + "\n\n";
     }
 }
