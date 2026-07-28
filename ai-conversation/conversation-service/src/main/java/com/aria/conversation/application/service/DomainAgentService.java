@@ -84,18 +84,55 @@ public class DomainAgentService {
      */
     public Flux<ChatEvent> streamChat(String sessionId, String domainCode, String userMessage) {
         log.info("[DomainAgent] start sessionId={} domain={} msg={}",
-                sessionId, domainCode, userMessage.length() > 30
-                        ? userMessage.substring(0, 30) + "…" : userMessage);
+                sessionId, domainCode, userMessage.length() > 30 ? userMessage.substring(0, 30) + "…" : userMessage);
+        List<DomainSummary> allDomains = loadAllDomains();
+        String systemPrompt = buildSystemPrompt(userMessage, buildDomainAddon(allDomains));
+        return doStream(sessionId, domainCode, userMessage, allDomains, systemPrompt);
+    }
 
-        List<DomainSummary> allDomains = domainRepo.findAllEnabledSummary().stream()
+    /**
+     * 多意图重载：将 intentCodes 注入 System Prompt，让 Agent 明确知道需要回答哪几个问题。
+     *
+     * @param intentCodes 当前消息的所有意图 code 列表（如 ["query_logistics", "cancel_order"]）
+     */
+    public Flux<ChatEvent> streamChat(String sessionId, String domainCode,
+                                      String userMessage, List<String> intentCodes) {
+        if (intentCodes == null || intentCodes.isEmpty()) {
+            return streamChat(sessionId, domainCode, userMessage);
+        }
+        log.info("[DomainAgent] start (multi-intent) sessionId={} domain={} intentCount={}",
+                sessionId, domainCode, intentCodes.size());
+        List<DomainSummary> allDomains = loadAllDomains();
+        String systemPrompt = buildSystemPrompt(userMessage, buildCombinedAddon(allDomains, intentCodes, domainCode));
+        return doStream(sessionId, domainCode, userMessage, allDomains, systemPrompt);
+    }
+
+    /** 加载所有启用域摘要，供域切换工具和 System Prompt 使用。 */
+    private List<DomainSummary> loadAllDomains() {
+        return domainRepo.findAllEnabledSummary().stream()
                 .map(d -> new DomainSummary(d.getCode(), d.getDescription()))
                 .toList();
+    }
 
+    /** 构建 System Prompt：RAG hits + addon 拼接。 */
+    private String buildSystemPrompt(String userMessage, String addon) {
         List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(userMessage);
-        String systemPrompt = SystemPromptBuilder.build(hits, buildDomainAddon(allDomains), null);
+        return SystemPromptBuilder.build(hits, addon, null);
+    }
 
+    /** 构建多意图 addon：域切换列表 + 意图感知指令。 */
+    private String buildCombinedAddon(List<DomainSummary> allDomains,
+                                       List<String> intentCodes, String domainCode) {
+        String domainAddon = buildDomainAddon(allDomains);
+        String intentAddon = buildIntentAddon(intentCodes, domainCode);
+        return (domainAddon != null ? domainAddon + "\n\n" : "") + intentAddon;
+    }
+
+    /** 核心流式执行：构建 LangChain4j Agent 并合并 token + 工具事件流。 */
+    private Flux<ChatEvent> doStream(String sessionId, String domainCode,
+                                      String userMessage, List<DomainSummary> allDomains,
+                                      String systemPrompt) {
         Sinks.Many<ChatEvent> eventSink = Sinks.many().unicast().onBackpressureBuffer();
-
         List<ToolConfig> domainTools = getToolsForDomain(domainCode);
         InvocationParameters params = new InvocationParameters(
                 sessionId, domainCode, userMessage, allDomains, eventSink);
@@ -115,62 +152,6 @@ public class DomainAgentService {
                 .map(content -> ChatEvent.token(content, objectMapper))
                 .doFinally(signal -> {
                     log.info("[DomainAgent] done sessionId={} signal={}", sessionId, signal);
-                    eventSink.tryEmitComplete();
-                });
-
-        return Flux.merge(tokenFlux, eventSink.asFlux())
-                .doOnError(e -> log.error("[DomainAgent] error sessionId={}", sessionId, e))
-                .onErrorResume(e -> Flux.just(ChatEvent.error(e.getMessage(), objectMapper)));
-    }
-
-    /**
-     * 多意图重载：将 intentCodes 注入 System Prompt，让 Agent 明确知道需要回答哪几个问题。
-     *
-     * <p>与无意图版本的唯一区别：System Prompt 追加了意图提示块，
-     * 避免 LLM 只回答第一个意图而遗漏其他意图。
-     *
-     * @param intentCodes 当前消息的所有意图 code 列表（如 ["query_logistics", "cancel_order"]）
-     */
-    public Flux<ChatEvent> streamChat(String sessionId, String domainCode,
-                                      String userMessage, List<String> intentCodes) {
-        if (intentCodes == null || intentCodes.isEmpty()) {
-            return streamChat(sessionId, domainCode, userMessage);
-        }
-        log.info("[DomainAgent] start (multi-intent) sessionId={} domain={} intentCount={}",
-                sessionId, domainCode, intentCodes.size());
-
-        List<DomainSummary> allDomains = domainRepo.findAllEnabledSummary().stream()
-                .map(d -> new DomainSummary(d.getCode(), d.getDescription()))
-                .toList();
-
-        List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(userMessage);
-
-        // 域列表 + 意图提示合并为 addon
-        String domainAddon = buildDomainAddon(allDomains);
-        String intentAddon = buildIntentAddon(intentCodes, domainCode);
-        String combinedAddon = (domainAddon != null ? domainAddon + "\n\n" : "") + intentAddon;
-        String systemPrompt = SystemPromptBuilder.build(hits, combinedAddon, null);
-
-        Sinks.Many<ChatEvent> eventSink = Sinks.many().unicast().onBackpressureBuffer();
-        List<ToolConfig> domainTools = getToolsForDomain(domainCode);
-        InvocationParameters params = new InvocationParameters(
-                sessionId, domainCode, userMessage, allDomains, eventSink);
-        BuiltinTools builtinTools = new BuiltinTools(
-                params, sessionDomainRepo, domainSwitchRepo, objectMapper, sessionQueueService);
-
-        DomainAssistant assistant = AiServices.builder(DomainAssistant.class)
-                .streamingChatModel(modelFactory.getStreamingChatModel())
-                .systemMessageProvider(id -> systemPrompt)
-                .chatMemoryProvider(id -> MessageWindowChatMemory.builder()
-                        .id(id).maxMessages(CHAT_MEMORY_MAX_MESSAGES)
-                        .chatMemoryStore(memoryStore).build())
-                .toolProvider(toolProviderFactory.build(domainTools, eventSink, builtinTools))
-                .build();
-
-        Flux<ChatEvent> tokenFlux = assistant.chat(sessionId, userMessage)
-                .map(content -> ChatEvent.token(content, objectMapper))
-                .doFinally(signal -> {
-                    log.info("[DomainAgent] done (multi-intent) sessionId={} signal={}", sessionId, signal);
                     eventSink.tryEmitComplete();
                 });
 
