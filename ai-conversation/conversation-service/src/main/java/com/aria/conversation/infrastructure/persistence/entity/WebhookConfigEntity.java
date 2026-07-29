@@ -1,10 +1,10 @@
 package com.aria.conversation.infrastructure.persistence.entity;
 
+import com.aria.conversation.infrastructure.config.StringMapTypeHandler;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
-import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -44,7 +44,7 @@ public class WebhookConfigEntity {
     private String secret;
 
     /** CUSTOM 类型的自定义请求头，key=header名，value=header值 */
-    @TableField(typeHandler = JacksonTypeHandler.class)
+    @TableField(typeHandler = StringMapTypeHandler.class)
     private Map<String, String> customHeaders;
 
     /** 自定义消息模板，支持 ${变量}，空则用平台默认模板 */

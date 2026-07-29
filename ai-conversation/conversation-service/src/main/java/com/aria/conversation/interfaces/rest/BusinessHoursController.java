@@ -20,6 +20,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.Year;
 import java.util.List;
 
@@ -112,6 +113,7 @@ public class BusinessHoursController {
                 .timeRanges(req.getTimeRanges())
                 .remark(req.getRemark())
                 .source(HolidaySource.MANUAL)
+                .createTime(LocalDateTime.now())
                 .build();
         holidayMapper.insert(entity);
         businessHoursService.evictCache(req.getDate());

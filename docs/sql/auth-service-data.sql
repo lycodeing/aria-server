@@ -156,6 +156,10 @@ INSERT INTO cs_auth.sys_role_menu (role_id, menu_id, created_at) VALUES (11, 113
 INSERT INTO cs_auth.sys_role_menu (role_id, menu_id, created_at) VALUES (11, 120, '2026-06-29 07:04:09.977047');
 INSERT INTO cs_auth.sys_role_menu (role_id, menu_id, created_at) VALUES (11, 121, '2026-06-29 07:04:09.977047');
 INSERT INTO cs_auth.sys_role_menu (role_id, menu_id, created_at) VALUES (11, 122, '2026-06-29 07:04:09.977047');
+-- BUG-003 修复：补充 kfmanager Dashboard 菜单（概览目录/分析页/工作台）
+INSERT INTO cs_auth.sys_role_menu (role_id, menu_id, created_at) VALUES (11, 1, '2026-07-28 00:00:00.000000');
+INSERT INTO cs_auth.sys_role_menu (role_id, menu_id, created_at) VALUES (11, 2, '2026-07-28 00:00:00.000000');
+INSERT INTO cs_auth.sys_role_menu (role_id, menu_id, created_at) VALUES (11, 3, '2026-07-28 00:00:00.000000');
 INSERT INTO cs_auth.sys_role_menu (role_id, menu_id, created_at) VALUES (12, 100, '2026-06-29 07:04:09.977935');
 INSERT INTO cs_auth.sys_role_menu (role_id, menu_id, created_at) VALUES (12, 101, '2026-06-29 07:04:09.977935');
 INSERT INTO cs_auth.sys_role_menu (role_id, menu_id, created_at) VALUES (11, 104, '2026-07-04 15:48:09.318584');

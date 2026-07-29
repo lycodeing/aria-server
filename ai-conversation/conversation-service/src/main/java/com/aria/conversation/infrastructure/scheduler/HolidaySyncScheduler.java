@@ -7,7 +7,6 @@ import com.aria.conversation.domain.HolidaySource;
 import com.aria.conversation.domain.HolidayType;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursHolidayMapper;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursScheduleMapper;
-import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -25,7 +24,9 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.Year;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 中国法定节假日自动同步调度器。
@@ -51,8 +52,8 @@ public class HolidaySyncScheduler {
     private final BusinessHoursService        businessHoursService;
     private final ObjectMapper                objectMapper;
 
-    /** 每年 12 月 1 日 00:00 自动同步次年节假日。 */
-    @Scheduled(cron = "0 0 0 1 12 *")
+    /** 每 3 个月 1 日 00:00 自动同步未来 3 个月节假日。 */
+    @Scheduled(cron = "0 0 0 1 */3 *")
     public void syncNextYear() {
         int nextYear = Year.now().getValue() + 1;
         log.info("[HolidaySync] 开始自动同步 {} 年节假日", nextYear);
@@ -65,48 +66,55 @@ public class HolidaySyncScheduler {
     }
 
     /**
-     * 同步指定年份的节假日数据（幂等）。
+     * 同步指定年份起未来 3 个月的节假日数据（批量 upsert）。
+     * 窗口可跨年，跨年时自动追加次年数据一并处理。
+     * AUTO 来源的已有记录会被更新；MANUAL 手动录入的记录不受影响。
      *
-     * @param year 目标年份
-     * @return 本次实际写入的条数（已存在的记录跳过不计）
+     * @param year 起始年份
+     * @return 本次实际影响的条数（含新增和更新）
      */
     public int syncYear(int year) {
-        String json = fetchWithRetry(year);
-        List<HolidayEntry> entries = parseEntries(json);
+        // 同步窗口：今天起未来 3 个月，可跨年
+        LocalDate today  = LocalDate.now();
+        LocalDate cutoff = today.plusMonths(3);
+
+        // 收集窗口内 entries；跨年时合并两年数据
+        List<HolidayEntry> entries = new ArrayList<>(parseEntries(fetchWithRetry(year)));
+        if (cutoff.getYear() > year) {
+            entries.addAll(parseEntries(fetchWithRetry(cutoff.getYear())));
+        }
+
+        // 过滤：仅保留 [today, cutoff] 窗口内的条目
+        List<HolidayEntry> inWindow = entries.stream()
+                .filter(e -> !e.date().isBefore(today) && !e.date().isAfter(cutoff))
+                .toList();
+
+        if (inWindow.isEmpty()) {
+            log.info("[HolidaySync] 年份 {} 窗口 [{}, {}] 内无数据", year, today, cutoff);
+            return 0;
+        }
 
         // 取周一排班作为 WORKDAY 调休补班的默认时间段
         BusinessHoursScheduleEntity mondaySchedule = scheduleMapper.selectByDayOfWeek(1);
         List<BusinessHoursScheduleEntity.TimeRange> defaultRanges =
                 mondaySchedule != null ? mondaySchedule.getTimeRanges() : List.of();
 
-        int count = 0;
-        for (HolidayEntry entry : entries) {
-            // 幂等：日期已存在则跳过（DB 有唯一约束 uq_holiday_date）
-            boolean exists = holidayMapper.exists(Wrappers.<BusinessHoursHolidayEntity>lambdaQuery()
-                    .eq(BusinessHoursHolidayEntity::getDate, entry.date()));
-            if (exists) {
-                log.debug("[HolidaySync] {} 已存在，跳过", entry.date());
-                continue;
-            }
+        // 构建实体列表，全量交给 upsert 处理（已有 AUTO 记录更新，MANUAL 记录跳过）
+        List<BusinessHoursHolidayEntity> toUpsert = inWindow.stream()
+                .map(e -> BusinessHoursHolidayEntity.builder()
+                        .date(e.date())
+                        .type(e.isOffDay() ? HolidayType.CLOSED : HolidayType.WORKDAY)
+                        .timeRanges(e.isOffDay() ? null : defaultRanges)
+                        .remark(e.name())
+                        .source(HolidaySource.AUTO)
+                        .build())
+                .collect(java.util.stream.Collectors.toList());
 
-            HolidayType type  = entry.isOffDay() ? HolidayType.CLOSED : HolidayType.WORKDAY;
-            // CLOSED 节假日 timeRanges 为 null（不开放服务）
-            // WORKDAY 调休补班复用周一排班时间段
-            List<BusinessHoursScheduleEntity.TimeRange> timeRanges =
-                    entry.isOffDay() ? null : defaultRanges;
-
-            holidayMapper.insert(BusinessHoursHolidayEntity.builder()
-                    .date(entry.date())
-                    .type(type)
-                    .timeRanges(timeRanges)
-                    .remark(entry.name())
-                    .source(HolidaySource.AUTO)
-                    .build());
-
-            businessHoursService.evictCache(entry.date());
-            count++;
-        }
-        log.info("[HolidaySync] 年份 {} 处理 {} 条，新写入 {} 条", year, entries.size(), count);
+        // 批量 upsert，失效所有涉及日期的缓存
+        int count = holidayMapper.insertBatch(toUpsert);
+        toUpsert.forEach(e -> businessHoursService.evictCache(e.getDate()));
+        log.info("[HolidaySync] 年份 {} 窗口 [{}, {}] 处理 {} 条，影响 {} 条",
+                year, today, cutoff, inWindow.size(), count);
         return count;
     }
 
@@ -181,7 +189,7 @@ public class HolidaySyncScheduler {
     private record HolidayEntry(
             String name,
             @JsonProperty("date") String dateStr,
-            boolean isOffDay
+            @JsonProperty("isOffDay") boolean isOffDay
     ) {
         LocalDate date() {
             return LocalDate.parse(dateStr);
