@@ -25,6 +25,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 
@@ -193,6 +194,11 @@ public class SlaController {
         e.setHandleTimeTargetSec(req.getHandleTimeTargetSec());
         e.setWarningThresholdPct(req.getWarningThresholdPct());
         e.setActions(req.getActions());
+        // 新建时填充 createTime，更新时保留 DB 原值（不覆盖）；两种情况都刷新 updateTime
+        if (id == null) {
+            e.setCreateTime(LocalDateTime.now());
+        }
+        e.setUpdateTime(LocalDateTime.now());
         return e;
     }
 }
