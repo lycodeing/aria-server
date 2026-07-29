@@ -9,6 +9,7 @@ import com.aria.common.core.page.PageQuery;
 import com.aria.common.core.page.PageResult;
 import com.aria.common.core.page.PageUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -145,10 +146,11 @@ public class AiModelConfigService {
         if (Boolean.TRUE.equals(existing.getIsDefault())) {
             throw new BusinessException(422, "默认配置不允许删除，请先切换默认配置");
         }
-        AiModelConfigDO upd = new AiModelConfigDO();
-        upd.setId(id);
-        upd.setDeletedAt(LocalDateTime.now());
-        mapper.updateById(upd);
+        // 用 LambdaUpdateWrapper 显式 SET deleted_at，避免 updateById 因
+        // 全局字段策略过滤空 SET 子句导致 "syntax error at or near WHERE"
+        mapper.update(null, Wrappers.<AiModelConfigDO>lambdaUpdate()
+                .set(AiModelConfigDO::getDeletedAt, LocalDateTime.now())
+                .eq(AiModelConfigDO::getId, id));
         broadcastChangeAfterCommit();
     }
 
@@ -449,16 +451,25 @@ public class AiModelConfigService {
 
 
     /**
-     * 注册事务提交后回调，确保 DB 变更已持久化再广播，避免下游读到旧数据
+     * 注册事务提交后回调，确保 DB 变更已持久化再广播，避免下游读到旧数据。
+     * broadcast 失败只记 WARN，不影响主流程。
      */
     private void broadcastChangeAfterCommit() {
-        TransactionSynchronizationManager.registerSynchronization(
-                new TransactionSynchronization() {
-                    @Override
-                    public void afterCommit() {
-                        eventPublisher.publishChanged();
+        try {
+            TransactionSynchronizationManager.registerSynchronization(
+                    new TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            try {
+                                eventPublisher.publishChanged();
+                            } catch (Exception e) {
+                                log.warn("[AiModel] broadcast change event failed after commit: {}", e.getMessage());
+                            }
+                        }
                     }
-                }
-        );
+            );
+        } catch (Exception e) {
+            log.warn("[AiModel] registerSynchronization failed (no active transaction?): {}", e.getMessage());
+        }
     }
 }
