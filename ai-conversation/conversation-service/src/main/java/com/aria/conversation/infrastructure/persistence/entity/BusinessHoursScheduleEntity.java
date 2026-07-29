@@ -1,9 +1,9 @@
 package com.aria.conversation.infrastructure.persistence.entity;
 
+import com.aria.conversation.infrastructure.config.TimeRangeListTypeHandler;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
-import com.baomidou.mybatisplus.extension.handlers.JacksonTypeHandler;
 import lombok.Data;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -18,7 +18,7 @@ public class BusinessHoursScheduleEntity {
 
     private Boolean isOpen;
 
-    @TableField(typeHandler = JacksonTypeHandler.class)
+    @TableField(typeHandler = TimeRangeListTypeHandler.class)
     private List<TimeRange> timeRanges;
 
     private String timezone;
