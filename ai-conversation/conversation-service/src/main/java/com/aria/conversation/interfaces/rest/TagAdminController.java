@@ -38,11 +38,12 @@ public class TagAdminController {
         return R.ok(tagAppService.listTags(source));
     }
 
-    /** 新建预定义标签；标签名重复返回 409。 */
+    /** 新建标签；标签名重复返回 409。source 默认为 CUSTOM。 */
     @PostMapping
     @SaCheckPermission("system:tag:manage")
     public R<TagEntity> create(@RequestBody @Validated CreateTagReq req) {
-        return R.ok(tagAppService.createPresetTag(req.getName(), req.getColor()));
+        TagSource source = req.getSource() != null ? req.getSource() : TagSource.CUSTOM;
+        return R.ok(tagAppService.createTag(req.getName(), req.getColor(), source));
     }
 
     /** 修改标签名称、颜色或来源；标签不存在返回 404。 */
@@ -71,6 +72,8 @@ public class TagAdminController {
     public static class CreateTagReq {
         @NotBlank @Size(max = 50) private String name;
         @NotBlank private String color;
+        /** 来源，默认 CUSTOM；PRESET 表示系统预定义标签 */
+        private TagSource source;
     }
 
     @Data

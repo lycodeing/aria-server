@@ -142,11 +142,21 @@ public class TagAppService {
      */
     @Transactional(rollbackFor = Exception.class)
     public TagEntity createPresetTag(String name, String color) {
+        return createTag(name, color, TagSource.PRESET);
+    }
+
+    /**
+     * 新建标签，来源由调用方指定（PRESET / CUSTOM）。
+     *
+     * @throws BusinessException(40900) 若标签名已存在
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public TagEntity createTag(String name, String color, TagSource source) {
         if (tagMapper.selectByName(name) != null) {
             throw new BusinessException(40900, "标签名已存在: " + name);
         }
         TagEntity entity = TagEntity.builder()
-                .name(name).color(color).source(TagSource.PRESET).build();
+                .name(name).color(color).source(source).build();
         tagMapper.insert(entity);
         return entity;
     }
