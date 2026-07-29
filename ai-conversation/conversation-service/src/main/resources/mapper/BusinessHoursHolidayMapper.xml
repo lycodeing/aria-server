@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursHolidayMapper">
+
+    <!--
+        批量写入节假日（upsert）。
+          - 日期不存在 → INSERT
+          - 日期已存在且 source='AUTO' → UPDATE（同步最新数据）
+          - 日期已存在且 source='MANUAL' → 跳过，保护管理员手动录入
+    -->
+    <insert id="insertBatch">
+        INSERT INTO cs_conversation.cs_business_hours_holiday
+            (date, type, time_ranges, remark, source)
+        VALUES
+        <foreach collection="list" item="e" separator=",">
+            (
+                #{e.date},
+                #{e.type},
+                #{e.timeRanges, typeHandler=com.aria.conversation.infrastructure.config.TimeRangeListTypeHandler},
+                #{e.remark},
+                #{e.source}
+            )
+        </foreach>
+        ON CONFLICT (date) DO UPDATE SET
+            type        = EXCLUDED.type,
+            time_ranges = EXCLUDED.time_ranges,
+            remark      = EXCLUDED.remark,
+            source      = EXCLUDED.source
+        WHERE cs_conversation.cs_business_hours_holiday.source = 'AUTO'
+    </insert>
+
+</mapper>

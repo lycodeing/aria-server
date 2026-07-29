@@ -114,9 +114,13 @@ public class BusinessHoursService implements IBusinessHoursCalculator {
         return totalSeconds;
     }
 
-    /** 管理员修改排班或节假日后调用，主动失效缓存。 */
+    /** 管理员修改排班或节假日后调用，主动失效缓存。Redis 不可用时仅记 WARN，不影响写操作成功。 */
     public void evictCache(LocalDate date) {
-        redisTemplate.delete(CACHE_KEY_PREFIX + date);
+        try {
+            redisTemplate.delete(CACHE_KEY_PREFIX + date);
+        } catch (Exception e) {
+            log.warn("[BusinessHours] evictCache failed for date {}: {}", date, e.getMessage());
+        }
     }
 
     // ── 私有：加载当天生效时间段（含节假日覆盖） ──────────────────
