@@ -97,12 +97,13 @@ public class SlaBreachNotifier {
         }
 
         // 自动升级：仅 BREACH 阶段触发，WARNING 不升级
+        // 注意：stage 为 BreachStage 枚举，必须用枚举比较，不能用 String#equals（恒为 false）
         boolean hasActualBreach = newBreaches.stream()
-                .anyMatch(b -> BreachStage.BREACH.name().equals(b.getStage()));
+                .anyMatch(b -> BreachStage.BREACH == b.getStage());
         if (hasActualBreach && actions.isAutoEscalate()
                 && actions.getEscalateToUserId() != null) {
             List<Long> breachIds = newBreaches.stream()
-                    .filter(b -> BreachStage.BREACH.name().equals(b.getStage()))
+                    .filter(b -> BreachStage.BREACH == b.getStage())
                     .map(SlaBreachEntity::getId)
                     .toList();
             springEventPublisher.publishEvent(

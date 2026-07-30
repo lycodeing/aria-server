@@ -124,6 +124,12 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.FORBIDDEN).body(R.fail(403, "无权限执行此操作"));
     }
 
+    @ExceptionHandler(cn.dev33.satoken.exception.NotRoleException.class)
+    public ResponseEntity<R<Void>> handleNotRole(cn.dev33.satoken.exception.NotRoleException e) {
+        log.warn("角色不足: role={}", e.getRole());
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(R.fail(403, "无权限执行此操作"));
+    }
+
     @ExceptionHandler(NoHandlerFoundException.class)
     public ResponseEntity<R<Void>> handleNotFound(NoHandlerFoundException e) {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(R.fail(404, "接口不存在: " + e.getRequestURL()));

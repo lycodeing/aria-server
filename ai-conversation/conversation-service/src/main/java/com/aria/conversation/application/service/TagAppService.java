@@ -13,6 +13,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -193,20 +195,28 @@ public class TagAppService {
      * 失败只记录 WARN，不阻断主流程。
      */
     private void publishTagUpdatedEvent(String sessionId) {
-        try {
-            Map<String, Object> event = new LinkedHashMap<>();
-            event.put("type", SessionEventType.TAG_UPDATED.name());
-            event.put("sessionId", sessionId);
-            event.put("visitorTags", listVisitorTags(sessionId));
-            event.put("sessionTags", listSessionTags(sessionId));
-            // NOTE: Event is published within the @Transactional boundary, before the transaction commits.
-            // In the unlikely case of a subsequent rollback, SSE consumers may receive a phantom notification.
-            // To eliminate this risk, use TransactionSynchronizationManager.registerSynchronization with
-            // an afterCommit callback, or switch to @TransactionalEventListener(AFTER_COMMIT).
-            // Accepted tradeoff for simplicity given the low-impact nature of tag change notifications.
-            eventsRabbitTemplate.convertAndSend(eventsExchange, "", event);
-        } catch (Exception e) {
-            log.warn("[TagAppService] TAG_UPDATED 事件发布失败 sessionId={}", sessionId, e);
+        Runnable publish = () -> {
+            try {
+                Map<String, Object> event = new LinkedHashMap<>();
+                event.put("type", SessionEventType.TAG_UPDATED.name());
+                event.put("sessionId", sessionId);
+                event.put("visitorTags", listVisitorTags(sessionId));
+                event.put("sessionTags", listSessionTags(sessionId));
+                eventsRabbitTemplate.convertAndSend(eventsExchange, "", event);
+            } catch (Exception e) {
+                log.warn("[TagAppService] TAG_UPDATED 事件发布失败 sessionId={}", sessionId, e);
+            }
+        };
+        // 仅在事务提交后发布，避免回滚时坐席 SSE 收到幻影通知；无事务上下文时立即发布
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    publish.run();
+                }
+            });
+        } else {
+            publish.run();
         }
     }
 

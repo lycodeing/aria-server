@@ -140,11 +140,14 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
      * @return true 表示长度合法，false 表示已处理超长消息
      */
     private boolean checkMessageLength(WebSocketSession session, TextMessage message) {
-        if (message.getPayloadLength() <= MAX_MESSAGE_BYTES) {
+        // getPayloadLength() 返回的是字符数而非字节数，中文等多字节字符下会让实际限制虚高约 3 倍，
+        // 这里按 UTF-8 实际字节数校验
+        int byteLength = message.getPayload().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        if (byteLength <= MAX_MESSAGE_BYTES) {
             return true;
         }
         String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
-        log.warn("[WS] 消息超过最大长度限制 sessionId={} size={}", sessionId, message.getPayloadLength());
+        log.warn("[WS] 消息超过最大长度限制 sessionId={} bytes={}", sessionId, byteLength);
         // 通过 VisitorSessionRegistry 发送，复用 per-session 发送锁，避免与并发推送产生帧竞争
         visitorSessionRegistry.notifyVisitor(sessionId, WsErrorMessage.of("消息长度超过限制（最大 64KB）"));
         try {

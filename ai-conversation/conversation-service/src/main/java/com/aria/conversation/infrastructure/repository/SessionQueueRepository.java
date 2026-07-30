@@ -67,6 +67,20 @@ public class SessionQueueRepository {
     }
 
     /**
+     * 原子入队：仅当该 sessionId 尚不在队列中时写入，防止覆盖已存在的（如 ACTIVE）会话。
+     *
+     * @return true 表示入队成功，false 表示该会话已在队列中（未覆盖）
+     */
+    public boolean saveIfAbsent(SessionQueueItem item) {
+        try {
+            return cache.hPutIfAbsent(QUEUE_KEY, item.sessionId(),
+                    objectMapper.writeValueAsString(item), QUEUE_TTL);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+            throw new IllegalStateException("会话队列项序列化失败 sessionId=" + item.sessionId(), e);
+        }
+    }
+
+    /**
      * 删除指定会话（会话关闭时调用，幂等）。
      */
     public void delete(String sessionId) {

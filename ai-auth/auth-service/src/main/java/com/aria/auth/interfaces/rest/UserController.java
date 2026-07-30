@@ -57,6 +57,7 @@ public class UserController {
     }
 
     @GetMapping
+    @cn.dev33.satoken.annotation.SaCheckRole("super_admin")
     public R<PageResult<UserVO>> list(UserPageQuery query) {
         PageResult<User> result = userAppService.search(query);
         List<UserVO> items = result.items().stream().map(UserAssembler::toVO).toList();
@@ -64,6 +65,7 @@ public class UserController {
     }
 
     @PostMapping
+    @cn.dev33.satoken.annotation.SaCheckRole("super_admin")
     public R<UserVO> create(@RequestBody @Valid CreateUserRequest req) {
         User user = userAppService.create(
                 req.getUsername(), req.getDisplayName(),
@@ -72,6 +74,7 @@ public class UserController {
     }
 
     @GetMapping("/{id}")
+    @cn.dev33.satoken.annotation.SaCheckRole("super_admin")
     public R<UserVO> getById(@PathVariable Long id) {
         return R.ok(UserAssembler.toVO(userAppService.getById(id)));
     }
@@ -85,6 +88,7 @@ public class UserController {
     }
 
     @PutMapping("/{id}")
+    @cn.dev33.satoken.annotation.SaCheckRole("super_admin")
     public R<UserVO> update(@PathVariable Long id, @RequestBody @Valid UpdateUserRequest req) {
         User user = userAppService.updateProfile(id, req.getDisplayName(),
                 req.getEmail(), req.getPhone());
@@ -92,18 +96,21 @@ public class UserController {
     }
 
     @PostMapping("/{id}/disable")
+    @cn.dev33.satoken.annotation.SaCheckRole("super_admin")
     public R<Void> disable(@PathVariable Long id) {
         userAppService.disable(id);
         return R.ok();
     }
 
     @PostMapping("/{id}/enable")
+    @cn.dev33.satoken.annotation.SaCheckRole("super_admin")
     public R<Void> enable(@PathVariable Long id) {
         userAppService.enable(id);
         return R.ok();
     }
 
     @DeleteMapping("/{id}")
+    @cn.dev33.satoken.annotation.SaCheckRole("super_admin")
     public R<Void> delete(@PathVariable Long id) {
         Long operatorId = StpUtil.getLoginIdAsLong();
         userAppService.delete(id, operatorId);
@@ -113,18 +120,23 @@ public class UserController {
     @PostMapping("/{id}/change-password")
     public R<Void> changePassword(@PathVariable Long id,
                                   @RequestBody @Valid ChangePasswordRequest req) {
+        // 仅允许本人修改自己的密码；修改他人密码需 super_admin 角色
+        if (StpUtil.getLoginIdAsLong() != id.longValue()) {
+            StpUtil.checkRole("super_admin");
+        }
         userAppService.changePassword(id, req.getOldPassword(), req.getNewPassword());
         return R.ok();
     }
 
     @PostMapping("/{id}/reset-password")
+    @cn.dev33.satoken.annotation.SaCheckRole("super_admin")
     public R<Void> resetPassword(@PathVariable Long id,
                                  @RequestBody @Valid ResetPasswordRequest req) {
         userAppService.resetPassword(id, req.getNewPassword());
         return R.ok();
     }
 
-    @cn.dev33.satoken.annotation.SaCheckRole("admin")
+    @cn.dev33.satoken.annotation.SaCheckRole("super_admin")
     @PostMapping("/{id}/roles")
     public R<Void> assignRoles(@PathVariable Long id,
                                @RequestBody @Valid AssignRolesRequest req) {

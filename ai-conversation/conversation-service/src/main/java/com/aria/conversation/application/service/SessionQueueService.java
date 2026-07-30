@@ -118,12 +118,21 @@ public class SessionQueueService {
                 sessionId, userName, transferReason, tag,
                 Instant.now().getEpochSecond(), SessionStatus.WAITING, null
         );
+        boolean enqueued;
         try {
-            // save 到 redis
-            queueRepository.save(item);
+            // 原子入队：仅当会话尚不在队列中时写入，
+            // 防止重复点击/并发把已被座席接入（ACTIVE）的会话覆盖回 WAITING
+            enqueued = queueRepository.saveIfAbsent(item);
         } catch (IllegalStateException e) {
             log.error("[SessionQueue] enqueue 失败 sessionId={}", sessionId, e);
             throw new SessionEnqueueException("会话入队失败，请稍后重试", sessionId, e);
+        }
+        if (!enqueued) {
+            // 会话已在队列（排队中或已接入），幂等返回现有项，不重复入队/重置排队位置
+            SessionQueueItem existing = queueRepository.findById(sessionId).orElse(item);
+            log.info("[SessionQueue] enqueue 跳过：会话已在队列 sessionId={} status={}",
+                    sessionId, existing.status());
+            return existing;
         }
         publishEvent(new SessionEvent(SessionEventType.ENQUEUE, item));
         publishSessionStart(sessionId, userName, transferReason, tag, item.waitSince());
@@ -286,35 +295,36 @@ public class SessionQueueService {
      * @param closedBy  关闭发起方（agent / visitor / system）
      */
     public void close(String sessionId, ClosedBy closedBy) {
+        String agentId = null;
+        // 1. Redis 队列状态处理（状态机校验/序列化异常仅影响本步，不影响后续 DB 关闭）
         try {
-            String[] agentIdHolder = {null};
-            queueRepository.findById(sessionId).ifPresentOrElse(
-                old -> {
-                    agentIdHolder[0] = old.agentId();
-                    SessionStatus newStatus = old.status().transitionTo(SessionStatus.CLOSED);
-                    SessionQueueItem closed = new SessionQueueItem(
-                            old.sessionId(), old.userName(), old.transferReason(),
-                            old.tag(), old.waitSince(), newStatus, old.agentId(),
-                            null, old.acceptedAt()
-                    );
-                    publishEvent(new SessionEvent(SessionEventType.CLOSED, closed));
-                },
-                () -> {
-                    log.warn("[SessionQueue] close 时 Redis 无数据（可能已重启）仍执行 DB 关闭 sessionId={}", sessionId);
-                    SessionQueueItem minimal = new SessionQueueItem(
-                            sessionId, "", "", "", 0L, SessionStatus.CLOSED, null);
-                    publishEvent(new SessionEvent(SessionEventType.CLOSED, minimal));
-                }
-            );
+            SessionQueueItem old = queueRepository.findById(sessionId).orElse(null);
+            if (old != null) {
+                agentId = old.agentId();
+                SessionStatus newStatus = old.status().transitionTo(SessionStatus.CLOSED);
+                SessionQueueItem closed = new SessionQueueItem(
+                        old.sessionId(), old.userName(), old.transferReason(),
+                        old.tag(), old.waitSince(), newStatus, old.agentId(),
+                        null, old.acceptedAt()
+                );
+                publishEvent(new SessionEvent(SessionEventType.CLOSED, closed));
+            } else {
+                log.warn("[SessionQueue] close 时 Redis 无数据（可能已重启）仍执行 DB 关闭 sessionId={}", sessionId);
+                SessionQueueItem minimal = new SessionQueueItem(
+                        sessionId, "", "", "", 0L, SessionStatus.CLOSED, null);
+                publishEvent(new SessionEvent(SessionEventType.CLOSED, minimal));
+            }
             queueRepository.delete(sessionId); // 幂等，无数据时 no-op
-            publishSessionEnd(sessionId, closedBy);
-            // 同步推送 CSAT 邀请给访客 WS：必须在关闭访客连接之前完成，
-            // 否则连接已从注册表移除，csat_request 帧会被丢弃（访客端收不到实时评价弹窗）。
-            // 注意：此处为同实例自调用，@Async 代理不生效，保持同步以确保顺序。
-            triggerCsat(sessionId, agentIdHolder[0]);
         } catch (IllegalStateException e) {
-            log.warn("[SessionQueue] close 状态机校验失败 sessionId={} msg={}", sessionId, e.getMessage());
+            log.warn("[SessionQueue] close 状态机校验/Redis 处理异常，仍继续执行 DB 关闭 sessionId={} msg={}",
+                    sessionId, e.getMessage());
         }
+        // 2. DB 关闭 + CSAT 邀请：无论 Redis 处理成功与否都必须执行
+        publishSessionEnd(sessionId, closedBy);
+        // 同步推送 CSAT 邀请给访客 WS：必须在关闭访客连接之前完成，
+        // 否则连接已从注册表移除，csat_request 帧会被丢弃（访客端收不到实时评价弹窗）。
+        // 注意：此处为同实例自调用，@Async 代理不生效，保持同步以确保顺序。
+        triggerCsat(sessionId, agentId);
     }
 
     /**
@@ -445,8 +455,15 @@ public class SessionQueueService {
      */
     void triggerCsat(String sessionId, String agentId) {
         try {
-            Long agentIdLong = agentId != null && !agentId.isBlank()
-                    ? Long.parseLong(agentId) : null;
+            // 座席 ID 可能含字母/连字符，非数字时降级为 null 而非中断整个邀请，避免 CSAT 邀请丢失
+            Long agentIdLong = null;
+            if (agentId != null && !agentId.isBlank()) {
+                try {
+                    agentIdLong = Long.parseLong(agentId);
+                } catch (NumberFormatException nfe) {
+                    log.warn("[CSAT] 座席 ID 非数字，agentId 记为空 sessionId={} agentId={}", sessionId, agentId);
+                }
+            }
             CsatRatingDO csat = csatService.createInvitation(
                     sessionId, null, agentIdLong, com.aria.conversation.domain.CsatChannel.HUMAN);
             Map<String, Object> frame = new java.util.LinkedHashMap<>(

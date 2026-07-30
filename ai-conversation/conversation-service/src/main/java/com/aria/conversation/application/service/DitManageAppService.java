@@ -21,6 +21,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.List;
 
@@ -95,7 +97,7 @@ public class DitManageAppService {
             throw new BusinessException(NOT_FOUND, "领域不存在: " + domain.getId());
         }
         log.info("更新领域: id={}", domain.getId());
-        domainRepository.evict(domain.getCode());
+        evictDomainAfterCommit(domain.getCode());
     }
 
     /**
@@ -109,7 +111,7 @@ public class DitManageAppService {
         DomainDO domainDO = getDomain(id);
         domainMapper.deleteById(id);
         log.info("删除领域: id={}, code={}", id, domainDO.getCode());
-        domainRepository.evict(domainDO.getCode());
+        evictDomainAfterCommit(domainDO.getCode());
     }
 
     // ---- 意图 ----
@@ -374,9 +376,30 @@ public class DitManageAppService {
         }
         DomainDO domain = domainMapper.selectById(intent.getDomainId());
         if (domain != null) {
-            domainRepository.evict(domain.getCode());
-            // I2 修复：发布领域事件，触发原型向量异步重建
-            eventPublisher.publishEvent(new IntentConfigChangedEvent(domain.getCode()));
+            evictDomainAfterCommit(domain.getCode());
+        }
+    }
+
+    /**
+     * 在事务提交之后才失效领域缓存并发布意图配置变更事件。
+     * <p>若在提交前失效，并发读可能在 evict 之后、提交之前用 DB 旧值回填缓存，
+     * 导致提交后缓存残留脏数据。无事务上下文时（如直接调用）立即执行。
+     *
+     * @param code 领域 code
+     */
+    private void evictDomainAfterCommit(String code) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    domainRepository.evict(code);
+                    // I2 修复：发布领域事件，触发原型向量异步重建
+                    eventPublisher.publishEvent(new IntentConfigChangedEvent(code));
+                }
+            });
+        } else {
+            domainRepository.evict(code);
+            eventPublisher.publishEvent(new IntentConfigChangedEvent(code));
         }
     }
 }

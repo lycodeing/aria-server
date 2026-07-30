@@ -159,14 +159,14 @@ public class BusinessHoursController {
     /**
      * 手动触发 holiday-cn 同步。
      *
-     * @param year 目标年份，0 或不传时默认同步次年
+     * @param year 目标年份，0 或不传时默认同步当前年起未来 3 个月（与 syncYear 窗口对齐）
      * @return 本次实际写入条数
      */
     @PostMapping("/holidays/sync")
     @SaCheckPermission("system:biz-hours:manage")
     public R<Integer> syncHolidays(
             @RequestParam(defaultValue = "0") int year) {
-        int targetYear = year > 0 ? year : Year.now().getValue() + 1;
+        int targetYear = year > 0 ? year : Year.now().getValue();
         int count = holidaySyncScheduler.syncYear(targetYear);
         return R.ok(count);
     }

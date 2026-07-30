@@ -52,7 +52,25 @@ public class UserRepositoryImpl implements IUserRepository {
         } else {
             mapper.insert(userDO);
         }
+        // 同步聚合根的角色集合到 sys_user_role 关联表（先清后插，幂等），
+        // 否则 assignRoles 等角色变更不会落库
+        syncUserRoles(userDO.getId(), user.getRoleIds());
         return user;
+    }
+
+    /**
+     * 将用户当前角色集合写入 sys_user_role。
+     * 采用“先删后插”，与聚合根状态保持一致，幂等。
+     * 应由处于 @Transactional 边界内的应用服务调用，保证 delete+insert 原子。
+     */
+    private void syncUserRoles(Long userId, Set<Long> roleIds) {
+        if (userId == null) {
+            return;
+        }
+        roleMapper.deleteUserRoles(userId);
+        if (roleIds != null && !roleIds.isEmpty()) {
+            roleMapper.insertUserRoles(userId, new ArrayList<>(roleIds));
+        }
     }
 
     @Override

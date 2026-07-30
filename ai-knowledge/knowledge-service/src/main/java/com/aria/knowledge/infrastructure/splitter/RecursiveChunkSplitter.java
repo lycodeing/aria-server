@@ -147,19 +147,36 @@ public class RecursiveChunkSplitter {
                 : current + sep + part;
 
             if (TokenUtils.estimate(candidate) > maxTokens && !current.isEmpty()) {
-                // 当前积累已满，提交本 chunk
-                result.add(current.toString().trim());
+                // 当前积累已满，提交本 chunk（若单片仍超长会继续下钻）
+                addChunk(result, current.toString(), separatorIdx);
                 // overlap：保留末尾若干内容，防止语义截断
                 current = new StringBuilder(getOverlap(current.toString()) + sep + part);
             } else {
                 current = new StringBuilder(candidate);
             }
         }
-        // 提交最后一段
-        if (!current.toString().isBlank()) {
-            result.add(current.toString().trim());
-        }
+        // 提交最后一段（若单片仍超长会继续下钻）
+        addChunk(result, current.toString(), separatorIdx);
         return result;
+    }
+
+    /**
+     * 提交一个候选 chunk：若其自身仍超过 {@link #maxTokens}（例如本层分隔符存在但
+     * 某单片自身过长），继续用下一层分隔符递归下钻，避免产出超限的 chunk。
+     *
+     * @param result       结果收集列表
+     * @param chunk        候选 chunk 文本
+     * @param separatorIdx 当前分隔符层级
+     */
+    private void addChunk(List<String> result, String chunk, int separatorIdx) {
+        if (chunk == null || chunk.isBlank()) {
+            return;
+        }
+        if (TokenUtils.estimate(chunk) > maxTokens) {
+            result.addAll(splitRecursive(chunk, separatorIdx + 1));
+        } else {
+            result.add(chunk.trim());
+        }
     }
 
     /**

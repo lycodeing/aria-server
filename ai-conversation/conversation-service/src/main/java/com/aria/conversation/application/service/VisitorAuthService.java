@@ -64,6 +64,11 @@ public class VisitorAuthService {
      * @throws BusinessException 429 发送过于频繁
      */
     public void sendCode(String phone) {
+        // 已锁定时拒绝发送：防止通过“重发”无条件清零错误计数从而绕过 10 分钟锁定
+        if (codeRepository.getAttempts(phone) >= maxAttempts) {
+            throw new BusinessException(423, "验证码已锁定，请 10 分钟后重新获取");
+        }
+
         // 频率限制：窗口内只允许发送一次
         if (!codeRepository.tryAcquireRateLimit(phone, rateLimitSeconds)) {
             throw new BusinessException(429, "发送过于频繁，请 " + rateLimitSeconds + " 秒后重试");

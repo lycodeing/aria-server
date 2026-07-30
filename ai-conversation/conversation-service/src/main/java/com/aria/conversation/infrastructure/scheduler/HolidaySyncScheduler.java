@@ -54,14 +54,16 @@ public class HolidaySyncScheduler {
 
     /** 每 3 个月 1 日 00:00 自动同步未来 3 个月节假日。 */
     @Scheduled(cron = "0 0 0 1 */3 *")
-    public void syncNextYear() {
-        int nextYear = Year.now().getValue() + 1;
-        log.info("[HolidaySync] 开始自动同步 {} 年节假日", nextYear);
+    public void syncUpcomingHolidays() {
+        // 传入当前年份：syncYear 的过滤窗口为「今天起 3 个月」，起始年份必须与窗口对齐；
+        // 窗口跨年时由 syncYear 内部的 cutoff.getYear() > year 分支自动追加次年数据。
+        int startYear = Year.now().getValue();
+        log.info("[HolidaySync] 开始自动同步未来 3 个月节假日，起始年份 {}", startYear);
         try {
-            int count = syncYear(nextYear);
-            log.info("[HolidaySync] {} 年节假日同步完成，写入 {} 条", nextYear, count);
+            int count = syncYear(startYear);
+            log.info("[HolidaySync] 节假日同步完成，写入 {} 条", count);
         } catch (Exception e) {
-            log.error("[HolidaySync] {} 年节假日同步失败，请手动触发重试", nextYear, e);
+            log.error("[HolidaySync] 节假日同步失败，请手动触发重试", e);
         }
     }
 
