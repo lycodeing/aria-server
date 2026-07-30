@@ -127,8 +127,13 @@ public class FaqChatAppService {
             log.info("[FAQ] auto-transfer blocked by business hours, session={}", sessionId);
             return Flux.just(ChatEvent.offline(e.getOfflineMessage(), e.getNextOpenTime(), objectMapper));
         } catch (Exception e) {
+            // 入队确实失败（如 Redis 故障/序列化失败）：不能谎称已转接，否则访客会一直等待但队列里并无此会话
             log.warn("[FAQ] 自动转人工入队失败 sessionId={}", sessionId, e);
+            String failMsg = "抱歉，转接人工客服失败，请稍后重试。";
+            historyRepository.append(sessionId, MessageRole.ASSISTANT.getValue(), failMsg);
+            return Flux.just(ChatEvent.error(failMsg, objectMapper));
         }
+        // 入队成功后才回复“已转接”并发 TRANSFER 事件
         String reply = intent.intent() == IntentType.COMPLAINT
                 ? "非常抱歉给您带来了不好的体验，我已为您转接人工客服，请稍候。"
                 : "好的，我已为您转接人工客服，请稍候。";

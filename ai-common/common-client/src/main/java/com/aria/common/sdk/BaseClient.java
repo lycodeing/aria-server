@@ -37,6 +37,9 @@ public abstract class BaseClient {
         if (config.getCallTimeout() != null) {
             builder.callTimeout(config.getCallTimeout());
         }
+        // 重试拦截器置于最外层：每次重试都会重新经过下游签名拦截器，
+        // 从而重新生成 X-Timestamp/X-Nonce/X-Signature，避免服务端 nonce 防重放将重试判为重放而拒绝
+        builder.addInterceptor(new RetryInterceptor(config.getMaxRetries()));
         // 鉴权拦截器按模式分派；NONE 模式不装配任何鉴权拦截器
         switch (config.getAuthMode()) {
             case AK_SK -> builder.addInterceptor(new AkSkSigningInterceptor(config));
@@ -45,7 +48,6 @@ public abstract class BaseClient {
         }
         // traceId 透传：将 MDC 中的 traceId 写入下游请求头 X-Trace-Id，保证全链路追踪一致
         builder.addInterceptor(new TraceIdPropagationInterceptor());
-        builder.addInterceptor(new RetryInterceptor(config.getMaxRetries()));
         this.httpClient = builder.build();
     }
 

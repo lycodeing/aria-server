@@ -104,7 +104,9 @@ public class SessionQueueController {
     @GetMapping
     public R<List<SessionQueueItem>> getAllSessions(
             @RequestParam(defaultValue = "50") int closedLimit) {
-        return R.ok(queueService.getAllSessions(closedLimit));
+        // 收敛到 [1, 200]，防止传入超大值导致慢查询
+        int safeLimit = Math.min(Math.max(closedLimit, 1), 200);
+        return R.ok(queueService.getAllSessions(safeLimit));
     }
 
     /**

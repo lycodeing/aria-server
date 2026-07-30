@@ -3,6 +3,7 @@ package com.aria.conversation.infrastructure.csat;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.aria.conversation.domain.CsatStatus;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 
 import java.time.OffsetDateTime;
@@ -18,6 +19,19 @@ public interface CsatRatingMapper extends BaseMapper<CsatRatingDO> {
             Wrappers.lambdaQuery(CsatRatingDO.class)
                 .eq(CsatRatingDO::getSessionId, sessionId)));
     }
+
+    /**
+     * 幂等插入：依赖 uq_csat_session 唯一约束，并发下命中约束时静默跳过（不抛异常、不中断事务）。
+     * 返回受影响行数：1 表示本次插入成功，0 表示 sessionId 已存在。
+     */
+    @Insert("""
+            INSERT INTO cs_conversation.cs_csat_rating
+                (session_id, visitor_id, agent_id, channel, status, requested_at, expired_at)
+            VALUES
+                (#{sessionId}, #{visitorId}, #{agentId}, #{channel}, #{status}, #{requestedAt}, #{expiredAt})
+            ON CONFLICT (session_id) DO NOTHING
+            """)
+    int insertIfAbsent(CsatRatingDO rating);
 
     /** 更新评价状态（RATED / SKIPPED / EXPIRED） */
     default void updateStatus(Long id, CsatStatus status, OffsetDateTime ratedAt) {

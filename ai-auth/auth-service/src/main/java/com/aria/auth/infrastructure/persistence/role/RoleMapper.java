@@ -51,4 +51,20 @@ public interface RoleMapper extends BaseMapper<RoleDO> {
      * 插入或更新角色数据权限范围（UPSERT）。
      */
     int upsertDataScope(@Param("roleId") Long roleId, @Param("scopeType") String scopeType);
+
+    /**
+     * 删除用户的所有角色关联（先清后插，保证幂等）。
+     *
+     * @param userId 用户 ID
+     */
+    int deleteUserRoles(@Param("userId") Long userId);
+
+    /**
+     * 批量插入用户-角色关联记录（单条 SQL 多 VALUES）。
+     *
+     * @param userId  用户 ID
+     * @param roleIds 角色 ID 列表，不得为空
+     */
+    int insertUserRoles(@Param("userId") Long userId,
+                        @Param("roleIds") List<Long> roleIds);
 }

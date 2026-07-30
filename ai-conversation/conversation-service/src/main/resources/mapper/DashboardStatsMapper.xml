@@ -53,7 +53,7 @@
     <select id="getMonthlyTrends"
             resultType="com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO">
         SELECT TO_CHAR(DATE_TRUNC('month', started_at), 'YYYY-MM')     AS month,
-               COUNT(*) FILTER (WHERE tag != 'AI 对话')                AS "humanCount",
+               COUNT(*) FILTER (WHERE tag IS DISTINCT FROM 'AI 对话')  AS "humanCount",
                COUNT(*) FILTER (WHERE tag = 'AI 对话')                 AS "aiCount"
         FROM cs_conversation.cs_conversation
         WHERE started_at &gt;= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '11 months')
@@ -166,7 +166,7 @@
     <select id="getConversationTrendsByRange"
             resultType="com.aria.conversation.interfaces.rest.vo.ConversationTrendItemVO">
         SELECT TO_CHAR(DATE_TRUNC('day', started_at), 'YYYY-MM-DD')    AS month,
-               COUNT(*) FILTER (WHERE tag != 'AI 对话')                AS "humanCount",
+               COUNT(*) FILTER (WHERE tag IS DISTINCT FROM 'AI 对话')  AS "humanCount",
                COUNT(*) FILTER (WHERE tag = 'AI 对话')                 AS "aiCount"
         FROM cs_conversation.cs_conversation
         WHERE started_at &gt;= #{startDate}::date

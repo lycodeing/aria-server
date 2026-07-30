@@ -10,6 +10,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 
 import java.io.IOException;
@@ -120,7 +121,7 @@ public class AiSummaryService {
 
         Flux<String> tokenFlux = modelFactory.streamChat(messages, SUMMARY_SYSTEM_PROMPT);
 
-        tokenFlux.subscribe(
+        Disposable subscription = tokenFlux.subscribe(
                 token -> {
                     fullSummary.append(token);
                     try {
@@ -157,7 +158,18 @@ public class AiSummaryService {
                 }
         );
 
-        emitter.onError(e -> log.debug("[AiSummary] SSE 连接错误 sessionId={}", sessionId, e));
+        // 客户端断开 / 超时 / 出错时释放上游订阅，避免 LLM 流在后台继续运行造成资源泄漏
+        emitter.onCompletion(() -> {
+            if (!subscription.isDisposed()) subscription.dispose();
+        });
+        emitter.onTimeout(() -> {
+            if (!subscription.isDisposed()) subscription.dispose();
+            emitter.complete();
+        });
+        emitter.onError(e -> {
+            log.debug("[AiSummary] SSE 连接错误 sessionId={}", sessionId, e);
+            if (!subscription.isDisposed()) subscription.dispose();
+        });
         return emitter;
     }
 

@@ -9,6 +9,8 @@ import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.util.concurrent.TimeUnit;
 
@@ -60,7 +62,35 @@ public class PersistHandler implements IngestHandler {
             chunkRepository.deleteByDocId(docId);
             chunkRepository.saveAll(ctx.getChunks());
             log.info("[持久化] docId={} 写入 chunk 数={}", docId, ctx.getChunks().size());
-        } finally {
+        } catch (RuntimeException e) {
+            // 本 step 执行失败：立即释锁并抩出，触发事务回滚与 MQ 重试
+            if (lock.isHeldByCurrentThread()) {
+                lock.unlock();
+            }
+            throw e;
+        }
+
+        // 锁持有到事务完成（提交/回滚）之后再释放：
+        // 若在事务提交前释锁，MQ 重复投递时消费者 B 可在 A 未提交时获锁，
+        // READ COMMITTED 隔离级下 B 删不掉 A 未提交的旧 chunk，最终同一 docId 出现两套 chunk
+        registerUnlockAfterCompletion(lock, docId);
+    }
+
+    /**
+     * 注册在事务完成后释放分布式锁；无事务上下文时立即释放。
+     */
+    private void registerUnlockAfterCompletion(RLock lock, String docId) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCompletion(int status) {
+                    if (lock.isHeldByCurrentThread()) {
+                        lock.unlock();
+                    }
+                }
+            });
+        } else {
+            log.warn("[持久化] 无活动事务同步，无法延后释锁，立即释放 docId={}", docId);
             if (lock.isHeldByCurrentThread()) {
                 lock.unlock();
             }

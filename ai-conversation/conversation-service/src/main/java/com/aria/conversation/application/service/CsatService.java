@@ -49,9 +49,13 @@ public class CsatService {
             OffsetDateTime now = OffsetDateTime.now();
             rating.setRequestedAt(now);
             rating.setExpiredAt(now.plusHours(EXPIRY_HOURS));
-            mapper.insert(rating);
-            log.info("[CSAT] 评价邀请已创建 sessionId={} channel={}", sessionId, channel);
-            return rating;
+            // 幂等插入：并发关闭路径同时创建时由 uq_csat_session 兼并，回查返回权威记录
+            if (mapper.insertIfAbsent(rating) > 0) {
+                log.info("[CSAT] 评价邀请已创建 sessionId={} channel={}", sessionId, channel);
+            }
+            return mapper.findBySessionId(sessionId)
+                    .orElseThrow(() -> new IllegalStateException(
+                            "CSAT 记录创建后回查为空 sessionId=" + sessionId));
         });
     }
 

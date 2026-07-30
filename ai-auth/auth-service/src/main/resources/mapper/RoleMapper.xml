@@ -65,4 +65,19 @@
                 updated_at = NOW()
     </insert>
 
+    <!-- 删除用户的所有角色关联（先清后插，保证幂等） -->
+    <delete id="deleteUserRoles">
+        DELETE FROM cs_auth.sys_user_role
+        WHERE user_id = #{userId}
+    </delete>
+
+    <!-- 批量插入用户-角色关联（单 SQL 多 VALUES） -->
+    <insert id="insertUserRoles">
+        INSERT INTO cs_auth.sys_user_role (user_id, role_id)
+        VALUES
+        <foreach collection="roleIds" item="rid" separator=",">
+            (#{userId}, #{rid})
+        </foreach>
+    </insert>
+
 </mapper>

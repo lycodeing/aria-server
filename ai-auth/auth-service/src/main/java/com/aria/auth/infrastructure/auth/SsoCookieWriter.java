@@ -48,7 +48,7 @@ public class SsoCookieWriter {
         StringBuilder sb = new StringBuilder();
         sb.append(name).append("=").append(value);
         sb.append("; Path=/");
-        sb.append("; MaxAge=").append(maxAge);
+        sb.append("; Max-Age=").append(maxAge);
         sb.append("; HttpOnly");
         sb.append("; SameSite=Strict");
         if (secure) sb.append("; Secure");

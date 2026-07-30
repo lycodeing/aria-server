@@ -147,6 +147,24 @@ public class RedisCacheHelper {
         redis.expire(key, ttl);
     }
 
+    /**
+     * Hash PUT-IF-ABSENT（原子）：仅当 field 不存在时写入，并刷新 key 级 TTL。
+     *
+     * <p>基于 Redis HSETNX 语义，用于「入队/注册」类需要幂等且防止覆盖已有值的场景，
+     * 消除「先读后写」的竞态窗口。
+     *
+     * @return true 表示写入成功（field 原先不存在），false 表示 field 已存在未写入
+     */
+    public boolean hPutIfAbsent(String key, String field, String value, Duration ttl) {
+        validateTtl(key, ttl);
+        Boolean ok = redis.opsForHash().putIfAbsent(key, field, value);
+        if (Boolean.TRUE.equals(ok)) {
+            redis.expire(key, ttl);
+            return true;
+        }
+        return false;
+    }
+
     /** Hash DELETE 一个或多个 field */
     public Long hDelete(String key, Object... fields) {
         return redis.opsForHash().delete(key, fields);

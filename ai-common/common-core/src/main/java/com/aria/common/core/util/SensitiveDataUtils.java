@@ -12,9 +12,9 @@ public final class SensitiveDataUtils {
     private static final Pattern PHONE_PATTERN =
         Pattern.compile("(1[3-9]\\d)\\d{4}(\\d{4})");
 
-    /** 身份证号：保留前 6 位和后 4 位 */
+    /** 身份证号：保留前 6 位和后 4 位（末位校验码可为数字或 X/x） */
     private static final Pattern ID_CARD_PATTERN =
-        Pattern.compile("(\\d{6})\\d{8}(\\d{4}[Xx])");
+        Pattern.compile("(\\d{6})\\d{8}(\\d{3}[0-9Xx])");
 
     /**
      * 银行卡号：16~19 位，使用负向环视确保只匹配独立的数字块，
