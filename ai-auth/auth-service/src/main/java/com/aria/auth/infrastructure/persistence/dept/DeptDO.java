@@ -1,12 +1,11 @@
 package com.aria.auth.infrastructure.persistence.dept;
 
+import com.aria.common.core.mybatis.BaseDO;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Getter;
 import lombok.Setter;
-
-import java.time.LocalDateTime;
 
 /**
  * 部门数据对象。
@@ -16,20 +15,12 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @TableName("cs_auth.sys_dept")
-public class DeptDO {
+public class DeptDO extends BaseDO {
     /**
      * 主键 ID
      */
     @TableId(type = IdType.AUTO)
     private Long id;
-    /**
-     * 创建时间
-     */
-    private LocalDateTime createdAt;
-    /**
-     * 更新时间
-     */
-    private LocalDateTime updatedAt;
 
     private Long parentId;
     private String deptName;

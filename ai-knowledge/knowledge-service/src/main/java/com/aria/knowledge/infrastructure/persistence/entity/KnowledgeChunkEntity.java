@@ -6,7 +6,7 @@ import lombok.*;
 import org.apache.ibatis.type.JdbcType;
 
 import java.math.BigDecimal;
-import java.time.Instant;
+import java.time.OffsetDateTime;
 
 /**
  * Chunk 数据库对象（基础设施层）。
@@ -56,5 +56,5 @@ public class KnowledgeChunkEntity {
     private String     chunkType;
 
     @TableField(fill = FieldFill.INSERT)
-    private Instant    createdAt;
+    private OffsetDateTime    createdAt;
 }

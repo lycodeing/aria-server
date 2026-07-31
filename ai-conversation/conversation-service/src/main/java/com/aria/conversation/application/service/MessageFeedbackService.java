@@ -83,7 +83,6 @@ public class MessageFeedbackService {
 
     private void updateExisting(MessageFeedbackDO row, String feedback, OffsetDateTime now) {
         row.setFeedback(feedback);
-        row.setUpdatedAt(now);
         feedbackMapper.updateById(row);
     }
 
@@ -94,8 +93,6 @@ public class MessageFeedbackService {
         row.setSeq(seq);
         row.setFeedback(feedback);
         row.setVisitorId(visitorId);
-        row.setCreatedAt(now);
-        row.setUpdatedAt(now);
         feedbackMapper.insert(row);
     }
 

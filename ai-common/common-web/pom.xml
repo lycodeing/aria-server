@@ -46,6 +46,16 @@
             <artifactId>lombok</artifactId>
             <scope>provided</scope>
         </dependency>
+        <!--
+            MyBatis-Plus（optional）：仅供全局自动填充处理器 AutoFillMetaObjectHandler 编译使用，
+            不向下游强制传递。各服务已显式声明 mybatis-plus，运行时不会缺失；
+            自动配置类以 @ConditionalOnClass 守卫，缺失时静默跳过。
+        -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+            <optional>true</optional>
+        </dependency>
         <!-- auth-service 内网接口 SDK：CHAT/EMBEDDING/ROUTER 配置拉取 -->
         <dependency>
             <groupId>com.aria</groupId>

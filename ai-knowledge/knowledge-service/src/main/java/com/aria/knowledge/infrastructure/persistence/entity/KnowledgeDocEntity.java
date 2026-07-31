@@ -3,7 +3,7 @@ package com.aria.knowledge.infrastructure.persistence.entity;
 import com.baomidou.mybatisplus.annotation.*;
 import lombok.*;
 
-import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.time.LocalDate;
 
 /**
@@ -34,8 +34,8 @@ public class KnowledgeDocEntity {
     private String  reviewerId;
 
     @TableField(fill = FieldFill.INSERT)
-    private Instant createdAt;
+    private OffsetDateTime createdAt;
 
     @TableField(fill = FieldFill.INSERT_UPDATE)
-    private Instant updatedAt;
+    private OffsetDateTime updatedAt;
 }

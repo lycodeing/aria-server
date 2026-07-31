@@ -1,12 +1,11 @@
 package com.aria.auth.infrastructure.persistence.menu;
 
+import com.aria.common.core.mybatis.BaseDO;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Getter;
 import lombok.Setter;
-
-import java.time.LocalDateTime;
 
 /**
  * 菜单/按钮数据对象。
@@ -15,20 +14,12 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @TableName("cs_auth.sys_menu")
-public class MenuDO {
+public class MenuDO extends BaseDO {
     /**
      * 主键 ID
      */
     @TableId(type = IdType.AUTO)
     private Long id;
-    /**
-     * 创建时间
-     */
-    private LocalDateTime createdAt;
-    /**
-     * 更新时间
-     */
-    private LocalDateTime updatedAt;
 
     private Long parentId;
     private String menuType;       // DIRECTORY / MENU / BUTTON

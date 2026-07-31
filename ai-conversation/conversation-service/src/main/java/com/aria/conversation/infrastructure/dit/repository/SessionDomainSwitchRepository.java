@@ -7,7 +7,6 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Repository;
 
-import java.time.OffsetDateTime;
 import java.util.List;
 
 /**
@@ -37,7 +36,6 @@ public class SessionDomainSwitchRepository {
             switchDO.setTriggerMessage(cmd.triggerMessage());
             switchDO.setReason(cmd.reason());
             switchDO.setMsgSeq(cmd.msgSeq());
-            switchDO.setCreatedAt(OffsetDateTime.now());
             switchMapper.insert(switchDO);
             log.info("[Domain] 记录域切换 sessionId={} {}→{} type={}",
                     cmd.sessionId(), cmd.fromDomain(), cmd.toDomain(), cmd.switchType());

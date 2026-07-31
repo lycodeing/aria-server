@@ -1,5 +1,6 @@
 package com.aria.auth.infrastructure.persistence.systemconfig;
 
+import com.aria.common.core.mybatis.BaseDO;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -15,7 +16,7 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @TableName("cs_auth.system_config")
-public class SystemConfigDO {
+public class SystemConfigDO extends BaseDO {
 
     @TableId(type = IdType.AUTO)
     private Long id;
@@ -33,10 +34,6 @@ public class SystemConfigDO {
 
     @TableField("is_enabled")
     private Boolean isEnabled;
-
-    private LocalDateTime createdAt;
-
-    private LocalDateTime updatedAt;
 
     private LocalDateTime deletedAt;
 }

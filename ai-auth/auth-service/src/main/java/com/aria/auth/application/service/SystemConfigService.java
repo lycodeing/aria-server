@@ -213,8 +213,8 @@ public class SystemConfigService {
                 .configType(config.getConfigType())
                 .description(config.getDescription())
                 .isEnabled(config.getIsEnabled())
-                .createdAt(config.getCreatedAt())
-                .updatedAt(config.getUpdatedAt())
+                .createdAt(config.getCreatedAt() != null ? config.getCreatedAt().toLocalDateTime() : null)
+                .updatedAt(config.getUpdatedAt() != null ? config.getUpdatedAt().toLocalDateTime() : null)
                 .build();
     }
 }

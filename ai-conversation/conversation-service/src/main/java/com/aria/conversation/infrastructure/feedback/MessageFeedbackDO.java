@@ -1,11 +1,11 @@
 package com.aria.conversation.infrastructure.feedback;
 
+import com.aria.common.core.mybatis.BaseDO;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
-
-import java.time.OffsetDateTime;
+import lombok.EqualsAndHashCode;
 
 /**
  * 访客消息反馈实体（对应 cs_conversation.cs_message_feedback 表）。
@@ -18,25 +18,30 @@ import java.time.OffsetDateTime;
  * 是否为 assistant/agent 由查询侧按需 JOIN {@code cs_conversation_message}。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName(schema = "cs_conversation", value = "cs_message_feedback")
-public class MessageFeedbackDO {
+public class MessageFeedbackDO extends BaseDO {
 
     @TableId(type = IdType.AUTO)
     private Long id;
 
-    /** 关联会话 ID（与 cs_conversation_message.session_id 一致）。 */
+    /**
+     * 关联会话 ID（与 cs_conversation_message.session_id 一致）。
+     */
     private String sessionId;
 
-    /** 关联的 cs_conversation_message.seq（非 NULL）。 */
+    /**
+     * 关联的 cs_conversation_message.seq（非 NULL）。
+     */
     private Long seq;
 
-    /** 反馈类型：up / down。 */
+    /**
+     * 反馈类型：up / down。
+     */
     private String feedback;
 
-    /** 访客标识（可 null，匿名访客）。 */
+    /**
+     * 访客标识（可 null，匿名访客）。
+     */
     private String visitorId;
-
-    private OffsetDateTime createdAt;
-
-    private OffsetDateTime updatedAt;
 }

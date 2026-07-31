@@ -6,6 +6,7 @@ import com.aria.conversation.application.service.TagAppService;
 import com.aria.conversation.infrastructure.persistence.entity.TagEntity;
 import com.aria.conversation.domain.TagSource;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
@@ -80,6 +81,6 @@ public class TagAdminController {
     public static class UpdateTagReq {
         @NotBlank @Size(max = 50) private String name;
         @NotBlank private String color;
-        @NotBlank private TagSource source;
+        @NotNull private TagSource source;
     }
 }

@@ -109,8 +109,6 @@ public class ConversationPersistRepository {
         entity.setTag("AI 对话");
         entity.setStatus(SessionStatus.AI_CHAT);
         entity.setStartedAt(now);
-        entity.setCreatedAt(now);
-        entity.setUpdatedAt(now);
         conversationMapper.insert(entity);
         log.debug("[Persist] 创建 AI_CHAT 会话 sessionId={} visitorId={}", sessionId, visitorId);
     }
