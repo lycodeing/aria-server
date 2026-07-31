@@ -8,9 +8,13 @@
 | 文件 | 覆盖模块 | 用例数 |
 |---|---|---|
 | [auth-test-cases.md](./auth-test-cases.md) | 登录鉴权、用户管理、角色管理、菜单管理、AI 模型配置、系统配置、内部接口 | 135 |
-| [conversation-test-cases.md](./conversation-test-cases.md) | 访客会话、对话、短信认证、转人工队列、SSE 事件流、CSAT、备注/标签、快捷回复、SLA、Webhook、业务时间、Dashboard、DIT、WebSocket | 170 |
+| [conversation-test-cases.md](./conversation-test-cases.md) | 访客会话、对话、短信认证、转人工队列、SSE 事件流、CSAT、备注/标签、快捷回复、SLA、Webhook、业务时间、Dashboard、DIT、WebSocket、**全流程端到端场景（第14节）** | 205 |
 | [knowledge-test-cases.md](./knowledge-test-cases.md) | 文档上传/摄入状态机、审核、下线、Chunk 管理、混合检索、QA 录入、翻译、预览统计、内部接口 | 73 |
-| **合计** | | **378** |
+| **合计** | | **413** |
+
+其中 `conversation-test-cases.md` 第 14 节「全流程端到端场景」把此前分散在各节的用例串成两条完整业务链路：
+- **场景 A**：访客 init → AI/FAQ 多轮对话 → 转人工 WAITING → 座席 accept(ACTIVE) → REST+WS 双向消息 → 备注/标签 → close(CLOSED) → 生成 CSAT 邀请 → 评分 → 历史/Dashboard 数据可查，全程用同一个 sessionId 断言状态机每一步转换。
+- **场景 B**：DIT 领域/意图路由全链路——关键词匹配 → LLM 分类 → 槏位缺失追问（`PendingSlotState`，MISSING/DISCOVERED，重试上限 `MAX_RETRY=2`）→ 工具调用 → `switch_domain`/`transfer_to_agent` 内置工具触发的跨域切换与转人工。依赖真实 LLM 判断的用例已标注 `flaky`，行为未在本次调查中最终确认的追问兜底逻辑标注为「缺陷验证/行为确认用例」。
 
 ## 2. 测试环境
 
