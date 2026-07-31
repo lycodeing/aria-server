@@ -10,7 +10,6 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.OffsetDateTime;
 import java.util.List;
 
 @Slf4j
@@ -37,7 +36,7 @@ public class CannedResponseAppService {
         CannedResponseGroupDO g = new CannedResponseGroupDO();
         g.setName(name); g.setParentId(parentId);
         g.setSortOrder(sortOrder); g.setCreatedBy(createdBy);
-        g.setCreatedAt(OffsetDateTime.now()); g.setDeleted(false);
+        g.setDeleted(false);
         groupMapper.insert(g);
         return g;
     }
@@ -98,7 +97,6 @@ public class CannedResponseAppService {
         requirePublicScope(cr);
         cr.setTitle(title); cr.setContent(content);
         cr.setGroupId(groupId); cr.setSortOrder(sortOrder);
-        cr.setUpdatedAt(OffsetDateTime.now());
         cannedMapper.updateById(cr);
     }
 
@@ -128,7 +126,6 @@ public class CannedResponseAppService {
         CannedResponseDO cr = requireCr(id);
         requireOwner(cr, agentId);
         cr.setTitle(title); cr.setContent(content);
-        cr.setUpdatedAt(OffsetDateTime.now());
         cannedMapper.updateById(cr);
     }
 
@@ -210,8 +207,6 @@ public class CannedResponseAppService {
         cr.setTitle(title); cr.setContent(content);
         cr.setGroupId(groupId); cr.setSortOrder(sortOrder);
         cr.setCreatedBy(createdBy); cr.setUseCount(0);
-        cr.setCreatedAt(OffsetDateTime.now());
-        cr.setUpdatedAt(OffsetDateTime.now());
         cr.setDeleted(false);
         return cr;
     }

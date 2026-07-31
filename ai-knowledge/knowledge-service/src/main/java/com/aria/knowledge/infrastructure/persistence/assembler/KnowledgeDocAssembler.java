@@ -30,8 +30,8 @@ public class KnowledgeDocAssembler {
             .expiresAt(e.getExpiresAt())
             .uploaderId(e.getUploaderId())
             .reviewerId(e.getReviewerId())
-            .createdAt(e.getCreatedAt())
-            .updatedAt(e.getUpdatedAt())
+            .createdAt(e.getCreatedAt() != null ? e.getCreatedAt().toInstant() : null)
+            .updatedAt(e.getUpdatedAt() != null ? e.getUpdatedAt().toInstant() : null)
             .build();
     }
 

@@ -75,8 +75,6 @@ public class AiModelConfigService {
         // 新建时 apiKeyEnc 必须写入（允许空值，代表无鉴权）
         do_.setApiKeyEnc(normalizeApiKey(req.getApiKeyEnc()));
         do_.setCreatedBy(operatorId);
-        do_.setCreatedAt(LocalDateTime.now());
-        do_.setUpdatedAt(LocalDateTime.now());
         do_.setIsDefault(false);
         mapper.insert(do_);
         return do_;
@@ -96,7 +94,6 @@ public class AiModelConfigService {
         if (req.getApiKeyEnc() != null && !req.getApiKeyEnc().isBlank()) {
             existing.setApiKeyEnc(normalizeApiKey(req.getApiKeyEnc()));
         }
-        existing.setUpdatedAt(LocalDateTime.now());
         mapper.updateById(existing);
         broadcastChangeAfterCommit();
     }
@@ -114,7 +111,6 @@ public class AiModelConfigService {
         AiModelConfigDO upd = new AiModelConfigDO();
         upd.setId(id);
         upd.setIsDefault(true);
-        upd.setUpdatedAt(LocalDateTime.now());
         mapper.updateById(upd);
         broadcastChangeAfterCommit();
         log.info("[AiModelConfig] 默认配置切换为 id={} type={}", id, record.getModelType());
@@ -130,7 +126,6 @@ public class AiModelConfigService {
         AiModelConfigDO upd = new AiModelConfigDO();
         upd.setId(id);
         upd.setIsEnabled(enabled);
-        upd.setUpdatedAt(LocalDateTime.now());
         mapper.updateById(upd);
         broadcastChangeAfterCommit();
         log.info("[AiModelConfig] id={} isEnabled={}", id, enabled);

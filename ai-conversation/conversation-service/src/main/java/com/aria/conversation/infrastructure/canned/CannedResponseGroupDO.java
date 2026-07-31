@@ -13,6 +13,7 @@ public class CannedResponseGroupDO {
     private Long parentId;
     private Integer sortOrder;
     private Long createdBy;
+    @TableField(fill = FieldFill.INSERT)
     private OffsetDateTime createdAt;
     private Boolean deleted;
 }

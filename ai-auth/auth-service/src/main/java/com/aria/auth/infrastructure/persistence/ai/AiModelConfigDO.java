@@ -1,5 +1,6 @@
 package com.aria.auth.infrastructure.persistence.ai;
 
+import com.aria.common.core.mybatis.BaseDO;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
@@ -16,7 +17,7 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @TableName("cs_auth.ai_model_config")
-public class AiModelConfigDO {
+public class AiModelConfigDO extends BaseDO {
 
     @TableId(type = IdType.AUTO)
     private Long id;
@@ -43,7 +44,5 @@ public class AiModelConfigDO {
     @com.baomidou.mybatisplus.annotation.TableField("is_enabled")
     private Boolean isEnabled;
     private Long createdBy;
-    private LocalDateTime createdAt;
-    private LocalDateTime updatedAt;
     private LocalDateTime deletedAt;
 }

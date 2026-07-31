@@ -45,7 +45,7 @@ public class KnowledgeChunkAssembler {
             .retrievalWeight(e.getRetrievalWeight())
             .feedbackDownvotes(e.getFeedbackDownvotes())
             .hypotheticalQuestions(parseJsonList(e.getHypotheticalQuestions()))
-            .createdAt(e.getCreatedAt())
+            .createdAt(e.getCreatedAt() != null ? e.getCreatedAt().toInstant() : null)
             .pageNum(e.getPageNum())
             .sectionTitle(e.getSectionTitle())
             // 容错处理：DB 中存在历史脏数据或枚举改名时降级为 TEXT，避免整批查询失败

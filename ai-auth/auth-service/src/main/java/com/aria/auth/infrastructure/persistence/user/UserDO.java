@@ -1,6 +1,7 @@
 package com.aria.auth.infrastructure.persistence.user;
 
 import com.aria.auth.infrastructure.persistence.typehandler.JsonbTypeHandler;
+import com.aria.common.core.mybatis.BaseDO;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -13,20 +14,12 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 @TableName(value = "cs_auth.sys_user", autoResultMap = true)
-public class UserDO {
+public class UserDO extends BaseDO {
     /**
      * 主键 ID
      */
     @TableId(type = IdType.INPUT)
     private Long id;
-    /**
-     * 创建时间
-     */
-    private LocalDateTime createdAt;
-    /**
-     * 更新时间
-     */
-    private LocalDateTime updatedAt;
 
 
     private String username;

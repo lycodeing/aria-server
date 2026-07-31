@@ -2,11 +2,13 @@ package com.aria.conversation.infrastructure.persistence.entity;
 
 import com.aria.conversation.domain.ClosedBy;
 import com.aria.conversation.domain.SessionStatus;
+import com.aria.common.core.mybatis.BaseDO;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 import java.time.OffsetDateTime;
 
@@ -20,8 +22,9 @@ import java.time.OffsetDateTime;
  * 专用方法完成，保证状态机语义。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName(schema = "cs_conversation", value = "cs_conversation")
-public class ConversationEntity {
+public class ConversationEntity extends BaseDO {
 
     /** 主键（自增） */
     @TableId(type = IdType.AUTO)
@@ -76,12 +79,6 @@ public class ConversationEntity {
      * CLOSED 时必填，其余状态为 NULL。
      */
     private ClosedBy closedBy;
-
-    /** 记录创建时间 */
-    private OffsetDateTime createdAt;
-
-    /** 记录最后更新时间（由数据库触发器自动维护） */
-    private OffsetDateTime updatedAt;
 
     /** 访客唯一标识，前端 localStorage 生成的 anonymousId，历史数据为 null */
     @TableField("visitor_id")

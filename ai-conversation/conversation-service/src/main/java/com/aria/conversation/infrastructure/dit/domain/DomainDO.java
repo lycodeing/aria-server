@@ -1,17 +1,16 @@
 package com.aria.conversation.infrastructure.dit.domain;
 
+import com.aria.common.core.mybatis.BaseDO;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Getter;
 import lombok.Setter;
 
-import java.time.LocalDateTime;
-
 @Getter
 @Setter
 @TableName("cs_domain")
-public class DomainDO {
+public class DomainDO extends BaseDO {
 
     @TableId(type = IdType.AUTO)
     private Long id;
@@ -34,6 +33,4 @@ public class DomainDO {
     private String patterns;
 
     private Boolean enabled;
-    private LocalDateTime createdAt;
-    private LocalDateTime updatedAt;
 }
