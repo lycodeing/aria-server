@@ -459,6 +459,74 @@
 
 ---
 
+## 14. 全流程场景用例（端到端）
+
+前面各节按接口/模块拆分用例，本节把分散的用例串成两条完整业务链路，全程用**同一个 sessionId**（或同一批关联数据）贯穿断言，验证状态机在真实时序下的整体正确性，而不仅是单点接口行为。
+
+### 14.1 场景 A：访客对话全生命周期（AI 对话 → 转人工 → 人工接待 → 关闭 → 评价）
+
+代码依据：`ChatAppService.resolveStream`（`ai-conversation/conversation-service/src/main/java/com/aria/conversation/application/service/ChatAppService.java:116-124`）——已接入人工（`sessionQueueService.isActive`）→ 固定提示；有 `domainCode` → 域路径；否则 → FAQ 路径。本场景走 FAQ 路径（不传 `domainCode`），场景 B 单独覆盖域路径。
+
+| ID | 标题 | 前置条件 | 步骤 | 预期结果 | 优先级 | 备注 |
+|---|---|---|---|---|---|---|
+| E2E-A-001 | 访客初始化会话 | 唯一 `anonymousId`（如 `e2e-full-<ts>`） | POST `/api/v1/chat/session/init` body `{"visitorName":"全流程测试访客"}` | 200；`isNew=true`；`status=AI_CHAT`；记下 `sessionId` | P0 | 全场景复用此 sessionId |
+| E2E-A-002 | AI/FAQ 首轮对话 | 承接 E2E-A-001 | POST `/api/v1/chat/stream` body `{"sessionId":"...","message":"你好，请介绍一下你们的退货政策"}` | SSE 流出现 `data:` token 分片；若知识库命中还会先出 `sources` 事件 | P0 | 依赖 AI+RAG，标记 `@pytest.mark.ai` |
+| E2E-A-003 | 首轮对话已落历史 | 承接 E2E-A-002，等待 2s | GET `/api/v1/chat/history?sessionId=...` | 至少 1 条 `role=user` + 1 条 `role=assistant` | P0 | |
+| E2E-A-004 | 追加第二轮对话（验证多轮上下文） | 承接 E2E-A-003 | POST stream body `{"sessionId":"...","message":"刚才说的政策，多少天内有效？"}` | SSE 正常返回；不要求语义正确，仅验证多轮请求不报错且历史条数递增 | P1 | 依赖 AI |
+| E2E-A-005 | 访客请求转人工 | 承接 E2E-A-004 | POST `/api/v1/chat/transfer` body `{"sessionId":"...","userName":"全流程测试访客","transferReason":"人工咨询","tag":"测试"}` | 200；`status=WAITING` | P0 | 对应 CONV-XFER-002 |
+| E2E-A-006 | 会话状态查询同步为 WAITING | 承接 E2E-A-005 | GET `/api/v1/chat/state?sessionId=...` | `status=WAITING` | P0 | |
+| E2E-A-007 | 座席上线并出现在在线列表 | 座席 token 已建立 `/api/v1/sessions/events` SSE 长连接 | GET `/api/v1/sessions/agents/online` | 结果含该座席（字段 `id`） | P0 | 对应 CONV-ON-001 |
+| E2E-A-008 | 座席接入会话 | 承接 E2E-A-005~007 | POST `/api/v1/sessions/{sessionId}/accept`（座席 token） | 200；`status=ACTIVE`；`agentId=座席ID` | P0 | 对应 CONV-ACC-002 |
+| E2E-A-009 | 访客侧状态同步为 ACTIVE | 承接 E2E-A-008 | GET `/api/v1/chat/state?sessionId=...` | `status=ACTIVE` | P0 | |
+| E2E-A-010 | ACTIVE 状态下访客经 REST 发消息走固定提示（不调 AI） | 承接 E2E-A-009 | POST `/api/v1/chat/stream` body `{"sessionId":"...","message":"人工接待中我再发一条"}` | SSE 返回固定提示（含"人工客服"字样），不出现 token 分片 | P0 | 不依赖 AI，验证 `resolveStream` 的人工优先分支 |
+| E2E-A-011 | 座席通过 WebSocket 发消息，访客收到 | 承接 E2E-A-008；座席端连接 `wss://localhost/ws/agent?token=...`，访客端连接 `wss://localhost/ws/chat/{sessionId}` | 座席端发 `{"type":"MESSAGE","sessionId":"...","content":"座席WS消息-<ts>"}` | 访客端 15s 内收到含该内容的帧 | P0 | 标记 `@pytest.mark.ws`，对应 WS-003 |
+| E2E-A-012 | 访客通过 WebSocket 回复，座席收到 | 承接 E2E-A-011 | 访客端发 `{"type":"MESSAGE","content":"访客WS消息-<ts>"}` | 座席端 15s 内收到含该内容的帧 | P0 | 标记 `@pytest.mark.ws` |
+| E2E-A-013 | WS 消息与 REST 历史一致 | 承接 E2E-A-011~012 | GET `/api/v1/chat/history?sessionId=...` | 历史含"座席WS消息"和"访客WS消息"两条记录 | P0 | 验证 WS/REST 数据一致性 |
+| E2E-A-014 | 座席添加会话备注 | 承接 E2E-A-008 | POST `/api/v1/sessions/{sessionId}/notes` body `{"content":"全流程测试备注"}` | 200 | P1 | |
+| E2E-A-015 | 座席打会话标签 | 承接 E2E-A-008，已有标签字典 ID | POST `/api/v1/sessions/{sessionId}/tags` body `{"tagId":N}` | 200；GET 标签列表含该 tagId | P1 | |
+| E2E-A-016 | 座席关闭会话 | 承接 E2E-A-008 | POST `/api/v1/sessions/{sessionId}/close`（座席 token） | 200 | P0 | |
+| E2E-A-017 | 访客侧状态同步为 CLOSED | 承接 E2E-A-016 | GET `/api/v1/chat/state?sessionId=...` | `status=CLOSED` | P0 | |
+| E2E-A-018 | 关闭后异步生成 CSAT 邀请 | 承接 E2E-A-016，等待约 2s | GET `/api/v1/chat/csat/pending?sessionId=...` | `data.csatId` 非空 | P0 | 邀请生成为异步流程 |
+| E2E-A-019 | 访客提交满意度评分 | 承接 E2E-A-018 | POST `/api/v1/chat/csat/{csatId}/rate` body `{"score":5,"comment":"全流程测试好评"}` | 200 | P0 | |
+| E2E-A-020 | 评分后 pending 查询返回空 | 承接 E2E-A-019 | GET `/api/v1/chat/csat/pending?sessionId=...` | `data` 为空/null | P1 | |
+| E2E-A-021 | 完整会话在访客历史中可查 | 承接以上全部 | GET `/api/v1/sessions/visitor-history?visitorName=全流程测试访客`（座席 token） | 结果含该 sessionId，且历史消息数与实际发送轮次一致 | P1 | |
+| E2E-A-022 | 完整会话在 Dashboard 近期会话中可查 | 承接以上全部 | GET `/api/v1/dashboard/recent-sessions?limit=10`（座席 token） | 结果含该 sessionId | P2 | 依赖执行顺序产生的数据，建议放在整套用例末尾执行 |
+
+**该场景验证的关键状态机跳转**：`AI_CHAT → WAITING → ACTIVE → CLOSED`，覆盖 `resolveStream` 的三条分支（FAQ 路径 / 人工优先固定提示）、REST 与 WS 双通道数据一致性、CSAT 邀请的异步生成时序。
+
+### 14.2 场景 B：DIT 领域意图路由全链路（关键词匹配 → LLM 分类 → 槏位填充 → 工具调用 → 域切换）
+
+代码依据：
+- `ChatAppService.streamDomain`（`DomainSessionAppService.resolveActiveDomain` 确定活跃域 → `MultiIntentService.classifyMulti(message, activeDomain)` 域感知意图分类 → `requiresTransfer` 则转人工，否则走 `DomainAgentService.streamChat`）。
+- `DomainSessionAppService`：`resolveOrInitDomain`（首次进入记 `SwitchType.INITIAL`）→ `routeDomainIfNeeded`（ROUTER 小模型判断是否需要切域，记 `SwitchType.ROUTER_MODEL`）。
+- `BuiltinTools.switchDomain`：LLM 主动调用 `switch_domain` 工具时触发，记 `SwitchType.LLM_TOOL`；会校验目标域必须在已知域列表中，否则拒绝切换。
+- `PendingSlotState`：槏位解析挂起态，`pendingType=MISSING`（等待用户文本输入）或 `DISCOVERED`（等待用户从候选项选择），`retryCount` 达到 `MAX_RETRY=2` 后放弃（预期兜底转人工，需实测确认）。
+
+本场景依赖真实 LLM/Embedding 调用，全部标记 `@pytest.mark.ai`；且需要预先创建测试专用的领域/意图/槏位/工具数据（复用第 12 节 DIT CRUD 接口）。
+
+| ID | 标题 | 前置条件 | 步骤 | 预期结果 | 优先级 | 备注 |
+|---|---|---|---|---|---|---|
+| E2E-B-001 | 准备测试领域 | admin token | POST `/api/v1/admin/dit/domains` body `{"code":"e2e_dom_<ts>","name":"全流程测试域","enabled":true,"keywords":"[\"自动化专用词\"]"}` | 200，记录 `domainId` | P1 | `enabled:true`，与 DIT-003（测试用 false）不同，本场景需要域参与真实路由 |
+| E2E-B-002 | 准备测试意图（含必填槏位） | 承接 E2E-B-001 | POST `/api/v1/admin/dit/intents` body `{"domainId":domainId,"code":"e2e_intent_<ts>","name":"查询订单","description":"测试意图","autoTransfer":false,"skipRag":true,"keywords":"[\"查订单\",\"订单状态\"]"}` | 200，记录 `intentId` | P1 | `skipRag:true` 避免 RAG 检索干扰断言 |
+| E2E-B-003 | 准备必填槏位（仅 ASK_USER 策略，确保必现追问） | 承接 E2E-B-002 | POST `/api/v1/admin/dit/slots` body `{"intentId":intentId,"slotName":"orderId","slotType":"string","description":"订单号","required":true,"resolveStrategy":"[\"ASK_USER\"]","askUserPrompt":"请提供您的订单号，以便查询"}` | 200，记录 `slotId` | P1 | `resolveStrategy` 只含 `ASK_USER`，跳过 EXTRACT/SESSION/DISCOVER 自动解析，保证测试消息必定触发追问 |
+| E2E-B-004 | 准备工具与绑定 | 承接 E2E-B-001~002 | POST `/api/v1/admin/dit/tools` 创建 HTTP 工具（同 DIT-030）；POST `/api/v1/admin/dit/bindings` body `{"intentId":intentId,"toolId":toolId,"executionMode":"AUTO","executionOrder":1}` | 均 200 | P1 | |
+| E2E-B-005 | 访客初始化并带 domainCode 进入域路径 | 新 anonymousId | POST `/api/v1/chat/session/init`，随后对话请求带 `domainCode` 参数（或走系统默认路由，视前端约定） | 200，记录 sessionId | P1 | `resolveStream` 命中 `StringUtils.isNotBlank(domainCode)` 分支才会进 `streamDomain` |
+| E2E-B-006 | 关键词命中触发域初始化 | 承接 E2E-B-005 | POST `/api/v1/chat/stream` body `{"sessionId":"...","message":"自动化专用词","domainCode":"e2e_dom_<ts>"}` | SSE 正常返回（不报错）；审计记录中应出现 `switchType=INITIAL` 一条 | P1 | 依赖 AI；审计记录目前无直接查询接口，需通过 DB 或后续管理接口间接验证，若无可访问入口则本条降级为仅验证 SSE 不报错 |
+| E2E-B-007 | 触发意图但缺少必填槏位 → Agent 追问 | 承接 E2E-B-006 | POST stream body `{"sessionId":"...","message":"帮我查订单状态","domainCode":"e2e_dom_<ts>"}` | SSE token 流中出现槏位设定的 `askUserPrompt` 文案（"请提供您的订单号"）或语义等价的追问 | P0 | **核心用例**：验证槏位填充追问机制；依赖 AI，实际文案由 LLM 生成不一定逐字匹配，断言时用关键词包含而非全等 |
+| E2E-B-008 | 补充槏位值 → 解析完成并触发工具调用 | 承接 E2E-B-007 | POST stream body `{"sessionId":"...","message":"我的订单号是ORDER20260731001","domainCode":"e2e_dom_<ts>"}` | SSE 正常返回，回复中体现已获取到订单号或工具执行结果（不要求验证工具真实业务结果，仅验证流程未报错、未再次追问同一槏位） | P0 | 依赖 AI + 真实 HTTP 工具调用（`urlTemplate` 指向可达地址，如 DIT-030 用的 `https://nginx/`） |
+| E2E-B-009 | 追问重试耗尽后的兜底行为 | 新建一个会话，重复 3 次不提供订单号（每次都用无关内容回复追问） | 连续 3 轮 POST stream，消息均不包含订单号 | 第 3 次（`retryCount` 达到 `MAX_RETRY=2` 后）应有兜底行为（预期转人工或明确提示放弃收集），**需实测记录实际行为**，不预设具体断言 | P2 | **缺陷验证/行为确认用例**：代码只定义了 `shouldGiveUp()`，未在本次调查中确认具体兜底动作，需实测后补充断言并更新本文档 |
+| E2E-B-010 | 提出与当前域无关的问题 → LLM 调用 switch_domain 切换 | 承接 E2E-B-008，且系统中至少存在另一个 `enabled=true` 的域（如默认已有域） | POST stream body `{"sessionId":"...","message":"<与当前域完全无关的问题，如询问退货政策>","domainCode":"e2e_dom_<ts>"}` | SSE 流中出现 `event:domainSwitch` 事件（`ChatEvent.domainSwitch`），data 为目标域 code | P1 | 依赖 AI 主动判断调用工具，属于 LLM 行为不确定性较高的用例，多次运行可能不稳定，建议标记 `flaky` 并允许重试 |
+| E2E-B-011 | 域切换到不存在的域被拒绝（边界） | - | 无法直接从 REST 层伪造 LLM 工具调用参数，此用例建议在 Java 单元测试层面覆盖（`BuiltinTools.switchDomain` 传入不存在的 `targetDomainCode`），黑盒接口测试不覆盖 | 不适用（标注为单元测试覆盖范围） | P2 | 说明性条目，非可执行的接口用例 |
+| E2E-B-012 | 域路径下投诉/转人工意图仍可转人工 | 新会话，创建一个 `autoTransfer:true` 的意图（域为 e2e_dom） | POST stream body 命中该意图关键词 | SSE 返回 TRANSFER 语义事件，会话状态变为 `WAITING`（对应 `handleTransfer`） | P1 | 验证域路径与 FAQ 路径共用 `handleTransfer` 逻辑 |
+| E2E-B-013 | 清理测试数据 | 承接 E2E-B-001~004 | 按顺序 DELETE：`/bindings/{id}` → `/slots/{id}` → `/intents/{id}` → `/tools/{id}` → `/domains/{id}` | 均 200 | P2 | 清理顺序错误会导致外键约束报错或残留脏数据，见附录清理注意事项 |
+
+**已知不确定性，需实测后回填本文档**：
+1. E2E-B-006 的域切换审计记录（`cs_session_domain_switch` 表或类似结构）目前没有确认对外的查询接口，本文档调查阶段只看到写入逻辑（`SessionDomainSwitchRepository.record`），未定位到对应的 GET 接口。若确认无接口可查，此断言应降级或改为直连 DB 校验。
+2. E2E-B-009 的槏位追问重试耗尽后的具体兜底动作（是否转人工/是否有专门提示语）需要实测确认，代码里只看到 `shouldGiveUp()` 判断方法，未追踪到调用它之后具体做什么。
+3. E2E-B-010 依赖 LLM 主动决策调用工具，非确定性较高，实现 pytest 用例时建议允许重试或降低严格度（如只断言"最终域是否变化"而非"是否恰好一次调用"）。
+
+---
+
 ## 附：本文件涉及的清理注意事项
 
 - SSE 长连接（`/sessions/events`）测试后必须显式 kill 后台进程/关闭连接，避免遗留进程占用座席在线状态。
