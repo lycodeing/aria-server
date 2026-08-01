@@ -1,6 +1,7 @@
 package com.aria.conversation.application.service;
 
 import com.aria.common.core.exception.BusinessException;
+import com.aria.conversation.domain.CannedResponseScope;
 import com.aria.conversation.infrastructure.canned.CannedResponseDO;
 import com.aria.conversation.infrastructure.canned.CannedResponseGroupDO;
 import com.aria.conversation.infrastructure.canned.CannedResponseGroupMapper;
@@ -28,7 +29,7 @@ class CannedResponseAppServiceTest {
     void search_withBlankQuery_returnsMostUsed() {
         // given: 空关键词时走 fallback（不调用 searchByKeyword）
         CannedResponseDO cr = new CannedResponseDO();
-        cr.setId(1L); cr.setTitle("常用语"); cr.setScope("PUBLIC"); cr.setUseCount(100);
+        cr.setId(1L); cr.setTitle("常用语"); cr.setScope(CannedResponseScope.PUBLIC); cr.setUseCount(100);
         when(cannedMapper.selectList(any())).thenReturn(List.of(cr));
         // when
         List<CannedResponseDO> result = service.search("  ", 99L, null, 10);
@@ -40,7 +41,7 @@ class CannedResponseAppServiceTest {
     @Test
     void search_withKeyword_delegatesToFullTextSearch() {
         CannedResponseDO cr = new CannedResponseDO();
-        cr.setId(2L); cr.setTitle("退款流程"); cr.setScope("PUBLIC");
+        cr.setId(2L); cr.setTitle("退款流程"); cr.setScope(CannedResponseScope.PUBLIC);
         when(cannedMapper.searchByKeyword("退款", 99L, null, 10)).thenReturn(List.of(cr));
         List<CannedResponseDO> result = service.search("退款", 99L, null, 10);
         assertThat(result).hasSize(1);
@@ -62,7 +63,7 @@ class CannedResponseAppServiceTest {
     @Test
     void updatePrivate_byNonOwner_throwsBusinessException() {
         CannedResponseDO cr = new CannedResponseDO();
-        cr.setId(5L); cr.setScope("PRIVATE"); cr.setOwnerId(100L); cr.setDeleted(false);
+        cr.setId(5L); cr.setScope(CannedResponseScope.PRIVATE); cr.setOwnerId(100L); cr.setDeleted(false);
         when(cannedMapper.selectById(5L)).thenReturn(cr);
         // agentId=999 不是 owner
         assertThatThrownBy(() -> service.updatePrivate(5L, "new title", "new content", 999L))
