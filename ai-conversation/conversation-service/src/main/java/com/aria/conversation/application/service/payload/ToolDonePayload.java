@@ -1,6 +1,7 @@
 package com.aria.conversation.application.service.payload;
 
 import com.aria.conversation.infrastructure.dit.pipeline.ToolCallResult;
+import com.aria.conversation.infrastructure.dit.pipeline.ToolStatus;
 
 /**
  * 工具调用完成的 SSE payload（对应 event:tool_done）。
@@ -29,11 +30,13 @@ public record ToolDonePayload(String tool, String status, long durationMs, Strin
 
     /** MCP 工具执行成功时构造 payload。 */
     public static ToolDonePayload success(String toolName, long durationMs) {
-        return new ToolDonePayload(toolName, "SUCCESS", durationMs, null);
+        // M11 修复：原硬编码 "SUCCESS"，改为 ToolStatus.SUCCESS.name()，
+        // 防止枚举名变更后字符串不同步
+        return new ToolDonePayload(toolName, ToolStatus.SUCCESS.name(), durationMs, null);
     }
 
     /** MCP 工具执行失败时构造 payload。 */
     public static ToolDonePayload error(String toolName, long durationMs, String errorMsg) {
-        return new ToolDonePayload(toolName, "ERROR", durationMs, errorMsg);
+        return new ToolDonePayload(toolName, ToolStatus.ERROR.name(), durationMs, errorMsg);
     }
 }

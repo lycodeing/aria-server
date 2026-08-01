@@ -46,7 +46,8 @@ class SessionDomainSwitchRepositoryTest {
         assertThat(saved.getTriggerMessage()).isEqualTo("我要查基金");
         assertThat(saved.getReason()).isEqualTo("小模型检测切换");
         assertThat(saved.getMsgSeq()).isEqualTo(42L);
-        assertThat(saved.getCreatedAt()).isNotNull();
+        // createdAt 由 MyBatis-Plus @TableField(fill = FieldFill.INSERT) 拦截器在真实 SQL
+        // 执行时自动填充；本测试 mapper 为 mock，insert() 不会触发拦截器，故不断言 createdAt。
     }
 
     @Test

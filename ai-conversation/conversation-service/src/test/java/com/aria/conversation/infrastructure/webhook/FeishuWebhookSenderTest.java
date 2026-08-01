@@ -1,5 +1,7 @@
 package com.aria.conversation.infrastructure.webhook;
 
+import com.aria.conversation.domain.model.BreachStage;
+import com.aria.conversation.domain.model.BreachType;
 import com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity;
 import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEntity;
 import org.junit.jupiter.api.BeforeEach;
@@ -32,7 +34,7 @@ class FeishuWebhookSenderTest {
         WebhookConfigEntity config = WebhookConfigEntity.builder()
                 .url("https://example.com").build();
         SlaBreachEntity breach = SlaBreachEntity.builder()
-                .sessionId("sess-001").breachType("WAIT").stage("BREACH")
+                .sessionId("sess-001").breachType(BreachType.WAIT).stage(BreachStage.BREACH)
                 .targetSec(120).actualSec(185).build();
         SlaBreachContext ctx = new SlaBreachContext("sess-001", "张三", "VIP-SLA", List.of(breach));
 

@@ -1,5 +1,7 @@
 package com.aria.conversation.infrastructure.webhook;
 
+import com.aria.conversation.domain.model.BreachStage;
+import com.aria.conversation.domain.model.BreachType;
 import com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity;
 import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEntity;
 import com.aria.conversation.infrastructure.persistence.mapper.SlaBreachMapper;
@@ -46,7 +48,7 @@ class WebhookDispatcherTest {
         when(webhookConfigMapper.selectEnabledByIds(List.of(1L))).thenReturn(List.of(config));
 
         SlaBreachEntity breach = SlaBreachEntity.builder()
-                .id(10L).sessionId("s1").breachType("WAIT").stage("BREACH")
+                .id(10L).sessionId("s1").breachType(BreachType.WAIT).stage(BreachStage.BREACH)
                 .targetSec(120).actualSec(185).build();
         SlaBreachContext ctx = new SlaBreachContext("s1", "张三", "默认SLA", List.of(breach));
 
@@ -65,7 +67,7 @@ class WebhookDispatcherTest {
         doThrow(new RuntimeException("timeout")).when(feishuSender).send(any(), any());
 
         SlaBreachContext ctx = new SlaBreachContext("s1", "张三", "默认SLA",
-                List.of(SlaBreachEntity.builder().breachType("WAIT").stage("BREACH")
+                List.of(SlaBreachEntity.builder().breachType(BreachType.WAIT).stage(BreachStage.BREACH)
                         .targetSec(120).actualSec(185).build()));
 
         // 不应抛出异常
