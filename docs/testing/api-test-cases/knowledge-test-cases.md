@@ -32,7 +32,7 @@
 | KNOW-005 | `.html`/`.htm` 后缀识别为 HTML | 同上 | 上传 `.html` 文件 | 200，按 HTML 解析器处理 | P1 | |
 | KNOW-006 | 未知后缀落到 MARKDOWN（非报错） | 同上 | 上传 `.xyz` 或无后缀文件 | 200（不报错），`fileType` 被判定为 MARKDOWN，按纯文本解析 | P1 | **缺陷验证**：`resolveFileType` 对未知后缀无拒绝逻辑，任意文件都会被接受当作 Markdown 处理，不会返回 400 |
 | KNOW-007 | 超大文件上传无语义化错误 | 同上 | 上传超过 Spring 默认 multipart 限制（1MB，若未覆盖配置）的文件 | 实际观察到 `MaxUploadSizeExceededException` 未被专门捕获，兜底走 `GlobalExceptionHandler.handleUnknown` 返回 500，而非语义化的 400/413 | P2 | **缺陷验证**：需先确认目标环境 `spring.servlet.multipart.max-file-size` 实际配置值，再据此设计具体超限字节数 |
-| KNOW-008 | kbId 不存在时上传 | 同 KNOW-001，kbId 用不存在的值 | 上传文件，`kbId=not-exist-kb` | 需实测确认：Service 层未见对 kbId 存在性做前置校验，预期 200 且文档记录挂在一个不存在的 kbId 下 | P2 | 视为潜在数据一致性问题，非阻断性缺陷 |
+| KNOW-008 | kbId 不存在时上传（**已修正**） | 同 KNOW-001，kbId 用不存在的值 | 上传文件，`kbId=not-exist-kb` | **实测 HTTP 500**（非原预判的 200）。`knowledge_doc.kb_id` 有真实数据库外键约束 `knowledge_doc_kb_id_fkey` 指向 `knowledge_kb(id)`，插入 DRAFT 记录这一步就在同步的上传请求路径内，`PSQLException` 未被捕获，兜底走 `GlobalExceptionHandler.handleUnknown` 返回 500 | P1 | **缺陷验证**：原预判"Service 层未做存在性校验"与实测不符——校验其实是数据库层强制的，但因未捕获异常导致对外暴露的是无语义的 500 而非 400 "知识库不存在" |
 | KNOW-009 | 上传后 MinIO 与 DB 原子性（回滚场景） | 构造 DB 写入失败场景（不易直接模拟，可标记为设计说明用例） | - | 事务失败时 `afterRollback` 会补偿删除已上传的 MinIO 孤儿文件 | P2 | 若无法直接构造失败场景，此用例可降级为代码复核项，暂不自动化 |
 
 ---
@@ -89,12 +89,12 @@
 
 | ID | 标题 | 前置条件 | 步骤 | 预期结果 | 优先级 | 备注 |
 |---|---|---|---|---|---|---|
-| KNOW-033 | disable chunk 后不再被检索召回 | 已有 PUBLISHED 文档及可检索 chunk | 1) `POST /api/knowledge/chunks/{chunkId}/disable` 2) 用该 chunk 内容关键词调用 `POST /api/knowledge/docs/search-test` | disable 接口 200；检索结果中不再包含该 chunk（`retrieval_weight=0`，向量检索和全文检索 SQL 都过滤 `retrieval_weight > 0`） | P0 | |
-| KNOW-034 | enable chunk 后恢复可检索 | 同上，chunk 已 disable | `POST /api/knowledge/chunks/{chunkId}/enable`，再检索 | 200，`retrieval_weight` 恢复为 1.0，检索结果重新包含该 chunk | P0 | |
+| KNOW-033 | disable chunk 后不再被检索召回 | 已有 PUBLISHED 文档及可检索 chunk | 1) `POST /api/knowledge/chunks/{chunkId}/disable` 2) 用该 chunk 内容关键词调用 `POST /api/knowledge/docs/search-test` | disable 接口 200；检索结果中不再包含该 chunk（`retrieval_weight=0`，向量检索和全文检索 SQL 都过滤 `retrieval_weight > 0`） | P0 | **前置条件说明**：常规摄入流程产生的 chunk 因 KNOW-041b 描述的缺陷永久不可检索，测试用可检索 chunk 需改用 QA 手动录入接口构造 |
+| KNOW-034 | enable chunk 后恢复可检索 | 同上，chunk 已 disable | `POST /api/knowledge/chunks/{chunkId}/enable`，再检索 | 200，`retrieval_weight` 恢复为 1.0，检索结果重新包含该 chunk | P0 | 同 KNOW-033 前置条件说明 |
 | KNOW-035 | disable/enable 不存在的 chunk | - | `POST /api/knowledge/chunks/not-exist-id/disable` | 业务码 4004 "Chunk 不存在" | P1 | |
-| KNOW-036 | disable 的 chunk 不计入 kb-stats | 已 disable 一个 chunk | `GET /api/knowledge/docs/kb-stats?kbId=xxx` | 统计结果（chunkCount/tokenSum）**不包含**已 disable 的 chunk（该接口按 `retrieval_weight>0` 过滤） | P1 | 与 stats（文档级统计）行为不同，见 KNOW-054 |
+| KNOW-036 | disable 的 chunk 不计入 kb-stats | 已 disable 一个 chunk | `GET /api/knowledge/docs/kb-stats?kbId=xxx` | 统计结果（chunkCount/tokenSum）**不包含**已 disable 的 chunk（该接口按 `retrieval_weight>0` 过滤） | P1 | 与 stats（文档级统计）行为不同，见 KNOW-037；同 KNOW-033 前置条件说明 |
 | KNOW-037 | disable 的 chunk 仍计入 stats（文档级） | 同上 | `GET /api/knowledge/docs/{docId}/stats` | 统计结果**包含**已 disable 的 chunk（该接口聚合不含权重过滤） | P1 | **差异点**：kb-stats 与 stats 对 disable chunk 的统计口径不一致，需在报告中标注 |
-| KNOW-038 | updateContent 更新内容并重新向量化 | 已有 chunk，记录原 `tokenCount`/内容 | `PUT /api/knowledge/chunks/{chunkId}/content {"content":"新内容..."}` | 200，`content`/`tokenCount`/向量原子更新为一致状态；再次检索命中新内容而非旧内容 | P0 | |
+| KNOW-038 | updateContent 更新内容并重新向量化 | 已有 chunk，记录原 `tokenCount`/内容 | `PUT /api/knowledge/chunks/{chunkId}/content {"content":"新内容..."}` | 200，`content`/`tokenCount`/向量原子更新为一致状态；再次检索命中新内容而非旧内容 | P0 | **缺陷验证（实测）**：接口实际返回 HTTP 500，而非预期 200。`KnowledgeChunkRepositoryImpl.updateContentAndVector` 的 UPDATE 语句把新向量以 `character varying` 类型绑定，但 `knowledge_chunk.content_vector` 列是 pgvector 的 `vector` 类型，触发 `BadSqlGrammarException`（"column content_vector is of type vector but expression is of type character varying"），未被专门捕获，兜底走 500。这是功能性 bug，更新内容功能当前完全不可用 |
 | KNOW-039 | updateContent 空内容被拒 | 同上 | `PUT /{chunkId}/content {"content":""}` | 400，"Chunk 内容不能为空" | P1 | |
 | KNOW-040 | updateContent 不存在的 chunk | - | `PUT /api/knowledge/chunks/not-exist-id/content {"content":"x"}` | 业务码 4004 | P1 | |
 
@@ -106,8 +106,9 @@
 
 | ID | 标题 | 前置条件 | 步骤 | 预期结果 | 优先级 | 备注 |
 |---|---|---|---|---|---|---|
-| KNOW-041 | 正常检索返回相关结果 | 知识库已有已发布且内容相关的 chunk | `POST /api/knowledge/docs/search-test {"query":"...","kbId":"...","topK":5}` | 200，`data.hits` 非空，按相关度排序 | P0 | 依赖真实 Embedding 服务，标记 `ai` |
-| KNOW-042 | 无匹配结果返回空数组而非报错 | 用完全无关的生僻查询词 | `POST /search-test {"query":"完全不相关的查询xyz123","kbId":"...","topK":5}` | 200，`hits=[]`，`totalFound=0`（非 404/500） | P1 | |
+| KNOW-041 | 正常检索返回相关结果 | 知识库已有已发布且内容相关的 chunk（需用 QA 手动录入构造，见 KNOW-041b） | `POST /api/knowledge/docs/search-test {"query":"...","kbId":"...","topK":5}` | 200，`data`（响应即为命中数组，非 `{hits:[...]}` 包装）非空，按相关度排序 | P0 | 依赖真实 Embedding 服务，标记 `ai` |
+| KNOW-041b | 常规摄入产生的 chunk 永久不可检索 | 上传内容充实的文档，等待进入 PUBLISHED | 用文档内容关键词调用 `search-test` | **缺陷验证（实测）**：检索结果为空，命中不到该文档任何 chunk。根因：`BuildChunksHandler` 插入 chunk 时把 `doc_status` 硬编码为 `DRAFT`（`docStatus 由文档状态解耦`的注释与实现不符），且代码库中不存在任何 `UPDATE knowledge_chunk SET doc_status=...` 语句——`StatusUpdateHandler`/`review` 审核通过都只更新 `knowledge_doc.status`，从不回填已存在 chunk 的 `doc_status`。而检索 SQL（向量/全文两路）均硬编码 `WHERE doc_status='PUBLISHED'`，导致这些 chunk 永久无法被检索命中，即使所属文档已是 PUBLISHED | P0 | **新发现缺陷**，影响面广：等价于常规文档摄入的检索功能对已发布文档基本不可用，只有 QA 手动录入（`doc_status` 硬编码为 PUBLISHED）产生的 chunk 才可检索 |
+| KNOW-042 | 无匹配结果返回空数组而非报错 | 用完全无关的生僻查询词 | `POST /search-test {"query":"完全不相关的查询xyz123","kbId":"...","topK":5}` | 实测：向量检索无相似度阈值截断，即使查询完全无关也会返回"最近"的若干条低分结果（非空），与预判"返回空数组"不符；接口本身不报错（HTTP 200），这一点符合预期 | P1 | 预判修正：不应断言 `hits=[]`，应断言接口正常返回（200）且不抛异常，具体是否为空取决于知识库现有数据 |
 | KNOW-043 | 向量召回超时降级为空列表 | 难以直接构造，可标记为设计说明用例 | - | 向量或全文检索任一路超时（3s）会降级为空列表，不影响另一路结果的正常返回，不抛异常 | P2 | 若无法稳定构造超时条件，可标记为手工验证/代码复核项 |
 | KNOW-044 | RRF 融合非简单加权（代码复核项） | - | - | 融合公式 `score(d)=Σ 1/(k+rank_i(d)+1)`，k 默认 40，非加权求和 | P2 | 属白盒逻辑，接口测试可通过对比不同 topK 结果排序间接验证，不作为强断言用例 |
 | KNOW-045 | reranker 未配置时优雅降级 | 目标环境未配置 RERANKER 类型的 AI 模型 | 执行一次检索 | 200，返回结果为 RRF 融合顺序（未经过 rerank），不报错 | P1 | 需先查询 `GET /api/v1/admin/ai-models` 确认环境是否配置了 RERANKER，据此决定此用例走哪个分支 |
@@ -115,8 +116,8 @@
 | KNOW-047 | topK 边界：internal 接口上限 50 | 带 `X-Internal-Secret` | `POST /internal/knowledge/search {"query":"...","kbId":"...","topK":51}` | 400（`@Max(50)` 校验） | P1 | 两个接口上限不同，需分别验证 |
 | KNOW-048 | topK 下限校验 | - | `POST /search-test {"query":"...","kbId":"...","topK":0}` | 400（`@Min(1)`） | P2 | |
 | KNOW-049 | internal search 缺少 X-Internal-Secret | - | `POST /internal/knowledge/search` 不带密钥头 | 403，body `{"code":403,"message":"forbidden","data":null}` | P0 | |
-| KNOW-050 | internal rerank 接口基本功能 | 带正确密钥 | `POST /internal/knowledge/rerank {"query":"...","chunks":[{"chunkId":"...","content":"...","score":0.5}]}` | 200，返回重排序后的列表 | P1 | 依赖 reranker 配置，若未配置则原样返回（见 KNOW-045） |
-| KNOW-051 | internal rerank 空 chunks 列表 | 同上 | `POST /internal/knowledge/rerank {"query":"...","chunks":[]}` | 200，直接返回空列表，不报错 | P2 | |
+| KNOW-050 | internal rerank 接口基本功能 | 带正确密钥 | `POST /internal/knowledge/rerank {"query":"...","chunks":[{"chunkId":"...","content":"...","score":0.5}]}` | 200，返回重排序后的列表 | P1 | 实测响应结构是 `{"hits":[...]}`（对象套数组），不是文档预判的裸数组，断言时需先取 `data.hits` |
+| KNOW-051 | internal rerank 空 chunks 列表 | 同上 | `POST /internal/knowledge/rerank {"query":"...","chunks":[]}` | 200，`data.hits=[]`，不报错 | P2 | 同上，响应结构是 `{"hits":[]}` 而非裸数组 |
 
 ---
 
@@ -128,9 +129,9 @@
 |---|---|---|---|---|---|---|
 | KNOW-052 | 正常录入 QA | 已有 kbId 和 docId（docId 状态任意） | `POST /api/knowledge/chunks/qa {"docId":"...","kbId":"...","question":"退货政策是什么","answer":"7天无理由退货"}` | 200，新增一条 chunk，内容格式为 `"Q：退货政策是什么\nA：7天无理由退货"`，`chunkType=TEXT`，`retrievalWeight=1.0` | P0 | |
 | KNOW-053 | 录入 QA 立即可检索（不论文档真实状态） | 用一个状态为 **DRAFT**（未发布）的 docId 录入 QA | 1) `POST /chunks/qa` 用 DRAFT 状态的 docId 2) 立即用问题关键词检索 | 200 录入成功；检索能命中该 QA chunk（因为新 chunk 的 `docStatus` 被硬编码为 PUBLISHED，与所属文档真实状态无关） | P1 | **缺陷验证**：数据一致性问题，文档还未发布但 QA chunk 已可检索 |
-| KNOW-054 | 录入 QA 不校验 docId/kbId 存在性 | - | `POST /chunks/qa {"docId":"not-exist-doc","kbId":"not-exist-kb","question":"x","answer":"y"}` | 200，成功插入一条游离的 chunk（Service 层未做存在性校验） | P1 | **缺陷验证** |
+| KNOW-054 | 录入 QA 不校验 docId/kbId 存在性 | - | `POST /chunks/qa {"docId":"not-exist-doc","kbId":"not-exist-kb","question":"x","answer":"y"}` | 实测：Service 层确实未做存在性校验（与预判一致），但后果比预判更严重——插入时命中 `knowledge_chunk.doc_id` 外键约束，未捕获的 `DataIntegrityViolationException` 导致 **HTTP 500**，而非预判的"200 成功插入游离 chunk" | P1 | **缺陷验证**：应捕获约束异常并转为语义化 400/404，而非裸露 500 |
 | KNOW-055 | question/answer 为空被拒 | - | `POST /chunks/qa {"docId":"...","kbId":"...","question":"","answer":"y"}` | 400，"问题和答案不能为空" | P1 | |
-| KNOW-056 | Controller 层 `@NotBlank` 校验 | - | `POST /chunks/qa` 缺少必填字段（如缺 `kbId`） | 400（Bean Validation 拦截） | P2 | |
+| KNOW-056 | Controller 层 `@NotBlank` 校验 | - | `POST /chunks/qa` 缺少必填字段（如缺 `kbId`） | 实测：`kbId` 字段缺失未被 Bean Validation 拦截（与预判"400"不符），请求进入 Service 层后插入 `knowledge_chunk` 命中 `kb_id` NOT NULL 约束，未捕获异常导致 **HTTP 500** | P2 | **缺陷验证**：`AddQaRequest` DTO 上 `kbId` 缺少 `@NotBlank` 注解 |
 
 ---
 
