@@ -30,13 +30,14 @@ class DomainSessionAppServiceTest {
     @Mock private SessionDomainSwitchRepository  domainSwitchRepo;
     @Mock private ConversationHistoryRepository  historyRepository;
     @Mock private DomainRoutingService           domainRoutingService;
+    @Mock private CompensationLogService         compensationLogService;
 
     private DomainSessionAppService service;
 
     @BeforeEach
     void setUp() {
         service = new DomainSessionAppService(sessionDomainRepo,
-                domainSwitchRepo, historyRepository, domainRoutingService);
+                domainSwitchRepo, historyRepository, domainRoutingService, compensationLogService);
     }
 
     @Test

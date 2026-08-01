@@ -31,6 +31,11 @@ import java.util.Map;
  *
  * <p>域列表信息由 {@code SystemPromptBuilder} 写入 system prompt，
  * LLM 从 system prompt 中获知可切换的域。
+ *
+ * <p><b>取消策略</b>：内置工具未走 {@code buildTracedExecutor} 的取消前置检查，
+ * 因其语义为终态切换（域切换/转人工），即使取消后执行也属于安全操作。
+ * 取消后域切换仅影响 Redis 激活域（下次请求才生效）；
+ * 取消后转人工仅入队（WAITING 状态由座席确认）。
  */
 @Slf4j
 public class BuiltinTools {
@@ -129,12 +134,18 @@ public class BuiltinTools {
         log.info("[BuiltinTool] transfer_to_agent sessionId={}", ctx.sessionId());
         try {
             // 步骤一：入队，session 状态变为 WAITING
-            // 若已是 WAITING/ACTIVE（重复触发），SessionEnqueueException 单独捕获并继续发 SSE
+            // saveIfAbsent 返回 false（已在队列）时直接返回，不抛异常
             sessionQueueService.enqueue(
                     ctx.sessionId(), "访客", "AI 工具触发转接", "咨询");
+        } catch (com.aria.conversation.application.exception.SessionEnqueueMqFailedException e) {
+            // MQ 失败导致回滚：Redis 无记录，不应发 SSE transfer
+            log.error("[BuiltinTool] 入队因 MQ 失败被回滚 sessionId={}", ctx.sessionId(), e);
+            return "转接失败，服务暂时不可用，请稍后重试或点击「转人工」按钮。";
         } catch (com.aria.conversation.application.exception.SessionEnqueueException e) {
-            // 已入队场景（幂等兜底）：忽略入队失败，继续发 SSE 让前端同步 UI
-            log.warn("[BuiltinTool] 会话已入队或入队失败，继续发 SSE sessionId={}", ctx.sessionId(), e);
+            // Redis 写入失败（非幂等场景，幂等场景不抛异常直接返回）
+            // session 未入队，不应发 SSE transfer
+            log.error("[BuiltinTool] 入队失败（Redis 写入异常）sessionId={}", ctx.sessionId(), e);
+            return "转接失败，请点击「转人工」按钮重试。";
         } catch (Exception e) {
             log.error("[BuiltinTool] transfer_to_agent 入队失败 sessionId={}", ctx.sessionId(), e);
             return "转接失败，请点击「转人工」按钮重试。";

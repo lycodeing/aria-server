@@ -182,8 +182,11 @@ public class FaqChatAppService {
                     log.warn("[FAQ] LLM 调用失败 sessionId={}", sessionId, e);
                     return Flux.just(ChatEvent.error("抱歉，AI 服务暂时不可用，请稍后重试。", objectMapper));
                 })
+                // C4 修复：原代码在 doFinally 中无条件持久化 replyBuf，
+                // 当 LLM 因 error 中途终止时，部分 token 会被当作完整回复持久化，污染后续上下文。
+                // 改为仅在 ON_COMPLETE（正常完成）时持久化，error/cancel 时不写入。
                 .doFinally(s -> {
-                    if (!replyBuf.isEmpty()) {
+                    if (s == reactor.core.publisher.SignalType.ON_COMPLETE && !replyBuf.isEmpty()) {
                         historyRepository.append(sessionId, MessageRole.ASSISTANT.getValue(),
                                 replyBuf.toString());
                     }
