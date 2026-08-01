@@ -1,5 +1,8 @@
 package com.aria.conversation.application.service;
 
+import com.aria.common.web.redis.RedisCacheHelper;
+import com.aria.common.web.redis.RedisCounterHelper;
+import com.aria.conversation.application.service.cancellation.CancellationRegistry;
 import com.aria.conversation.domain.model.IntentResult;
 import com.aria.conversation.domain.model.IntentType;
 import com.aria.conversation.domain.model.MultiIntentResult;
@@ -36,6 +39,9 @@ class ChatAppServiceIntentTest {
     @Mock private FaqChatAppService         faqChatService;
     @Mock private DomainAgentService        domainAgentService;
     @Mock private MultiIntentService        multiIntentService;
+    @Mock private CancellationRegistry      cancellationRegistry;
+    @Mock private RedisCacheHelper          cache;
+    @Mock private RedisCounterHelper        counter;
 
     private ChatAppService service;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -43,7 +49,8 @@ class ChatAppServiceIntentTest {
     @BeforeEach
     void setUp() {
         service = new ChatAppService(sessionQueueService, domainSessionService,
-                faqChatService, domainAgentService, multiIntentService, objectMapper);
+                faqChatService, domainAgentService, multiIntentService, objectMapper,
+                cancellationRegistry, cache, counter);
     }
 
     private MultiIntentResult singleResult(IntentType type, String code) {
@@ -58,7 +65,7 @@ class ChatAppServiceIntentTest {
         when(faqChatService.appendAndHint("s1", "消息")).thenReturn(
                 Flux.just(ChatEvent.token("已发送", objectMapper)));
 
-        StepVerifier.create(service.stream("s1", "消息", null))
+        StepVerifier.create(service.stream("s1", "消息", null, null))
                 .assertNext(e -> assertThat(e.eventType()).isNull())
                 .verifyComplete();
         verify(faqChatService).appendAndHint("s1", "消息");
@@ -70,7 +77,7 @@ class ChatAppServiceIntentTest {
         when(sessionQueueService.isActive("s2")).thenReturn(false);
         when(faqChatService.stream("s2", "查订单")).thenReturn(Flux.empty());
 
-        service.stream("s2", "查订单", null).blockLast();
+        service.stream("s2", "查订单", null, null).blockLast();
 
         verify(faqChatService).stream("s2", "查订单");
         verify(domainAgentService, never()).streamChat(any(), any(), any(), any());
@@ -87,7 +94,7 @@ class ChatAppServiceIntentTest {
         when(faqChatService.handleTransfer(eq("s3"), any()))
                 .thenReturn(Flux.just(ChatEvent.transfer("{}")));
 
-        StepVerifier.create(service.stream("s3", "转人工", "ecommerce"))
+        StepVerifier.create(service.stream("s3", "转人工", "ecommerce", null))
                 .assertNext(e -> assertThat(e.eventType()).isEqualTo(ChatEvent.EventType.TRANSFER))
                 .verifyComplete();
         verify(domainAgentService, never()).streamChat(any(), any(), any(), any());
@@ -104,7 +111,7 @@ class ChatAppServiceIntentTest {
         when(domainAgentService.streamChat(eq("s4"), eq("ecommerce"), eq("查订单"), any()))
                 .thenReturn(Flux.just(ChatEvent.token("好的", objectMapper)));
 
-        StepVerifier.create(service.stream("s4", "查订单", "ecommerce"))
+        StepVerifier.create(service.stream("s4", "查订单", "ecommerce", null))
                 .assertNext(e -> assertThat(e.eventType()).isNull())
                 .verifyComplete();
         verify(domainAgentService).streamChat(eq("s4"), eq("ecommerce"), eq("查订单"), any());

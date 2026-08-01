@@ -4,6 +4,7 @@ import com.aria.conversation.application.service.tool.BuiltinTools;
 import com.aria.conversation.application.service.tool.DomainSummary;
 import com.aria.conversation.application.service.tool.DomainToolProviderFactory;
 import com.aria.conversation.application.service.tool.InvocationParameters;
+import com.aria.conversation.application.service.cancellation.CancellationRegistry;
 import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.infrastructure.ai.SessionChatMemoryStore;
 import com.aria.conversation.infrastructure.dit.config.IntentToolBinding;
@@ -23,6 +24,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
+import reactor.core.publisher.SignalType;
 
 import java.util.List;
 import java.util.Map;
@@ -84,6 +86,10 @@ public class DomainAgentService {
      * 会话队列服务，内置工具 transfer_to_agent 使用
      */
     private final SessionQueueService sessionQueueService;
+    /**
+     * 取消信号注册表，支持用户主动取消 Agent 生成
+     */
+    private final CancellationRegistry cancellationRegistry;
 
     /**
      * 流式域对话，发射 {@link ChatEvent} token 流和工具生命周期事件。
@@ -94,12 +100,17 @@ public class DomainAgentService {
      * @return AI token 事件与工具事件的合并流
      */
     public Flux<ChatEvent> streamChat(String sessionId, String domainCode, String userMessage) {
+        // C2 修复：public 方法做防御性校验，防止调用方传入 null 导致 NPE
+        if (userMessage == null || userMessage.isBlank()) {
+            log.warn("[DomainAgent] streamChat 收到空消息 sessionId={}", sessionId);
+            return Flux.just(ChatEvent.error("消息内容不能为空", objectMapper));
+        }
         // M2 修复：截断后的用户消息仍可能含 PII（姓名/手机号等），只打消息长度
         log.info("[DomainAgent] start sessionId={} domain={} msgLength={}",
                 sessionId, domainCode, userMessage.length());
         List<DomainSummary> allDomains = loadAllDomains();
         String systemPrompt = buildSystemPrompt(userMessage, buildDomainAddon(allDomains));
-        return doStream(sessionId, domainCode, userMessage, allDomains, systemPrompt);
+        return executeStream(sessionId, domainCode, userMessage, allDomains, systemPrompt);
     }
 
     /**
@@ -116,7 +127,7 @@ public class DomainAgentService {
                 sessionId, domainCode, intentCodes.size());
         List<DomainSummary> allDomains = loadAllDomains();
         String systemPrompt = buildSystemPrompt(userMessage, buildCombinedAddon(allDomains, intentCodes, domainCode));
-        return doStream(sessionId, domainCode, userMessage, allDomains, systemPrompt);
+        return executeStream(sessionId, domainCode, userMessage, allDomains, systemPrompt);
     }
 
     /**
@@ -149,7 +160,7 @@ public class DomainAgentService {
     /**
      * 核心流式执行：构建 LangChain4j Agent 并合并 token + 工具事件流。
      */
-    private Flux<ChatEvent> doStream(String sessionId, String domainCode,
+    private Flux<ChatEvent> executeStream(String sessionId, String domainCode,
                                      String userMessage, List<DomainSummary> allDomains,
                                      String systemPrompt) {
         Sinks.Many<ChatEvent> eventSink = Sinks.many().unicast().onBackpressureBuffer();
@@ -161,25 +172,46 @@ public class DomainAgentService {
         BuiltinTools builtinTools = new BuiltinTools(
                 params, sessionDomainRepo, domainSwitchRepo, objectMapper, sessionQueueService);
 
+        // 注册取消句柄：turnId 隔离每一轮请求，避免同 sessionId 连续请求互相覆盖取消状态（I1 修复）
+        CancellationRegistry.CancelHandle cancelHandle = cancellationRegistry.register(sessionId);
+        String turnId = cancelHandle.turnId();
+
         DomainAssistant assistant = AiServices.builder(DomainAssistant.class)
                 .streamingChatModel(modelFactory.getStreamingChatModel())
                 .systemMessageProvider(id -> systemPrompt)
                 .chatMemoryProvider(id -> MessageWindowChatMemory.builder()
                         .id(id).maxMessages(CHAT_MEMORY_MAX_MESSAGES)
                         .chatMemoryStore(memoryStore).build())
-                .toolProvider(toolProviderFactory.build(domainTools, eventSink, builtinTools))
+                .toolProvider(toolProviderFactory.build(domainTools, eventSink, builtinTools, turnId))
                 .build();
 
         Flux<ChatEvent> tokenFlux = assistant.chat(sessionId, userMessage)
                 .map(content -> ChatEvent.token(content, objectMapper))
-                .doFinally(signal -> {
-                    log.info("[DomainAgent] done sessionId={} signal={}", sessionId, signal);
+                // takeUntilOther：cancelHandle.trigger() 发射时截断 Flux，Reactor 向上传播 cancel
+                // → LangChain4j reactor 模块关闭 LLM HTTP 连接
+                .takeUntilOther(cancelHandle.trigger().asMono())
+                .doFinally(sig -> {
+                    // C1 修复：cancelled 事件必须在 tryEmitComplete() 之前发射。
+                    // 若先 complete() 再 tryEmitNext(cancelled)，sink 已 terminated，emit 静默失败，
+                    // 前端永远收不到 cancelled 事件，loading 状态无法停止。
+                    // 取消检查必须在 unregister() 之前执行（否则标志已被清除无法判断）
+                    boolean wasCancelled = cancellationRegistry.isCancelled(turnId);
+                    cancellationRegistry.unregister(sessionId, turnId);
+                    if (wasCancelled || sig == SignalType.CANCEL) {
+                        // wasCancelled → 用户 API 取消（sig = ON_COMPLETE），事件可被前端消费
+                        // CANCEL → SSE 客户端已断开，emit 可能静默失败，保留为语义完整性标记
+                        eventSink.tryEmitNext(ChatEvent.cancelled(objectMapper));
+                    }
+                    // 打破 Flux.merge 完成依赖循环：
+                    // merge 等 eventSink complete → eventSink 由 tokenFlux.doFinally 关闭 → merge 完成
                     eventSink.tryEmitComplete();
                 });
 
         return Flux.merge(tokenFlux, eventSink.asFlux())
                 .doOnError(e -> log.error("[DomainAgent] error sessionId={}", sessionId, e))
-                .onErrorResume(e -> Flux.just(ChatEvent.error(e.getMessage(), objectMapper)));
+                .onErrorResume(e -> Flux.just(ChatEvent.error(e.getMessage(), objectMapper)))
+                .doFinally(signal ->
+                        log.info("[DomainAgent] done sessionId={} signal={}", sessionId, signal));
     }
 
     /**
