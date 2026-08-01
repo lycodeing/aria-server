@@ -1,5 +1,8 @@
 package com.aria.conversation.application.service;
 
+import com.aria.common.web.redis.RedisCacheHelper;
+import com.aria.common.web.redis.RedisCounterHelper;
+import com.aria.conversation.application.service.cancellation.CancellationRegistry;
 import com.aria.conversation.application.service.payload.TokenPayload;
 import com.aria.conversation.application.service.payload.TransferPayload;
 import com.aria.conversation.domain.ConversationMessage;
@@ -16,6 +19,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 
@@ -48,6 +52,16 @@ public class ChatAppService {
     private final MultiIntentService      multiIntentService;
     /** JSON 序列化工具，用于构造 SSE 事件载荷 */
     private final ObjectMapper            objectMapper;
+    /** 取消信号注册表，供 cancel() 委托 */
+    private final CancellationRegistry    cancellationRegistry;
+    /** Redis 缓存操作，供 requestId 完成后标记 done */
+    private final RedisCacheHelper        cache;
+    /** Redis 计数器，供 requestId 幂等判定（firstAccess = SETNX + EX 原子） */
+    private final RedisCounterHelper      counter;
+
+    /** requestId 幂等窗口（2 分钟，覆盖最坏情况下多工具链执行耗时） */
+    private static final Duration REQUEST_IDEMPOTENCY_TTL = Duration.ofMinutes(2);
+    private static final String REQ_KEY_PREFIX = "chat:req:";
 
     // -------------------------------------------------------
     // 统一对话入口
@@ -59,18 +73,53 @@ public class ChatAppService {
      * @param sessionId  会话 ID
      * @param message    用户消息
      * @param domainCode 领域标识（可选，null 走通用 FAQ 流程）
+     * @param requestId  请求幂等键（可选，null 时不做幂等检查）
      * @return ChatEvent 流
      */
-    public Flux<ChatEvent> stream(String sessionId, String message, String domainCode) {
-        // 1. 已接入人工 → 存历史，返回提示
+    public Flux<ChatEvent> stream(String sessionId, String message,
+                                   String domainCode, String requestId) {
+        Flux<ChatEvent> stream = resolveStream(sessionId, message, domainCode);
+        // requestId 幂等检查（可选）
+        if (requestId == null || requestId.isBlank()) {
+            return stream;
+        }
+        String key = REQ_KEY_PREFIX + sessionId + ":" + requestId;
+        // I3 修复：firstAccess 是阻塞 Redis 调用，不能在 WebFlux event loop 线程上同步执行，
+        // 用 Mono.fromCallable + subscribeOn(boundedElastic) 包装为响应式。
+        return Mono.fromCallable(() -> {
+                    try {
+                        return counter.firstAccess(key, REQUEST_IDEMPOTENCY_TTL);
+                    } catch (Exception e) {
+                        // Redis 异常降级放行（M4 修复：幂等检查非核心功能）
+                        log.warn("[Chat] firstAccess 失败，降级放行 sessionId={} requestId={}", sessionId, requestId, e);
+                        return true;
+                    }
+                })
+                .subscribeOn(Schedulers.boundedElastic())
+                .flatMapMany(firstAccess -> {
+                    if (!firstAccess) {
+                        log.warn("[Chat] 重复请求被拦截 sessionId={} requestId={}", sessionId, requestId);
+                        return Flux.just(ChatEvent.error("请勿重复提交，请等待上一条消息处理完成", objectMapper));
+                    }
+                    // 流终止时刷新 requestId key TTL，防止 TTL 内重复提交被误判为新请求
+                    return stream.doFinally(signal -> {
+                        try {
+                            cache.set(key, "done", REQUEST_IDEMPOTENCY_TTL);
+                        } catch (Exception e) {
+                            log.warn("[Chat] 刷新 requestId TTL 失败 key={}", key, e);
+                        }
+                    });
+                });
+    }
+
+    /** 路由决策：已接入人工 → 存历史返回提示；有 domainCode → 域路径；其余 → FAQ 路径 */
+    private Flux<ChatEvent> resolveStream(String sessionId, String message, String domainCode) {
         if (sessionQueueService.isActive(sessionId)) {
             return faqChatService.appendAndHint(sessionId, message);
         }
-        // 2. 有 domainCode → 域路径
         if (StringUtils.isNotBlank(domainCode)) {
             return streamDomain(sessionId, message, domainCode);
         }
-        // 3. 通用 FAQ 路径
         return faqChatService.stream(sessionId, message);
     }
 
@@ -179,6 +228,16 @@ public class ChatAppService {
      */
     public SessionStatus getSessionStatus(String sessionId) {
         return sessionQueueService.getSessionStatus(sessionId);
+    }
+
+    /**
+     * 取消指定会话正在进行的 Agent 生成。
+     * 触发取消标志（阻止后续工具执行）+ Reactor Sink 信号（截断 LLM 流）。
+     *
+     * @param sessionId 会话 ID
+     */
+    public void cancel(String sessionId) {
+        cancellationRegistry.cancel(sessionId);
     }
 
     // -------------------------------------------------------

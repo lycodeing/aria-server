@@ -31,10 +31,15 @@ class ChatAppServiceMultiIntentTest {
     private ChatAppService service;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    @Mock private com.aria.conversation.application.service.cancellation.CancellationRegistry cancellationRegistry;
+    @Mock private com.aria.common.web.redis.RedisCacheHelper cache;
+    @Mock private com.aria.common.web.redis.RedisCounterHelper counter;
+
     @BeforeEach
     void setUp() {
         service = new ChatAppService(sessionQueueService, domainSessionService,
-                faqChatService, domainAgentService, multiIntentService, objectMapper);
+                faqChatService, domainAgentService, multiIntentService, objectMapper,
+                cancellationRegistry, cache, counter);
     }
 
     private MultiIntentResult multiOf(IntentType type, String code) {
@@ -56,7 +61,7 @@ class ChatAppServiceMultiIntentTest {
         when(faqChatService.handleTransfer(eq("s1"), any()))
                 .thenReturn(Flux.just(ChatEvent.transfer("{}")));
 
-        StepVerifier.create(service.stream("s1", "投诉加查物流", "ec"))
+        StepVerifier.create(service.stream("s1", "投诉加查物流", "ec", null))
                 .assertNext(e -> assertThat(e.eventType())
                         .isEqualTo(ChatEvent.EventType.TRANSFER))
                 .verifyComplete();
@@ -78,7 +83,7 @@ class ChatAppServiceMultiIntentTest {
         when(domainAgentService.streamChat(eq("s2"), eq("ec"), eq("查物流取消订单"), any()))
                 .thenReturn(Flux.just(ChatEvent.token("处理中", objectMapper)));
 
-        service.stream("s2", "查物流取消订单", "ec").blockLast();
+        service.stream("s2", "查物流取消订单", "ec", null).blockLast();
 
         verify(domainAgentService).streamChat(eq("s2"), eq("ec"), eq("查物流取消订单"),
                 argThat(codes -> codes.contains("query_logistics")
@@ -96,7 +101,7 @@ class ChatAppServiceMultiIntentTest {
         when(domainAgentService.streamChat(eq("s3"), eq("ec"), eq("查订单"), any()))
                 .thenReturn(Flux.just(ChatEvent.token("好的", objectMapper)));
 
-        service.stream("s3", "查订单", "ec").blockLast();
+        service.stream("s3", "查订单", "ec", null).blockLast();
 
         verify(domainAgentService).streamChat(eq("s3"), eq("ec"), eq("查订单"), any());
         verify(faqChatService, never()).handleTransfer(any(), any());

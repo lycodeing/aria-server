@@ -83,7 +83,8 @@ public class ChatController {
             );
         }
 
-        return chatService.stream(sessionId, req.getMessage(), req.getDomainCode())
+        return chatService.stream(sessionId, req.getMessage(),
+                req.getDomainCode(), req.getRequestId())
                 .map(this::toSse)
                 .concatWith(doneStream());
     }
@@ -203,6 +204,29 @@ public class ChatController {
         return R.ok(Map.of("sessionId", sessionId, "status", status));
     }
 
+    /**
+     * 取消正在进行的 Agent 生成。
+     *
+     * <p>前端在用户点击"停止"按钮时调用此接口。服务端触发：
+     * <ol>
+     *   <li>内存 Sink 发射完成信号 → Reactor Flux 截断 → LLM HTTP 连接关闭</li>
+     *   <li>Redis 写入取消标志 → 后续工具执行前置检查跳过</li>
+     * </ol>
+     *
+     * <p>接口幂等：若 sessionId 无活跃生成流，静默成功，不返回错误。
+     * <p>CORS：与 /stream 一致，访客公开接口，允许任意跨域。
+     */
+    @CrossOrigin(origins = "*")
+    @PostMapping("/stream/cancel")
+    public R<Void> cancelStream(@RequestParam String sessionId) {
+        if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {
+            return R.fail(400, "非法的 sessionId 格式");
+        }
+        chatService.cancel(sessionId);
+        log.info("[Chat] 用户取消 Agent 生成 sessionId={}", sessionId);
+        return R.ok(null);
+    }
+
     // ---- 私有工具方法 ----
 
     /**
@@ -259,6 +283,14 @@ public class ChatController {
          * 如 "ecommerce"、"finance"、"travel"。
          */
         private String domainCode;
+        /**
+         * 请求幂等键（UUID），前端每次消息生成，同一消息重试使用相同值。
+         * 可选：为 null 时不做幂等检查（向后兼容）。
+         * I5 修复：加格式校验，防止客户端传入超长字符串或含特殊字符污染 Redis key 命名空间。
+         */
+        @Pattern(regexp = "^[a-zA-Z0-9_\\-]{1,64}$",
+                message = "requestId 格式非法（只允许字母、数字、下划线、连字符，长度 1~64）")
+        private String requestId;
     }
 
     @Data
