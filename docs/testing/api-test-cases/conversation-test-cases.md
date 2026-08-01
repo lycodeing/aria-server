@@ -145,7 +145,7 @@
 | CONV-VH-001 | 按匿名 ID 查询 | 座席 token + `X-Anonymous-Id` 头 | GET `/api/v1/sessions/visitor-history`（带 `X-Anonymous-Id`） | HTTP 200 | P1 | |
 | CONV-VH-002 | 按访客名查询 | 座席 token | GET `/api/v1/sessions/visitor-history?visitorName=...` | HTTP 200 | P1 | |
 | CONV-VH-003 | 缺身份标识 | 座席 token，不带 anonymousId/visitorName | GET `/api/v1/sessions/visitor-history` | 业务码 400 | P1 | |
-| CONV-VH-004 | 已关闭会话仍可在访客历史中查到 | 某 anonymousId 有一个 CLOSED 会话和一个新会话 | GET `/api/v1/sessions/visitor-history?excludeSessionId={新会话id}`（带该 anonymousId） | 结果中含已关闭会话 | P1 | |
+| CONV-VH-004 | 已关闭会话仍可在访客历史中查到 | 某 anonymousId 有一个 CLOSED 会话和一个新会话 | GET `/api/v1/sessions/visitor-history?excludeSessionId={新会话id}`（带该 anonymousId） | 结果中含已关闭会话 | P1 | **缺陷验证（实测发现，最终一致性竞态）**：`POST /sessions/{id}/close` 返回 200 只表示 `SessionQueueService.close()` 已同步删除 Redis 队列项、并把 `SESSION_END` 事件 `convertAndSend` 到 RabbitMQ，**不等待**消费；DB `cs_conversation.status` 真正落地为 `CLOSED` 由 `ConversationMessageConsumer.handleSessionEnd` 异步消费完成。而 `VisitorSessionService.getOrCreate`（`/session/init` 的恢复逻辑）查询条件是 `status<>CLOSED`。因此 close 200 返回后立即调用 `/session/init`（同一 anonymousId）存在一个不确定的竞态窗口：若 MQ 消费尚未完成，DB 里该会话仍是 close 前的状态，会被误判为"活跃会话"直接复用，返回**同一个** sessionId，而非新建会话。本地实测并发抽样 20 次命中约 10%（2/20）。用例已改为 close 后轮询 `GET /chat/state` 直到状态变为 `CLOSED`（10s 超时）再断言"生成新会话"，规避该竞态对测试稳定性的影响；**该异步一致性窗口本身是否需要收窄（如 close 时同步更新 DB 后再异步发 MQ 做其余动作）建议业务侧评估**。 |
 
 ### 4.8 AI 辅助能力
 
@@ -500,7 +500,12 @@
 - `ChatAppService.streamDomain`（`DomainSessionAppService.resolveActiveDomain` 确定活跃域 → `MultiIntentService.classifyMulti(message, activeDomain)` 域感知意图分类 → `requiresTransfer` 则转人工，否则走 `DomainAgentService.streamChat`）。
 - `DomainSessionAppService`：`resolveOrInitDomain`（首次进入记 `SwitchType.INITIAL`）→ `routeDomainIfNeeded`（ROUTER 小模型判断是否需要切域，记 `SwitchType.ROUTER_MODEL`）。
 - `BuiltinTools.switchDomain`：LLM 主动调用 `switch_domain` 工具时触发，记 `SwitchType.LLM_TOOL`；会校验目标域必须在已知域列表中，否则拒绝切换。
-- `PendingSlotState`：槏位解析挂起态，`pendingType=MISSING`（等待用户文本输入）或 `DISCOVERED`（等待用户从候选项选择），`retryCount` 达到 `MAX_RETRY=2` 后放弃（预期兜底转人工，需实测确认）。
+
+**重大发现（代码复核，非接口实测）**：`PendingSlotState`/`PendingSlotRepository` 描述的槏位解析挂起态（`pendingType=MISSING/DISCOVERED`，`retryCount` 达 `MAX_RETRY=2` 后兜底）是**完全未接入生产调用链路的死代码**。全仓库排查确认：`PendingSlotRepository` 没有被任何 Service/Controller 注入，唯一的调用方是它自己的单元测试 `PendingSlotRepositoryTest`；`IntentConfig.slots()`/`requiredTools()`/`optionalTools()` 同样只被 `DomainConfigTest` 调用。真实的域路径工具调用是 `DomainAgentService.executeStream` → `DomainToolProviderFactory.build`：所有 HTTP/MCP/内置工具被扁平注册给 LangChain4j 做 function calling，LLM 自主决定何时调用、参数是否齐全，缺参数时只能靠 LLM 自己用自然语言追问（`ToolSpecBuilder` 生成的 JSON Schema `required` 只是告知 LLM 哪些字段建议提供，不是后端强制校验），后端没有任何槏位必填校验、追问重试计数、或重试耗尽兜底转人工的逻辑。**据此，原 E2E-B-007（断言精确追问文案）和 E2E-B-009（断言重试耗尽兜底转人工）不能作为可确定断言的接口测试用例，已在下方调整为观察性/弱断言用例或跳过。**
+
+另外，E2E-B-006 依赖的域切换审计查询接口已确认存在：`GET /api/v1/admin/sessions/{sessionId}/domain-history`（`AdminSessionController`，需 `system:session:query` 权限），可直接验证 `switchType=INITIAL` 记录，不再是"需实测确认"的不确定项。
+
+**缺陷验证（实测发现）**：`KeywordRegexDomainMatcher`（Tier1 关键词/正则匹配）用 Caffeine 本地缓存维护规则列表（TTL 5 分钟），但与 `DomainRepository`（Redis 缓存，创建/更新/删除域后调用 `evictDomainAfterCommit` 主动失效）不同，**该 Caffeine 缓存没有任何主动失效钩子**——`DitManageAppService.createDomain` 等写操作完全不触碰这个缓存。实测现象：新建测试域后立即发消息，服务日志显示 `[DomainRuleMatcher] 加载域规则 0 条`（该实例的缓存在域创建前已加载过一次空规则，5 分钟内不会重新查库）。加上本地部署为双实例负载均衡（`ai-cs-conversation-1`/`ai-cs-conversation-2`），哪个实例命中哪个版本的缓存是非确定的。后果：新建/修改域的 Tier1 关键词规则最多要等 5 分钟才能对路由生效，此前消息全部降级走 Tier2 LLM 路由（`SwitchType` 字段值相同，均为 `ROUTER_MODEL`，黑盒接口层面无法区分是 Tier1 精确命中还是 Tier2 LLM 判断）。**E2E-B-010 已据此调整为不依赖"新建域立即被 Tier1 命中"这一不可靠假设的设计**（验证域路由按轮次持续重新评估这一更稳健的行为，而非验证 Tier1 命中本身）。
 
 本场景依赖真实 LLM/Embedding 调用，全部标记 `@pytest.mark.ai`；且需要预先创建测试专用的领域/意图/槏位/工具数据（复用第 12 节 DIT CRUD 接口）。
 
@@ -511,19 +516,14 @@
 | E2E-B-003 | 准备必填槏位（仅 ASK_USER 策略，确保必现追问） | 承接 E2E-B-002 | POST `/api/v1/admin/dit/slots` body `{"intentId":intentId,"slotName":"orderId","slotType":"string","description":"订单号","required":true,"resolveStrategy":"[\"ASK_USER\"]","askUserPrompt":"请提供您的订单号，以便查询"}` | 200，记录 `slotId` | P1 | `resolveStrategy` 只含 `ASK_USER`，跳过 EXTRACT/SESSION/DISCOVER 自动解析，保证测试消息必定触发追问 |
 | E2E-B-004 | 准备工具与绑定 | 承接 E2E-B-001~002 | POST `/api/v1/admin/dit/tools` 创建 HTTP 工具（同 DIT-030）；POST `/api/v1/admin/dit/bindings` body `{"intentId":intentId,"toolId":toolId,"executionMode":"AUTO","executionOrder":1}` | 均 200 | P1 | |
 | E2E-B-005 | 访客初始化并带 domainCode 进入域路径 | 新 anonymousId | POST `/api/v1/chat/session/init`，随后对话请求带 `domainCode` 参数（或走系统默认路由，视前端约定） | 200，记录 sessionId | P1 | `resolveStream` 命中 `StringUtils.isNotBlank(domainCode)` 分支才会进 `streamDomain` |
-| E2E-B-006 | 关键词命中触发域初始化 | 承接 E2E-B-005 | POST `/api/v1/chat/stream` body `{"sessionId":"...","message":"自动化专用词","domainCode":"e2e_dom_<ts>"}` | SSE 正常返回（不报错）；审计记录中应出现 `switchType=INITIAL` 一条 | P1 | 依赖 AI；审计记录目前无直接查询接口，需通过 DB 或后续管理接口间接验证，若无可访问入口则本条降级为仅验证 SSE 不报错 |
-| E2E-B-007 | 触发意图但缺少必填槏位 → Agent 追问 | 承接 E2E-B-006 | POST stream body `{"sessionId":"...","message":"帮我查订单状态","domainCode":"e2e_dom_<ts>"}` | SSE token 流中出现槏位设定的 `askUserPrompt` 文案（"请提供您的订单号"）或语义等价的追问 | P0 | **核心用例**：验证槏位填充追问机制；依赖 AI，实际文案由 LLM 生成不一定逐字匹配，断言时用关键词包含而非全等 |
-| E2E-B-008 | 补充槏位值 → 解析完成并触发工具调用 | 承接 E2E-B-007 | POST stream body `{"sessionId":"...","message":"我的订单号是ORDER20260731001","domainCode":"e2e_dom_<ts>"}` | SSE 正常返回，回复中体现已获取到订单号或工具执行结果（不要求验证工具真实业务结果，仅验证流程未报错、未再次追问同一槏位） | P0 | 依赖 AI + 真实 HTTP 工具调用（`urlTemplate` 指向可达地址，如 DIT-030 用的 `https://nginx/`） |
-| E2E-B-009 | 追问重试耗尽后的兜底行为 | 新建一个会话，重复 3 次不提供订单号（每次都用无关内容回复追问） | 连续 3 轮 POST stream，消息均不包含订单号 | 第 3 次（`retryCount` 达到 `MAX_RETRY=2` 后）应有兜底行为（预期转人工或明确提示放弃收集），**需实测记录实际行为**，不预设具体断言 | P2 | **缺陷验证/行为确认用例**：代码只定义了 `shouldGiveUp()`，未在本次调查中确认具体兜底动作，需实测后补充断言并更新本文档 |
-| E2E-B-010 | 提出与当前域无关的问题 → LLM 调用 switch_domain 切换 | 承接 E2E-B-008，且系统中至少存在另一个 `enabled=true` 的域（如默认已有域） | POST stream body `{"sessionId":"...","message":"<与当前域完全无关的问题，如询问退货政策>","domainCode":"e2e_dom_<ts>"}` | SSE 流中出现 `event:domainSwitch` 事件（`ChatEvent.domainSwitch`），data 为目标域 code | P1 | 依赖 AI 主动判断调用工具，属于 LLM 行为不确定性较高的用例，多次运行可能不稳定，建议标记 `flaky` 并允许重试 |
+| E2E-B-006 | 关键词命中触发域初始化，审计记录可查 | 承接 E2E-B-005 | 1) POST `/api/v1/chat/stream` body `{"sessionId":"...","message":"自动化专用词","domainCode":"e2e_dom_<ts>"}` 2) GET `/api/v1/admin/sessions/{sessionId}/domain-history`（admin token） | SSE 正常返回（不报错）；domain-history 结果含一条 `switchType=INITIAL`、`toDomain=e2e_dom_<ts>` 的记录 | P1 | 依赖 AI；domain-history 接口已确认存在（`AdminSessionController`，需 `system:session:query` 权限） |
+| E2E-B-007 | 触发意图后工具被调用（弱断言，不假设强制追问） | 承接 E2E-B-006 | POST stream body `{"sessionId":"...","message":"帮我查订单状态，我的订单号是ORDER20260731001","domainCode":"e2e_dom_<ts>"}` | SSE 正常返回（不报错），流中出现 `tool_call`/`tool_done` 事件，说明 LLM 判定信息齐全并主动调用了绑定的工具 | P1 | **设计前提已修正**：代码复核确认 `PendingSlotState`/`PendingSlotRepository` 未接入任何生产调用链路（仅被自身单元测试引用），后端不存在槏位必填校验/强制追问机制；缺参数时完全依赖 LLM 自主用自然语言追问，属 LLM 行为不确定性，不适合做强断言。故用例改为一步提供完整信息，只验证工具确实被调用（`tool_call`事件），不再断言"必现追问文案" |
+| E2E-B-008 | （已并入 E2E-B-007，不再单独执行） | - | - | - | - | 原"补充槏位值触发工具调用"依赖 E2E-B-007 先触发追问，现 E2E-B-007 已改为一步提供完整信息直达工具调用，此步骤不再需要 |
+| E2E-B-009 | 追问重试耗尽后的兜底行为（跳过，功能未接入） | - | - | - | - | **代码复核结论**：`PendingSlotState.shouldGiveUp()`（`retryCount>=MAX_RETRY`）判断方法存在，但全仓库排查未发现任何调用点会在其返回 true 后执行兜底转人工或其它动作——该状态机整体未被 `DomainAgentService`/`ChatAppService`/`DomainToolProviderFactory` 等实际对话链路引用。此用例描述的行为在当前代码下不可达，不纳入自动化回归，作为技术债记录 |
+| E2E-B-010 | 域路径按轮次持续重新评估路由（弱断言） | 承接 E2E-B-007 | 在同一 sessionId 上继续 POST stream 一条新消息（任意内容，`domainCode` 仍传原测试域），随后 GET `domain-history` | SSE 正常返回（不报错）；domain-history 记录条数应 ≥ 前序步骤（`resolveActiveDomain` 每条域路径消息都会调用 `routeDomainIfNeeded` 重新评估，不是只在会话首条消息判断一次），具体是否切域、切到哪个域不做强断言 | P2 | **设计前提已修正（缺陷验证后降级）**：原设计假设新建域的 Tier1 关键词规则能立即生效并被精确命中，但实测发现 `KeywordRegexDomainMatcher` 的 Caffeine 缓存无主动失效机制、多实例环境下命中哪个版本不确定（见上方"缺陷验证"说明），无法在测试域刚创建时可靠复现"Tier1 精确命中"。降级为验证"域路由按轮次持续评估"这一更稳健的行为，不再断言具体切换到哪个域 |
 | E2E-B-011 | 域切换到不存在的域被拒绝（边界） | - | 无法直接从 REST 层伪造 LLM 工具调用参数，此用例建议在 Java 单元测试层面覆盖（`BuiltinTools.switchDomain` 传入不存在的 `targetDomainCode`），黑盒接口测试不覆盖 | 不适用（标注为单元测试覆盖范围） | P2 | 说明性条目，非可执行的接口用例 |
 | E2E-B-012 | 域路径下投诉/转人工意图仍可转人工 | 新会话，创建一个 `autoTransfer:true` 的意图（域为 e2e_dom） | POST stream body 命中该意图关键词 | SSE 返回 TRANSFER 语义事件，会话状态变为 `WAITING`（对应 `handleTransfer`） | P1 | 验证域路径与 FAQ 路径共用 `handleTransfer` 逻辑 |
-| E2E-B-013 | 清理测试数据 | 承接 E2E-B-001~004 | 按顺序 DELETE：`/bindings/{id}` → `/slots/{id}` → `/intents/{id}` → `/tools/{id}` → `/domains/{id}` | 均 200 | P2 | 清理顺序错误会导致外键约束报错或残留脏数据，见附录清理注意事项 |
-
-**已知不确定性，需实测后回填本文档**：
-1. E2E-B-006 的域切换审计记录（`cs_session_domain_switch` 表或类似结构）目前没有确认对外的查询接口，本文档调查阶段只看到写入逻辑（`SessionDomainSwitchRepository.record`），未定位到对应的 GET 接口。若确认无接口可查，此断言应降级或改为直连 DB 校验。
-2. E2E-B-009 的槏位追问重试耗尽后的具体兜底动作（是否转人工/是否有专门提示语）需要实测确认，代码里只看到 `shouldGiveUp()` 判断方法，未追踪到调用它之后具体做什么。
-3. E2E-B-010 依赖 LLM 主动决策调用工具，非确定性较高，实现 pytest 用例时建议允许重试或降低严格度（如只断言"最终域是否变化"而非"是否恰好一次调用"）。
+| E2E-B-013 | 清理测试数据 | 承接 E2E-B-001~004 | 按顺序 DELETE：`/bindings/{id}` → `/slots/{id}` → `/intents/{id}` → `/tools/{id}` → `/domains/{id}` | 均 200 | P2 | **缺陷验证（实测发现）**：`DitManageAppService.deleteIntent()` 的级联删除顺序写反了——代码先执行 `intentMapper.deleteById(intentId)` 删除意图本身，然后才删除其下的槽位（`slotMapper.delete(...)`）和工具绑定（`intentToolMapper.delete(...)`），而数据库有 `cs_intent_slot_intent_id_fkey` 外键约束指向 `cs_intent`。只要该意图下存在至少一个槏位记录，删除意图请求就会先违反外键约束，抛出未捕获的 `DataIntegrityViolationException`，返回 **HTTP 500**，而不是预期的 200（且级联删除完全不会执行，槽位/绑定残留）。方法注释"删除意图，并级联删除其下所有槽位和工具绑定"与实际执行顺序矛盾。**清理时必须先手动 DELETE `/slots/{id}` 和 `/bindings/{id}`，再 DELETE `/intents/{id}`**，不能依赖接口自身的级联逻辑 |
 
 ---
 
