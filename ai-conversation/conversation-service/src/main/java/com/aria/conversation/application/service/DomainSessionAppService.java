@@ -39,6 +39,8 @@ public class DomainSessionAppService {
     private final ConversationHistoryRepository  historyRepository;
     /** 域路由服务（@Primary 实现为 HybridDomainRoutingService），Tier1 规则 → Tier2 小模型 */
     private final DomainRoutingService           domainRoutingService;
+    /** 补偿日志服务，审计失败时委托写入补偿日志 */
+    private final CompensationLogService         compensationLogService;
 
     /**
      * 解析当前会话的活跃域，编排域初始化和路由流程。
@@ -97,8 +99,9 @@ public class DomainSessionAppService {
      * 顺序保存域绑定关系并记录域切换审计日志（非事务性双写）。
      *
      * <p>先更新 Redis 激活域绑定，再写入审计日志。两步操作相互独立，
-     * 若第二步失败，Redis 已更新但审计记录缺失（最终一致，非原子）。
-     * 业务可接受此风险；如需强一致，需引入分布式事务或补偿机制。
+     * 若第二步失败，Redis 已更新但审计记录缺失——此时不回滚 Redis
+     * （回滚会破坏用户当前域绑定），而是委托 {@link CompensationLogService}
+     * 写入补偿日志供后续异步补偿或人工对账。
      *
      * @param sessionId  会话 ID
      * @param fromDomain 切换前的域（首次进入时为 null）
@@ -110,7 +113,16 @@ public class DomainSessionAppService {
     private void saveDomainSwitch(String sessionId, String fromDomain, String toDomain,
                                   String switchType, String message, String reason) {
         sessionDomainRepo.save(sessionId, toDomain);
-        domainSwitchRepo.record(new DomainSwitchRecord(
-                sessionId, fromDomain, toDomain, switchType, message, reason, null));
+        try {
+            domainSwitchRepo.record(new DomainSwitchRecord(
+                    sessionId, fromDomain, toDomain, switchType, message, reason, null));
+        } catch (Exception e) {
+            // 审计失败：不回滚 Redis（回滚会破坏用户当前域绑定）
+            // 委托 CompensationLogService 写补偿日志
+            log.error("[DomainSwitch] 审计日志写入失败，已委托补偿 sessionId={} {} → {} type={}",
+                    sessionId, fromDomain, toDomain, switchType, e);
+            compensationLogService.logDomainSwitch(
+                    sessionId, fromDomain, toDomain, switchType, message, reason);
+        }
     }
 }

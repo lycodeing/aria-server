@@ -72,7 +72,13 @@ public class DynamicModelFactory {
             @Override
             public void onError(Throwable error) {
                 log.warn("[AI] 流式对话错误", error);
-                sink.tryEmitError(error);
+                // C4 修复：tryEmitError 后若下游没有 onError 处理器会抛 ErrorCallbackNotImplemented。
+                // 调用方（FaqChatAppService/DomainAgentService）均用 onErrorResume 消费 error，
+                // 但仍需检查 EmitResult 以防 sink 已 terminated 的竞态。
+                Sinks.EmitResult result = sink.tryEmitError(error);
+                if (result.isFailure()) {
+                    log.warn("[AI] sink tryEmitError 失败 result={}（流可能已终止）", result);
+                }
             }
         });
         return sink.asFlux().filter(s -> !s.isEmpty());
@@ -192,12 +198,15 @@ public class DynamicModelFactory {
         // apiKey 必须用原始值参与 hash，不可脱敏；
         // 脱敏（首尾各 4 位）会使中间部分不同的两个 Key 产生相同 hash，
         // 导致切换账号时命中缓存并持续使用旧 Key 对应的模型实例。
+        // C1 修复：原代码 timeoutSec 重复拼接两次，且缺失 temperature/maxTokens 维度，
+        // 导致仅 temperature 或 maxTokens 不同的配置命中同一缓存实例，热切换失效。
         String input = String.join("|",
                 cfg.baseUrl() != null ? cfg.baseUrl() : "",
                 cfg.modelName() != null ? cfg.modelName() : "",
                 cfg.apiProtocol() != null ? cfg.apiProtocol() : "",
                 String.valueOf(cfg.timeoutSec()),
-                String.valueOf(cfg.timeoutSec()),
+                String.valueOf(cfg.temperature()),
+                String.valueOf(cfg.maxTokens()),
                 cfg.apiKey() != null ? cfg.apiKey() : "");
         try {
             MessageDigest md = MessageDigest.getInstance("SHA-256");
@@ -209,22 +218,6 @@ public class DynamicModelFactory {
             // SHA-256 由 JVM 规范保证可用，此处不会抛出
             throw new IllegalStateException("SHA-256 not available", e);
         }
-    }
-
-    /**
-     * 脱敏 apiKey（仅用于日志）：保留首尾各 4 个字符，中间用 "***" 替代。
-     * 长度不足 8 的 apiKey 直接返回原值（通常为测试占位符）。
-     *
-     * <p>⚠️ 禁止用于缓存 key 计算，缓存 key 必须使用 {@link #configHash} 中的原始值。
-     */
-    private static String maskApiKey(String apiKey) {
-        if (apiKey == null) {
-            return "";
-        }
-        if (apiKey.length() <= 8) {
-            return apiKey;
-        }
-        return apiKey.substring(0, 4) + "***" + apiKey.substring(apiKey.length() - 4);
     }
 
     private List<dev.langchain4j.data.message.ChatMessage> toLangChain4jMessages(

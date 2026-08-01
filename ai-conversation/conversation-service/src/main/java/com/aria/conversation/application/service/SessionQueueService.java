@@ -3,6 +3,7 @@ package com.aria.conversation.application.service;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.conversation.application.exception.ServiceOfflineException;
 import com.aria.conversation.application.exception.SessionEnqueueException;
+import com.aria.conversation.application.exception.SessionEnqueueMqFailedException;
 import com.aria.conversation.domain.SessionAlreadyAcceptedException;
 import com.aria.conversation.domain.SessionEventType;
 import com.aria.conversation.domain.SessionQueueItem;
@@ -134,10 +135,29 @@ public class SessionQueueService {
                     sessionId, existing.status());
             return existing;
         }
-        publishEvent(new SessionEvent(SessionEventType.ENQUEUE, item));
-        publishSessionStart(sessionId, userName, transferReason, tag, item.waitSince());
+        publishSessionLifecycleEvents(sessionId, userName, transferReason, tag, item);
         log.info("[SessionQueue] enqueue sessionId={} userName={}", sessionId, userName);
         return item;
+    }
+
+    /**
+     * 发布会话生命周期事件（Fanout + SESSION_START）。
+     * Fanout 失败可容忍（坐席端下次刷新恢复）；SESSION_START 失败时补偿回滚 Redis 并抛专属异常。
+     */
+    private void publishSessionLifecycleEvents(String sessionId, String userName,
+                                                String transferReason, String tag, SessionQueueItem item) {
+        // Fanout 广播（非关键路径，失败可容忍——坐席端下次刷新恢复）
+        publishEvent(new SessionEvent(SessionEventType.ENQUEUE, item));
+        // SESSION_START（关键路径：触发 DB 持久化）
+        // 直接调用 publisher（不经过 publishSafely 包装），让 AmqpException 上抛触发补偿回滚。
+        // publishSafely 会吞掉 AmqpException，导致补偿回滚和 SessionEnqueueMqFailedException 成为死代码。
+        try {
+            publisher.publishSessionStart(sessionId, userName, transferReason, tag, item.waitSince());
+        } catch (org.springframework.amqp.AmqpException e) {
+            log.error("[SessionQueue] SESSION_START MQ 发布失败，补偿回滚 Redis 入队 sessionId={}", sessionId, e);
+            queueRepository.delete(sessionId);
+            throw new SessionEnqueueMqFailedException("服务暂时不可用，请稍后重试", sessionId, e);
+        }
     }
 
     /** 查询等待队列（所有 WAITING 状态） */
@@ -151,16 +171,7 @@ public class SessionQueueService {
      */
     public List<SessionQueueItem> getActiveSessions() {
         return persistRepository.getActiveConversations().stream()
-                .map(e -> new SessionQueueItem(
-                        e.getSessionId(),
-                        e.getVisitorName(),
-                        e.getTransferReason(),
-                        e.getTag(),
-                        e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
-                        SessionStatus.ACTIVE,
-                        e.getAgentId(),
-                        loadVisitorTagsFromCache(e.getVisitorId()),
-                        e.getAcceptedAt() != null ? e.getAcceptedAt().toEpochSecond() : null))
+                .map(e -> toQueueItem(e, SessionStatus.ACTIVE, false))
                 .toList();
     }
 
@@ -183,16 +194,7 @@ public class SessionQueueService {
 
         // AI_CHAT：DB 中 ended_at 为 null 的活跃 AI 对话
         persistRepository.getAiChatConversations().stream()
-                .map(e -> new SessionQueueItem(
-                        e.getSessionId(),
-                        e.getVisitorName(),
-                        e.getTransferReason(),
-                        e.getTag(),
-                        e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
-                        SessionStatus.AI_CHAT,
-                        e.getAgentId(),
-                        loadVisitorTagsFromCache(e.getVisitorId()),
-                        null))
+                .map(e -> toQueueItem(e, SessionStatus.AI_CHAT, false))
                 .forEach(result::add);
 
         // WAITING：Redis 队列
@@ -200,32 +202,13 @@ public class SessionQueueService {
 
         // ACTIVE：DB（刷新恢复 source of truth）
         persistRepository.getActiveConversations().stream()
-                .map(e -> new SessionQueueItem(
-                        e.getSessionId(),
-                        e.getVisitorName(),
-                        e.getTransferReason(),
-                        e.getTag(),
-                        e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
-                        SessionStatus.ACTIVE,
-                        e.getAgentId(),
-                        loadVisitorTagsFromCache(e.getVisitorId()),
-                        e.getAcceptedAt() != null ? e.getAcceptedAt().toEpochSecond() : null))
+                .map(e -> toQueueItem(e, SessionStatus.ACTIVE, false))
                 .forEach(result::add);
 
-        // CLOSED：DB 最近 closedLimit 条
+        // CLOSED：DB 最近 closedLimit 条（使用 updatedAt 作为时间戳）
         int safeLimit = Math.min(Math.max(closedLimit, 1), 200);
         persistRepository.getClosedConversations(safeLimit).stream()
-                .map(e -> new SessionQueueItem(
-                        e.getSessionId(),
-                        e.getVisitorName(),
-                        e.getTransferReason(),
-                        e.getTag(),
-                        e.getUpdatedAt() != null ? e.getUpdatedAt().toEpochSecond()
-                                : e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
-                        e.getStatus(),
-                        e.getAgentId(),
-                        loadVisitorTagsFromCache(e.getVisitorId()),
-                        e.getAcceptedAt() != null ? e.getAcceptedAt().toEpochSecond() : null))
+                .map(e -> toQueueItem(e, e.getStatus(), true))
                 .forEach(result::add);
 
         return result;
@@ -240,18 +223,37 @@ public class SessionQueueService {
      */
     public List<SessionQueueItem> getClosedSessions(int limit) {
         return persistRepository.getClosedConversations(limit).stream()
-                .map(e -> new SessionQueueItem(
-                        e.getSessionId(),
-                        e.getVisitorName(),
-                        e.getTransferReason(),
-                        e.getTag(),
-                        e.getUpdatedAt() != null ? e.getUpdatedAt().toEpochSecond()
-                                : e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L,
-                        e.getStatus(),
-                        e.getAgentId(),
-                        loadVisitorTagsFromCache(e.getVisitorId()),
-                        e.getAcceptedAt() != null ? e.getAcceptedAt().toEpochSecond() : null))
+                .map(e -> toQueueItem(e, e.getStatus(), true))
                 .toList();
+    }
+
+    /**
+     * 将 DB 实体统一映射为 {@link SessionQueueItem}。
+     * I3 修复：提取公共映射逻辑，消除 getActiveSessions / getAllSessions / getClosedSessions 三方法中
+     * 近乎相同的 4 段构造代码。
+     *
+     * @param e           DB 会话实体
+     * @param status      目标状态（AI_CHAT / ACTIVE / CLOSED）
+     * @param useUpdatedAt true 时时间戳取 updatedAt（CLOSED 场景），false 时取 startedAt
+     * @return 统一映射的队列项
+     */
+    private SessionQueueItem toQueueItem(
+            com.aria.conversation.infrastructure.persistence.entity.ConversationEntity e,
+            SessionStatus status, boolean useUpdatedAt) {
+        long timestamp = useUpdatedAt
+                ? (e.getUpdatedAt() != null ? e.getUpdatedAt().toEpochSecond()
+                    : e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L)
+                : (e.getStartedAt() != null ? e.getStartedAt().toEpochSecond() : 0L);
+        return new SessionQueueItem(
+                e.getSessionId(),
+                e.getVisitorName(),
+                e.getTransferReason(),
+                e.getTag(),
+                timestamp,
+                status,
+                e.getAgentId(),
+                loadVisitorTagsFromCache(e.getVisitorId()),
+                e.getAcceptedAt() != null ? e.getAcceptedAt().toEpochSecond() : null);
     }
 
     /**
@@ -323,7 +325,7 @@ public class SessionQueueService {
         publishSessionEnd(sessionId, closedBy);
         // 同步推送 CSAT 邀请给访客 WS：必须在关闭访客连接之前完成，
         // 否则连接已从注册表移除，csat_request 帧会被丢弃（访客端收不到实时评价弹窗）。
-        // 注意：此处为同实例自调用，@Async 代理不生效，保持同步以确保顺序。
+        // I6 修复：triggerCsat 本身无 @Async 注解，此方法为同步调用，移除误导性注释。
         triggerCsat(sessionId, agentId);
     }
 

@@ -289,7 +289,7 @@ public class ConversationPersistRepository {
      * 阻止调用方 ACK，保留在 PEL 等待重试。
      *
      * @param messages 消息实体列表，不得为 null
-     * @throws RuntimeException 存在非幂等写入失败时抛出，阻止调用方 ACK
+     * @throws MessagePersistException 存在非幂等写入失败时抛出，阻止调用方 ACK
      */
     public void saveMessages(List<ConversationMessageEntity> messages) {
         if (messages == null || messages.isEmpty()) {
@@ -311,7 +311,10 @@ public class ConversationPersistRepository {
             }
         }
         if (!failures.isEmpty()) {
-            throw new RuntimeException("[Persist] 部分消息写入失败，等待 PEL 重试: " + failures);
+            // I8 修复：原代码抛 RuntimeException（阿里规范禁止抛顶层异常），
+            // 改为自定义 MessagePersistException，调用方可精确捕获。
+            throw new MessagePersistException(
+                    "[Persist] 部分消息写入失败，等待 PEL 重试: " + failures, failures);
         }
         log.debug("[Persist] 批量写入消息 count={}", messages.size());
     }
