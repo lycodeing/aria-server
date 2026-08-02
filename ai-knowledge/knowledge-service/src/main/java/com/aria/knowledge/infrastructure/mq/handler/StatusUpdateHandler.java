@@ -1,6 +1,7 @@
 package com.aria.knowledge.infrastructure.mq.handler;
 
 import com.aria.knowledge.domain.model.DocStatus;
+import com.aria.knowledge.domain.repository.KnowledgeChunkRepository;
 import com.aria.knowledge.domain.repository.KnowledgeDocRepository;
 import com.aria.knowledge.infrastructure.mq.IngestContext;
 import com.aria.knowledge.infrastructure.mq.IngestHandler;
@@ -18,6 +19,10 @@ import org.springframework.stereotype.Component;
  *   <li>原子性：DB 层 WHERE status='DRAFT' 保证读-校验-写不被其他进程插入</li>
  *   <li>文档不存在 / 非 DRAFT 状态：UPDATE 影响行数为 0，记录 WARN 但不抛异常</li>
  * </ul>
+ *
+ * <p>同步更新 chunk 的 doc_status：向量检索和全文检索的 SQL 均包含
+ * {@code WHERE doc_status='PUBLISHED'} 过滤条件，BuildChunksHandler 写入时
+ * chunk 状态为 DRAFT，此处必须同步为 PUBLISHED，否则检索无法命中。
  */
 @Slf4j
 @Order(9)
@@ -25,7 +30,8 @@ import org.springframework.stereotype.Component;
 @RequiredArgsConstructor
 public class StatusUpdateHandler implements IngestHandler {
 
-    private final KnowledgeDocRepository docRepository;
+    private final KnowledgeDocRepository   docRepository;
+    private final KnowledgeChunkRepository chunkRepository;
 
     @Override
     public void handle(IngestContext ctx) {
@@ -40,6 +46,9 @@ public class StatusUpdateHandler implements IngestHandler {
             log.warn("[状态更新] 文档不存在或非 DRAFT 状态，跳过 PUBLISHED 更新 docId={}", docId);
         } else {
             log.info("[状态更新] docId={} 摄取完成，状态已更新为 PUBLISHED", docId);
+            // 同步更新 chunk 的 doc_status：检索 SQL 过滤 doc_status='PUBLISHED'，
+            // BuildChunksHandler 写入时为 DRAFT，此处必须同步，否则检索 0 命中
+            chunkRepository.updateDocStatusByDocId(docId, DocStatus.PUBLISHED.name());
         }
     }
 }
