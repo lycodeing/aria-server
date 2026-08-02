@@ -23,6 +23,10 @@ services:
     volumes:
       - /root/ai-cs/data/postgres:/var/lib/postgresql/data
       - /root/ai-cs/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      # pg_jieba 中文分词扩展（编译产物固化，每次启动自动安装）
+      - /root/ai-cs/pg_jieba:/pg_jieba_files:ro
+    # entrypoint wrapper：先复制 pg_jieba 编译产物到 PG 目录，再调用官方 entrypoint
+    entrypoint: ["/bin/bash", "-c", "cp -n /pg_jieba_files/lib/pg_jieba.so /usr/lib/postgresql/16/lib/ && cp -n /pg_jieba_files/extension/* /usr/share/postgresql/16/extension/ && cp -n /pg_jieba_files/tsearch_data/* /usr/share/postgresql/16/tsearch_data/ && exec docker-entrypoint.sh postgres"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s

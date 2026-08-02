@@ -126,6 +126,27 @@ public class KnowledgeChunkRepositoryImpl implements KnowledgeChunkRepository {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
+    public int updateDocStatusByDocId(String docId, String docStatus) {
+        int updated = chunkMapper.update(null, new LambdaUpdateWrapper<KnowledgeChunkEntity>()
+                .eq(KnowledgeChunkEntity::getDocId, docId)
+                .set(KnowledgeChunkEntity::getDocStatus, docStatus));
+        log.info("Chunk doc_status 批量更新，docId={}，目标状态={}，更新数={}", docId, docStatus, updated);
+        return updated;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public int updateDocStatusByDocIds(List<String> docIds, String docStatus) {
+        if (docIds == null || docIds.isEmpty()) return 0;
+        int updated = chunkMapper.update(null, new LambdaUpdateWrapper<KnowledgeChunkEntity>()
+                .in(KnowledgeChunkEntity::getDocId, docIds)
+                .set(KnowledgeChunkEntity::getDocStatus, docStatus));
+        log.info("Chunk doc_status 批量更新，docId 数={}，目标状态={}，更新数={}", docIds.size(), docStatus, updated);
+        return updated;
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
     public void updateContentAndVector(String chunkId, String content, int tokenCount, String vectorStr) {
         // 单次 UPDATE 同时更新 content、token_count、vector，保证三者原子同步
         chunkMapper.update(null, new LambdaUpdateWrapper<KnowledgeChunkEntity>()

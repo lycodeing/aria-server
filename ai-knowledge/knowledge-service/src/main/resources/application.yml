@@ -5,6 +5,13 @@ spring:
     exclude:
       # knowledge-service 本身不需要通过 SDK 调用自己，排除客户端自动装配
       - com.aria.sdk.knowledge.KnowledgeClientAutoConfig
+  # -------- Multipart 上传限制 --------
+  # 默认 1MB 过小，知识库文档上传会被 Tomcat 拒绝（MaxUploadSizeExceededException）
+  # 50MB 与 nginx /knowledge/ 路由的 client_max_body_size 100m 留有余量
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
   datasource:
     url: jdbc:postgresql://localhost:5432/aria_knowledge
     username: ${DB_USERNAME:postgres}
@@ -55,7 +62,9 @@ mybatis-plus:
   type-aliases-package: com.aria.knowledge.infrastructure.persistence
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # 使用 SLF4J 而非 StdOutImpl：SQL 日志走 logback，受 logging.level 控制，
+    # 避免 StdOutImpl 直接打印 stdout 刷屏、淹没业务日志
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
   global-config:
     db-config:
       logic-delete-field: deletedAt
@@ -92,9 +101,9 @@ aria:
 knowledge:
   search:
     # PostgreSQL 全文检索分词配置：
-    #   simple — 内置，无需扩展，中文效果差（本地开发默认）
-    #   jieba  — 需安装 pg_jieba 扩展，中文分词效果好（生产推荐）
-    # 生产环境通过 application-prod.yml 覆盖为 jieba
+    #   simple   — 内置，无需扩展，中文效果差（本地开发默认）
+    #   jiebacfg — 需安装 pg_jieba 扩展，中文分词效果好（生产推荐）
+    # 生产环境通过 application-prod.yml 覆盖为 jiebacfg
     fts-config: simple
     # 向量 ANN 召回数量（独立于 topK，BAAI 建议送 Reranker 前 100~200 条）
     recall-k-vector: 80
@@ -117,6 +126,8 @@ knowledge:
   chunk:
     max-tokens: 512
     overlap-tokens: 50
+    # 低于此 token 数的切片与相邻切片合并，避免碎片化 chunk
+    min-tokens: 100
   embedding:
     # model / base-url / api-key 统一在 auth-service 后台管理（AI 模型配置 → EMBEDDING 类型）
     # 以下为运维调优参数，与模型配置无关
@@ -163,6 +174,8 @@ logging:
   level:
     com.aria: DEBUG
     org.springframework.data.redis: WARN
+    # MyBatis SQL 日志：DEBUG 打印 SQL（排查时用），INFO 及以上静默，避免刷屏
+    com.aria.knowledge.infrastructure.persistence: INFO
 
 # -------- 天翼云 AI 配置（用于翻译等管理功能）--------
 ctyun:

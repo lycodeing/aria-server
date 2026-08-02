@@ -64,6 +64,27 @@ public interface KnowledgeChunkRepository {
     void updateWeight(String chunkId, java.math.BigDecimal weight);
 
     /**
+     * 按文档 ID 批量更新 chunk 的 doc_status。
+     * 摄取完成后由 StatusUpdateHandler 调用，同步 chunk 状态与文档状态，
+     * 确保向量检索 / 全文检索的 {@code WHERE doc_status='PUBLISHED'} 条件能命中。
+     *
+     * @param docId     文档 ID
+     * @param docStatus 目标状态（PUBLISHED / DEPRECATED 等）
+     * @return 更新行数
+     */
+    int updateDocStatusByDocId(String docId, String docStatus);
+
+    /**
+     * 按多个文档 ID 批量更新 chunk 的 doc_status（单条 {@code WHERE doc_id IN (...)} SQL）。
+     * 由 batchOffline 调用，消除 N+1 逐条 UPDATE 的性能问题。
+     *
+     * @param docIds    文档 ID 列表
+     * @param docStatus 目标状态
+     * @return 更新行数
+     */
+    int updateDocStatusByDocIds(List<String> docIds, String docStatus);
+
+    /**
      * 原子更新 chunk 内容、token 数和向量（单次 UPDATE，替代两步操作）。
      * 由 KnowledgeChunkAppService.updateContent 调用，保证内容与向量始终同步。
      *

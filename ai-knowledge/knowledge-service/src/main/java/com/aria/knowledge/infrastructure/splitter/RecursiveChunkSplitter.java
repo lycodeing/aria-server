@@ -2,8 +2,8 @@ package com.aria.knowledge.infrastructure.splitter;
 
 import com.aria.common.core.util.TokenUtils;
 import com.aria.knowledge.domain.model.ChunkType;
-import com.aria.knowledge.infrastructure.parser.ParsedDocument;
 import com.aria.knowledge.infrastructure.parser.ParsedBlock;
+import com.aria.knowledge.infrastructure.parser.ParsedDocument;
 import com.aria.knowledge.infrastructure.parser.ParsedPage;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -16,10 +16,10 @@ import java.util.regex.Pattern;
 /**
  * 递归四层 Chunk 拆分器。
  * 拆分优先级（语义完整性优先于固定长度）：
- *   1. Markdown 标题边界（\n## / \n### / \n####）
- *   2. 段落边界（\n\n）
- *   3. 换行边界（\n）
- *   4. 句子边界（。！？/ . ! ?）
+ * 1. Markdown 标题边界（\n## / \n### / \n####）
+ * 2. 段落边界（\n\n）
+ * 3. 换行边界（\n）
+ * 4. 句子边界（。！？/ . ! ?）
  *
  * <p>目标 chunk 大小：256~512 token，overlap 50 token 防止关键信息截断。
  */
@@ -27,20 +27,31 @@ import java.util.regex.Pattern;
 @Component
 public class RecursiveChunkSplitter {
 
-    /** 单个 chunk 最大 token 数 */
-    private final int maxTokens;
-    /** 相邻 chunk 重叠 token 数，防止关键信息被截断 */
-    private final int overlapTokens;
-
-    /** 四层递归拆分分隔符，优先级从高到低（含 #### 三级标题） */
+    /**
+     * 四层递归拆分分隔符，优先级从高到低（含 #### 三级标题）
+     */
     private static final List<String> SEPARATORS =
-        List.of("\n## ", "\n### ", "\n#### ", "\n\n", "\n", "。", ".");
+            List.of("\n## ", "\n### ", "\n#### ", "\n\n", "\n", "。", ".");
+    /**
+     * 单个 chunk 最大 token 数
+     */
+    private final int maxTokens;
+    /**
+     * 相邻 chunk 重叠 token 数，防止关键信息被截断
+     */
+    private final int overlapTokens;
+    /**
+     * 最小 chunk token 数，低于此值的切片与下一个切片合并，避免碎片化
+     */
+    private final int minTokens;
 
     public RecursiveChunkSplitter(
             @Value("${knowledge.chunk.max-tokens:512}") int maxTokens,
-            @Value("${knowledge.chunk.overlap-tokens:50}") int overlapTokens) {
-        this.maxTokens     = maxTokens;
+            @Value("${knowledge.chunk.overlap-tokens:50}") int overlapTokens,
+            @Value("${knowledge.chunk.min-tokens:100}") int minTokens) {
+        this.maxTokens = maxTokens;
         this.overlapTokens = overlapTokens;
+        this.minTokens = Math.min(minTokens, maxTokens / 2);
     }
 
     /**
@@ -72,26 +83,99 @@ public class RecursiveChunkSplitter {
         if (doc == null || doc.getPages() == null || doc.getPages().isEmpty()) {
             return List.of();
         }
+        // Step 1：扁平化所有 block，并预合并相邻小 block（切分前合并，保持语义连贯）
         List<SplitResult> results = new ArrayList<>();
+        List<FlatBlock> flatBlocks = flattenAndMergeBlocks(doc);
+
+        // Step 2：对每个（可能已合并的）block 做递归切分
+        for (FlatBlock fb : flatBlocks) {
+            List<String> rawChunks = splitRecursive(fb.content, 0);
+            for (String chunk : rawChunks) {
+                results.add(SplitResult.builder()
+                        .content(chunk)
+                        .pageNum(fb.pageNum)
+                        .sectionTitle(fb.sectionTitle)
+                        .chunkType(fb.chunkType != null ? fb.chunkType : ChunkType.TEXT)
+                        .build());
+            }
+        }
+        // Step 3：合并碎片化小 chunk（切分后仍可能产生小碎片，兜底合并）
+        results = mergeSmallChunks(results);
+        log.debug("ParsedDocument 切片完成，fileType={}，总 chunk 数={}", fileType, results.size());
+        return results;
+    }
+
+    /**
+     * 将 ParsedDocument 的所有 page/block 扁平化，并合并相邻的小 block。
+     *
+     * <p>合并规则：当一个 block 的 token 数低于 {@link #minTokens} 时，与下一个 block 合并，
+     * 直到合并后的 token 数接近 maxTokens 或没有更多 block。
+     * 合并后保留第一个 block 的 sectionTitle（通常是章节标题），避免碎片化小 block
+     * 产生无 sectionTitle 的独立 chunk。
+     */
+    private List<FlatBlock> flattenAndMergeBlocks(ParsedDocument doc) {
+        List<FlatBlock> raw = new ArrayList<>();
         for (ParsedPage page : doc.getPages()) {
             if (page.getBlocks() == null) continue;
             for (ParsedBlock block : page.getBlocks()) {
                 if (block.getContent() == null || block.getContent().isBlank()) continue;
-                // 对每个 Block 做递归切分，共享底层 splitRecursive 逻辑
-                List<String> rawChunks = splitRecursive(block.getContent(), 0);
-                for (String chunk : rawChunks) {
-                    results.add(SplitResult.builder()
-                        .content(chunk)
-                        .pageNum(page.getPageNum())
-                        .sectionTitle(block.getSectionTitle())
-                        .chunkType(block.getChunkType() != null
-                            ? block.getChunkType() : ChunkType.TEXT)
-                        .build());
-                }
+                raw.add(new FlatBlock(
+                        block.getContent().trim(),
+                        page.getPageNum(),
+                        block.getSectionTitle(),
+                        block.getChunkType()));
             }
         }
-        log.debug("ParsedDocument 切片完成，fileType={}，总 chunk 数={}", fileType, results.size());
-        return results;
+
+        if (raw.size() <= 1) return raw;
+
+        // 合并相邻小 block
+        List<FlatBlock> merged = new ArrayList<>();
+        for (FlatBlock fb : raw) {
+            if (!merged.isEmpty()) {
+                FlatBlock prev = merged.get(merged.size() - 1);
+                if (TokenUtils.estimate(prev.content()) < minTokens) {
+                    String combined = prev.content() + "\n" + fb.content();
+                    if (TokenUtils.estimate(combined) <= maxTokens) {
+                        merged.set(merged.size() - 1, new FlatBlock(
+                                combined, prev.pageNum(), prev.sectionTitle(), prev.chunkType()));
+                        continue;
+                    }
+                }
+            }
+            merged.add(fb);
+        }
+        return merged;
+    }
+
+    /**
+     * 合并过小的切片：token 数低于 {@link #minTokens} 的切片与下一个切片合并，
+     * 避免页脚、短句等碎片化 chunk 浪费 embedding 配额且降低检索质量。
+     * 合并后若超过 maxTokens，保留原样不合并（避免引入超限 chunk）。
+     */
+    private List<SplitResult> mergeSmallChunks(List<SplitResult> chunks) {
+        if (chunks.size() <= 1) return chunks;
+        List<SplitResult> merged = new ArrayList<>();
+        for (SplitResult chunk : chunks) {
+            if (!merged.isEmpty()) {
+                SplitResult prev = merged.get(merged.size() - 1);
+                if (TokenUtils.estimate(prev.getContent()) < minTokens) {
+                    String combined = prev.getContent() + "\n" + chunk.getContent();
+                    // 仅当合并后不超限时才合并，否则保留小 chunk（最后手段）
+                    if (TokenUtils.estimate(combined) <= maxTokens) {
+                        merged.set(merged.size() - 1, SplitResult.builder()
+                                .content(combined)
+                                .pageNum(prev.getPageNum())
+                                .sectionTitle(prev.getSectionTitle())
+                                .chunkType(prev.getChunkType())
+                                .build());
+                        continue;
+                    }
+                }
+            }
+            merged.add(chunk);
+        }
+        return merged;
     }
 
     // ===== 私有方法 =====
@@ -138,13 +222,13 @@ public class RecursiveChunkSplitter {
             return splitRecursive(text, separatorIdx + 1);
         }
 
-        List<String> result     = new ArrayList<>();
-        StringBuilder current   = new StringBuilder();
+        List<String> result = new ArrayList<>();
+        StringBuilder current = new StringBuilder();
 
         for (String part : parts) {
             String candidate = current.isEmpty()
-                ? part
-                : current + sep + part;
+                    ? part
+                    : current + sep + part;
 
             if (TokenUtils.estimate(candidate) > maxTokens && !current.isEmpty()) {
                 // 当前积累已满，提交本 chunk（若单片仍超长会继续下钻）
@@ -218,5 +302,11 @@ public class RecursiveChunkSplitter {
         }
         log.warn("触发硬切兜底，文本长度={}，建议检查文档格式", text.length());
         return result;
+    }
+
+    /**
+     * 扁平化 block 的中间结构，便于合并
+     */
+    private record FlatBlock(String content, Integer pageNum, String sectionTitle, ChunkType chunkType) {
     }
 }

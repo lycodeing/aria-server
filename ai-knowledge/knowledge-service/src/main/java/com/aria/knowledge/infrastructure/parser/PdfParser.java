@@ -51,7 +51,7 @@ public class PdfParser extends AbstractDocumentParser {
             "|[一二三四五六七八九十]+[、.]"           +  // 一、中文序号
             "|[Cc]hapter\\s+\\d+"                    +  // Chapter 1
             "|[Ss]ection\\s+\\d+"                    +  // Section 1
-            "|[A-Z][A-Z\\s]{2,29}"                   +  // 全大写短行
+            "|[A-Z][A-Z\\s]{4,29}$"                  +  // 整行全大写（≥5字符，排除 AI/PDF 等缩写误匹配）
             ")");
 
     @Override
@@ -134,8 +134,8 @@ public class PdfParser extends AbstractDocumentParser {
 
     /**
      * 将单页文本按双空行拆分为段落块，检测表格行和章节标题。
-     * 章节标题检测：逐行扫描段落，取第一个匹配 SECTION_TITLE 的行作为章节标题，
-     * 避免因页眉文字混入导致整段超过长度阈值而漏检。
+     * 章节标题检测：检查每个段落的首行是否匹配标题模式，
+     * 首行非标题时继承上一段落的 sectionTitle，支持跨段落章节。
      */
     private List<ParsedBlock> splitPageIntoBlocks(String pageText) {
         List<ParsedBlock> blocks = new ArrayList<>();
@@ -146,25 +146,23 @@ public class PdfParser extends AbstractDocumentParser {
             String trimmed = para.trim();
             if (trimmed.isBlank()) continue;
 
-            // 逐行扫描，取第一个匹配标题模式的行更新 currentSection
-            String[] lines = trimmed.split("\n");
-            for (String line : lines) {
-                String lineTrimmed = line.trim();
-                if (lineTrimmed.length() <= 80
-                        && SECTION_TITLE.matcher(lineTrimmed).find()) {
-                    currentSection = lineTrimmed;
-                    break;
-                }
+            String firstLine = trimmed.split("\n")[0].trim();
+            if (firstLine.length() <= 80 && SECTION_TITLE.matcher(firstLine).find()) {
+                currentSection = firstLine;
             }
 
-            ChunkType type = detectBlockType(trimmed);
-            blocks.add(ParsedBlock.builder()
-                .content(trimmed)
-                .chunkType(type)
-                .sectionTitle(currentSection)
-                .build());
+            blocks.add(buildBlock(trimmed, currentSection));
         }
         return blocks;
+    }
+
+    /** 构建 ParsedBlock，检测表格类型 */
+    private ParsedBlock buildBlock(String content, String sectionTitle) {
+        return ParsedBlock.builder()
+            .content(content)
+            .chunkType(detectBlockType(content))
+            .sectionTitle(sectionTitle)
+            .build();
     }
 
     /**
@@ -182,13 +180,15 @@ public class PdfParser extends AbstractDocumentParser {
             : ChunkType.TEXT;
     }
 
-    /** 从 PDF 文档信息提取标题，失败时返回 null。 */
+    /** 从 PDF 文档信息提取标题，失败时返回 null（不中断解析流程）。 */
     private String extractTitle(PDDocument doc) {
         try {
             if (doc.getDocumentInformation() != null) {
                 return doc.getDocumentInformation().getTitle();
             }
-        } catch (Exception ignored) {}
+        } catch (Exception e) {
+            log.debug("提取 PDF 标题失败", e);
+        }
         return null;
     }
 }

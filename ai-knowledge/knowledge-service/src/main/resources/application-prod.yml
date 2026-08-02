@@ -29,8 +29,9 @@ minio:
 
 knowledge:
   search:
-    # 生产环境使用 pg_jieba 中文分词
-    fts-config: jieba
+    # pg_jieba 中文分词（已安装扩展），配置名为 jiebacfg
+    # pg_jieba 注册的 text search configuration 名为 jiebacfg（非 jieba）
+    fts-config: jiebacfg
 
 ctyun:
   ai:
