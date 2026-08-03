@@ -1207,6 +1207,7 @@ CREATE TABLE IF NOT EXISTS cs_conversation.cs_webhook_config (
     secret           VARCHAR(200),
     custom_headers   JSONB,
     message_template TEXT,
+    scopes           JSONB         NOT NULL DEFAULT '["SLA_BREACH"]',
     is_enabled       SMALLINT      NOT NULL DEFAULT 1,
     create_time      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     update_time      TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
