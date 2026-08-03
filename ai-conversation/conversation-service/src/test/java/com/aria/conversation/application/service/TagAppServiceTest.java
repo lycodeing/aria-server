@@ -1,5 +1,6 @@
 package com.aria.conversation.application.service;
 
+import com.aria.conversation.domain.TagSource;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationTagEntity;
 import com.aria.conversation.infrastructure.persistence.entity.TagEntity;
@@ -59,7 +60,7 @@ class TagAppServiceTest {
     @Test
     @DisplayName("用已有 tagId 打访客标签 -> 写关联表 + 更新计数 + 失效缓存")
     void addVisitorTag_byId_success() {
-        TagEntity tag = TagEntity.builder().id(1L).name("VIP").color("#F59E0B").source("PRESET").build();
+        TagEntity tag = TagEntity.builder().id(1L).name("VIP").color("#F59E0B").source(TagSource.PRESET).build();
         when(tagMapper.selectById(1L)).thenReturn(tag);
         when(visitorTagMapper.existsTag(VISITOR_ID, 1L)).thenReturn(false);
 
@@ -96,14 +97,14 @@ class TagAppServiceTest {
         TagVO result = service.addVisitorTag(SESSION_ID, OPERATOR_ID, null, "新客户");
 
         verify(tagMapper).insert(argThat((TagEntity t) ->
-                "CUSTOM".equals(t.getSource()) && "新客户".equals(t.getName())));
+                t.getSource() == TagSource.CUSTOM && "新客户".equals(t.getName())));
         assertThat(result.id()).isEqualTo(99L);
     }
 
     @Test
     @DisplayName("重复打标签 -> 幂等跳过，不抛异常")
     void addVisitorTag_duplicate_idempotent() {
-        TagEntity tag = TagEntity.builder().id(1L).name("VIP").color("#F59E0B").source("PRESET").build();
+        TagEntity tag = TagEntity.builder().id(1L).name("VIP").color("#F59E0B").source(TagSource.PRESET).build();
         when(tagMapper.selectById(1L)).thenReturn(tag);
         when(visitorTagMapper.existsTag(VISITOR_ID, 1L)).thenReturn(true);
 
@@ -129,7 +130,7 @@ class TagAppServiceTest {
     @Test
     @DisplayName("打会话级标签 -> 写关联表 + 更新计数（不失效访客缓存）")
     void addSessionTag_byId_success() {
-        TagEntity tag = TagEntity.builder().id(2L).name("投诉").color("#EF4444").source("PRESET").build();
+        TagEntity tag = TagEntity.builder().id(2L).name("投诉").color("#EF4444").source(TagSource.PRESET).build();
         when(tagMapper.selectById(2L)).thenReturn(tag);
         when(conversationTagMapper.existsTag(SESSION_ID, 2L)).thenReturn(false);
 

@@ -1,5 +1,6 @@
 package com.aria.conversation.application.service;
 
+import com.aria.conversation.domain.HolidayType;
 import com.aria.conversation.infrastructure.persistence.entity.BusinessHoursHolidayEntity;
 import com.aria.conversation.infrastructure.persistence.entity.BusinessHoursScheduleEntity;
 import com.aria.conversation.infrastructure.persistence.mapper.BusinessHoursHolidayMapper;
@@ -73,7 +74,7 @@ class BusinessHoursServiceTest {
     void holiday_closed_isClosed() {
         ZonedDateTime now = ZonedDateTime.of(2026, 10, 1, 10, 0, 0, 0, ZoneId.of("Asia/Shanghai"));
         var holiday = BusinessHoursHolidayEntity.builder()
-                .date(now.toLocalDate()).type("CLOSED").build();
+                .date(now.toLocalDate()).type(HolidayType.CLOSED).build();
         when(holidayMapper.selectByDate(now.toLocalDate())).thenReturn(holiday);
         assertThat(service.isOpen(now)).isFalse();
     }
@@ -85,7 +86,7 @@ class BusinessHoursServiceTest {
         var r = new BusinessHoursScheduleEntity.TimeRange();
         r.setStart("09:00"); r.setEnd("18:00");
         var holiday = BusinessHoursHolidayEntity.builder()
-                .date(now.toLocalDate()).type("WORKDAY").timeRanges(List.of(r)).build();
+                .date(now.toLocalDate()).type(HolidayType.WORKDAY).timeRanges(List.of(r)).build();
         when(holidayMapper.selectByDate(now.toLocalDate())).thenReturn(holiday);
         assertThat(service.isOpen(now)).isTrue();
     }

@@ -1,6 +1,8 @@
 package com.aria.conversation.application.service;
 
 import com.aria.common.core.exception.BusinessException;
+import com.aria.conversation.domain.CsatChannel;
+import com.aria.conversation.domain.CsatStatus;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import com.aria.conversation.infrastructure.csat.CsatRatingMapper;
 import org.junit.jupiter.api.Test;
@@ -24,10 +26,10 @@ class CsatServiceTest {
     @Test
     void createInvitation_idempotent_returnsExisting() {
         CsatRatingDO existing = new CsatRatingDO();
-        existing.setId(1L); existing.setStatus("PENDING");
+        existing.setId(1L); existing.setStatus(CsatStatus.PENDING);
         when(mapper.findBySessionId("sess1")).thenReturn(Optional.of(existing));
 
-        CsatRatingDO result = service.createInvitation("sess1", "v1", null, "AI");
+        CsatRatingDO result = service.createInvitation("sess1", "v1", null, CsatChannel.AI);
 
         assertThat(result.getId()).isEqualTo(1L);
         verify(mapper, never()).insert(any(CsatRatingDO.class));
@@ -38,10 +40,10 @@ class CsatServiceTest {
         when(mapper.findBySessionId("sess2")).thenReturn(Optional.empty());
         when(mapper.insert(any(CsatRatingDO.class))).thenReturn(1);
 
-        CsatRatingDO result = service.createInvitation("sess2", "v2", 99L, "HUMAN");
+        CsatRatingDO result = service.createInvitation("sess2", "v2", 99L, CsatChannel.HUMAN);
 
-        assertThat(result.getStatus()).isEqualTo("PENDING");
-        assertThat(result.getChannel()).isEqualTo("HUMAN");
+        assertThat(result.getStatus()).isEqualTo(CsatStatus.PENDING);
+        assertThat(result.getChannel()).isEqualTo(CsatChannel.HUMAN);
         assertThat(result.getAgentId()).isEqualTo(99L);
         verify(mapper).insert(any(CsatRatingDO.class));
     }
@@ -57,7 +59,7 @@ class CsatServiceTest {
     @Test
     void rate_alreadyRated_throwsBusinessException() {
         CsatRatingDO rated = new CsatRatingDO();
-        rated.setId(3L); rated.setStatus("RATED");
+        rated.setId(3L); rated.setStatus(CsatStatus.RATED);
         when(mapper.selectById(3L)).thenReturn(rated);
 
         assertThatThrownBy(() -> service.rate(3L, (short) 5, "好"))

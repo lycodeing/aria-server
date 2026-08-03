@@ -2,6 +2,7 @@ package com.aria.conversation.interfaces.rest;
 
 import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.CsatService;
+import com.aria.conversation.domain.CsatStatus;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -45,7 +46,7 @@ class CsatControllerPendingTest {
         CsatRatingDO invite = new CsatRatingDO();
         invite.setId(101L);
         invite.setSessionId("sess_hit");
-        invite.setStatus("PENDING");
+        invite.setStatus(CsatStatus.PENDING);
         OffsetDateTime expiredAt = OffsetDateTime.now().plusHours(20);
         invite.setExpiredAt(expiredAt);
         when(csatService.findPending("sess_hit")).thenReturn(Optional.of(invite));
