@@ -74,6 +74,9 @@ public class WebhookAppService {
             throw new BusinessException(INVALID_PARAM, "webhook 范围存在重复值");
         }
         for (String s : scopes) {
+            if (s == null) {
+                throw new BusinessException(INVALID_PARAM, "webhook 范围不能包含空值");
+            }
             try {
                 WebhookScope.valueOf(s);
             } catch (IllegalArgumentException e) {
