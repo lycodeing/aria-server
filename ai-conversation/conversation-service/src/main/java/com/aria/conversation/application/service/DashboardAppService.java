@@ -15,6 +15,7 @@ import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
 import com.aria.conversation.interfaces.rest.vo.StatusDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.TagDistributionItemVO;
+import cn.dev33.satoken.stp.StpUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -264,5 +265,53 @@ public class DashboardAppService {
             default       -> today.withDayOfMonth(1); // month
         };
         return new LocalDate[]{start, today};
+    }
+
+    // ============================================================
+    // 个人数据（按当前登录座席过滤）
+    // ============================================================
+
+    /**
+     * 获取当前登录座席的个人概览指标。
+     *
+     * <p>通过 {@link StpUtil#getLoginIdAsLong()} 取当前登录座席 ID，
+     * 返回该座席的今日/总计接待会话数、平均等待/处理/首响时长。
+     *
+     * @return 个人概览指标 VO
+     */
+    public DashboardOverviewVO getMyOverview() {
+        Long agentId = StpUtil.getLoginIdAsLong();
+        DashboardOverviewVO vo = statsRepository.getMyOverview(agentId);
+        if (vo == null) {
+            return DashboardOverviewVO.builder().build();
+        }
+        return vo;
+    }
+
+    /**
+     * 获取当前登录座席的工作量统计。
+     *
+     * @return 座席工作量 VO（总会话数 / 进行中会话数）
+     */
+    public AgentWorkloadItemVO getMyWorkload() {
+        Long agentId = StpUtil.getLoginIdAsLong();
+        return statsRepository.getMyWorkload(agentId);
+    }
+
+    /**
+     * 获取当前登录座席的 CSAT 概览统计（支持时间范围）。
+     *
+     * @param rangeType 时间范围类型：month / week / custom
+     * @param days      仅 rangeType=custom 时生效，往前推 N 天
+     * @return CSAT 概览 VO
+     */
+    public CsatOverviewVO getMyCsatOverview(String rangeType, Integer days) {
+        Long agentId = StpUtil.getLoginIdAsLong();
+        LocalDate[] range = resolveRange(rangeType, days);
+        CsatOverviewVO vo = statsRepository.getMyCsatOverview(agentId, range[0], range[1]);
+        if (vo == null) {
+            return CsatOverviewVO.builder().build();
+        }
+        return vo;
     }
 }

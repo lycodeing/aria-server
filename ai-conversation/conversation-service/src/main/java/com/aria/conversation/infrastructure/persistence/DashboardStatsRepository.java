@@ -15,6 +15,7 @@ import com.aria.conversation.interfaces.rest.vo.CsatByAgentItemVO;
 import com.aria.conversation.interfaces.rest.vo.CsatDistributionItemVO;
 import com.aria.conversation.interfaces.rest.vo.CsatOverviewVO;
 import com.aria.conversation.interfaces.rest.vo.CsatTrendItemVO;
+import com.aria.conversation.interfaces.rest.vo.DashboardOverviewVO;
 import com.aria.conversation.interfaces.rest.vo.EfficiencyTrendItemVO;
 import com.aria.conversation.interfaces.rest.vo.RecentSessionVO;
 import com.aria.conversation.interfaces.rest.vo.StatusDistributionItemVO;
@@ -214,5 +215,38 @@ public class DashboardStatsRepository {
 
     public CsatOverviewVO getCsatOverview(LocalDate startDate, LocalDate endDate) {
         return statsMapper.getCsatOverview(startDate, endDate);
+    }
+
+    // ============================================================
+    // 个人数据（按当前登录座席 agentId 过滤）
+    // ============================================================
+
+    /**
+     * 当前座席的概览指标：今日/总计接待会话数、平均等待/处理/首响时长。
+     *
+     * @param agentId 当前登录座席 ID
+     */
+    public DashboardOverviewVO getMyOverview(Long agentId) {
+        return statsMapper.getMyOverview(agentId);
+    }
+
+    /**
+     * 当前座席的工作量统计。
+     *
+     * @param agentId 当前登录座席 ID
+     */
+    public AgentWorkloadItemVO getMyWorkload(Long agentId) {
+        return statsMapper.getMyWorkload(agentId);
+    }
+
+    /**
+     * 当前座席的 CSAT 概览统计（支持时间范围）。
+     *
+     * @param agentId   当前登录座席 ID
+     * @param startDate 开始日期（含）
+     * @param endDate   结束日期（含）
+     */
+    public CsatOverviewVO getMyCsatOverview(Long agentId, LocalDate startDate, LocalDate endDate) {
+        return statsMapper.getMyCsatOverview(agentId, startDate, endDate);
     }
 }

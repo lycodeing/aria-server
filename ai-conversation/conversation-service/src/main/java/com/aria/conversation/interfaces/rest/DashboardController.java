@@ -148,4 +148,50 @@ public class DashboardController {
             @RequestParam(required = false)        Integer days) {
         return R.ok(dashboardAppService.getCsatOverview(rangeType, days));
     }
+
+    // ============================================================
+    // 个人数据（按当前登录座席过滤）
+    // ============================================================
+
+    /**
+     * 当前座席的个人概览指标：今日/总计接待会话数、平均等待/处理/首响时长。
+     * <p>通过 Sa-Token 获取当前登录座席 ID，按 agent_id 过滤。
+     *
+     * <pre>
+     * GET /api/v1/dashboard/my-overview → 个人概览（会话量+效率均值）
+     * </pre>
+     */
+    @GetMapping("/my-overview")
+    public R<DashboardOverviewVO> getMyOverview() {
+        return R.ok(dashboardAppService.getMyOverview());
+    }
+
+    /**
+     * 当前座席的工作量统计（总会话数 / 进行中会话数）。
+     *
+     * <pre>
+     * GET /api/v1/dashboard/my-workload → 个人工作量
+     * </pre>
+     */
+    @GetMapping("/my-workload")
+    public R<AgentWorkloadItemVO> getMyWorkload() {
+        return R.ok(dashboardAppService.getMyWorkload());
+    }
+
+    /**
+     * 当前座席的 CSAT 概览统计（支持时间范围）。
+     *
+     * <pre>
+     * GET /api/v1/dashboard/my-csat-overview → 个人满意度指标
+     * </pre>
+     *
+     * @param rangeType 时间范围类型：month（默认）/ week / custom
+     * @param days      仅 rangeType=custom 时生效，往前推 N 天（默认 7）
+     */
+    @GetMapping("/my-csat-overview")
+    public R<CsatOverviewVO> getMyCsatOverview(
+            @RequestParam(defaultValue = "month") String rangeType,
+            @RequestParam(required = false)        Integer days) {
+        return R.ok(dashboardAppService.getMyCsatOverview(rangeType, days));
+    }
 }
