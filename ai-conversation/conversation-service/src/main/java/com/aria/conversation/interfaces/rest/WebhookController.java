@@ -83,11 +83,13 @@ public class WebhookController {
         private String secret;                   // 飞书/钉钉签名密钥，可空
         private Map<String, String> customHeaders; // CUSTOM 类型专用
         private String messageTemplate;          // 自定义模板，空则用默认
+        /** 订阅的事件范围列表（WebhookScope 枚举名），空数组=不订阅；未传默认 ["SLA_BREACH"] */
+        private List<String> scopes;
         private Integer isEnabled = 1;
     }
 
     private WebhookConfigEntity buildEntity(Long id, WebhookReq req) {
-        return WebhookConfigEntity.builder()
+        WebhookConfigEntity e = WebhookConfigEntity.builder()
                 .id(id)
                 .name(req.getName())
                 .type(req.getType())
@@ -97,5 +99,7 @@ public class WebhookController {
                 .messageTemplate(req.getMessageTemplate())
                 .isEnabled(req.getIsEnabled())
                 .build();
+        e.setScopes(req.getScopes());
+        return e;
     }
 }
