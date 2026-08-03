@@ -3,6 +3,7 @@ package com.aria.conversation.application.service;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.SessionStatus;
 import com.aria.conversation.infrastructure.repository.SessionQueueRepository;
+import com.aria.conversation.infrastructure.webhook.WebhookEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -20,6 +21,7 @@ import static org.mockito.Mockito.when;
 class SessionQueueServiceGetAgentIdTest {
 
     @Mock SessionQueueRepository queueRepository;
+    @Mock WebhookEventPublisher  webhookEventPublisher;
 
     // SessionQueueService 依赖较多，使用反射注入最小化 Mock
     private SessionQueueService service;
@@ -27,9 +29,9 @@ class SessionQueueServiceGetAgentIdTest {
     @BeforeEach
     void setUp() throws Exception {
         // 只注入 queueRepository，其余依赖传 null（getAgentId 只用 queueRepository）
-        // 构造器参数顺序：queueRepository, agentRegistry, publisher, rabbitTemplate, eventsExchange, persistRepository, csatService, visitorNotifier, businessHoursService, redisTemplate, objectMapper
+        // 构造器参数顺序：queueRepository, agentRegistry, publisher, rabbitTemplate, eventsExchange, persistRepository, csatService, visitorNotifier, businessHoursService, redisTemplate, objectMapper, webhookEventPublisher
         service = new SessionQueueService(
-                queueRepository, null, null, null, null, null, null, null, null, null, null);
+                queueRepository, null, null, null, null, null, null, null, null, null, null, webhookEventPublisher);
     }
 
     @Test

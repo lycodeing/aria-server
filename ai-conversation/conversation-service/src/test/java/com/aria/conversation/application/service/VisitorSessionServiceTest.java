@@ -4,6 +4,7 @@ import com.aria.conversation.application.dto.InitSessionResult;
 import com.aria.conversation.domain.SessionStatus;
 import com.aria.conversation.infrastructure.persistence.ConversationPersistRepository;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
+import com.aria.conversation.infrastructure.webhook.WebhookEventPublisher;
 import com.aria.common.core.exception.BusinessException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -29,12 +30,13 @@ class VisitorSessionServiceTest {
     @Mock ConversationPersistRepository persistRepository;
     @Mock RedissonClient redissonClient;
     @Mock RLock rLock;
+    @Mock WebhookEventPublisher webhookEventPublisher;
 
     VisitorSessionService service;
 
     @BeforeEach
     void setUp() {
-        service = new VisitorSessionService(persistRepository, redissonClient);
+        service = new VisitorSessionService(persistRepository, redissonClient, webhookEventPublisher);
         when(redissonClient.getLock(anyString())).thenReturn(rLock);
         try {
             when(rLock.tryLock(anyLong(), anyLong(), any(TimeUnit.class))).thenReturn(true);

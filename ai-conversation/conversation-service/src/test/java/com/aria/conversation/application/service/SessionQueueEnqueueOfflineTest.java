@@ -3,6 +3,7 @@ package com.aria.conversation.application.service;
 import com.aria.conversation.application.exception.ServiceOfflineException;
 import com.aria.conversation.infrastructure.mq.ConversationMessagePublisher;
 import com.aria.conversation.infrastructure.repository.SessionQueueRepository;
+import com.aria.conversation.infrastructure.webhook.WebhookEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -28,6 +29,7 @@ class SessionQueueEnqueueOfflineTest {
     @Mock BusinessHoursService         businessHoursService;
     @Mock RabbitTemplate               rabbitTemplate;
     @Mock ConversationMessagePublisher publisher;
+    @Mock WebhookEventPublisher        webhookEventPublisher;
 
     private SessionQueueService service;
 
@@ -35,11 +37,11 @@ class SessionQueueEnqueueOfflineTest {
     void setUp() {
         // 构造器参数顺序：queueRepository, agentRegistry, publisher, rabbitTemplate,
         //   eventsExchange, persistRepository, csatService, visitorNotifier, businessHoursService,
-        //   redisTemplate, objectMapper
+        //   redisTemplate, objectMapper, webhookEventPublisher
         service = new SessionQueueService(
                 queueRepository, null, publisher, rabbitTemplate,
                 "cs.conversation.events", null, null, null,
-                businessHoursService, null, null);
+                businessHoursService, null, null, webhookEventPublisher);
     }
 
     @Test

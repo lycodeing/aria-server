@@ -8,9 +8,13 @@ import com.aria.conversation.domain.SessionEventType;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.ClosedBy;
 import com.aria.conversation.domain.SessionStatus;
+import com.aria.conversation.domain.model.WebhookScope;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import com.aria.conversation.infrastructure.mq.ConversationMessagePublisher;
 import com.aria.conversation.infrastructure.persistence.ConversationPersistRepository;
+import com.aria.conversation.infrastructure.webhook.WebhookEventContextFactory;
+import com.aria.conversation.infrastructure.webhook.WebhookEventPublisher;
+import com.aria.conversation.infrastructure.webhook.WebhookEventTypes;
 import com.aria.conversation.infrastructure.repository.AgentOnlineRegistry;
 import com.aria.conversation.infrastructure.repository.SessionQueueRepository;
 import com.aria.conversation.infrastructure.websocket.VisitorNotifier;
@@ -73,6 +77,7 @@ public class SessionQueueService {
     private final BusinessHoursService           businessHoursService;
     private final StringRedisTemplate            redisTemplate;
     private final ObjectMapper                   objectMapper;
+    private final WebhookEventPublisher          webhookEventPublisher;
 
     public SessionQueueService(
             SessionQueueRepository queueRepository,
@@ -85,7 +90,8 @@ public class SessionQueueService {
             VisitorNotifier visitorNotifier,
             BusinessHoursService businessHoursService,
             StringRedisTemplate redisTemplate,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            WebhookEventPublisher webhookEventPublisher) {
         this.queueRepository      = queueRepository;
         this.agentRegistry        = agentRegistry;
         this.publisher            = publisher;
@@ -97,6 +103,7 @@ public class SessionQueueService {
         this.businessHoursService = businessHoursService;
         this.redisTemplate        = redisTemplate;
         this.objectMapper         = objectMapper;
+        this.webhookEventPublisher = webhookEventPublisher;
     }
 
     // ---- 队列操作 ----
@@ -136,6 +143,15 @@ public class SessionQueueService {
         }
         publishEvent(new SessionEvent(SessionEventType.ENQUEUE, item));
         publishSessionStart(sessionId, userName, transferReason, tag, item.waitSince());
+        // 通用 Webhook：用户请求转人工（幂等：仅真正入队时发布）
+        webhookEventPublisher.publish(WebhookScope.SESSION_TRANSFERRED,
+                WebhookEventContextFactory.buildSessionEvent(
+                        WebhookScope.SESSION_TRANSFERRED,
+                        WebhookEventTypes.SESSION_ENQUEUE,
+                        sessionId, userName,
+                        Map.of(
+                                "transferReason", transferReason == null ? "" : transferReason,
+                                "tag", tag == null ? "" : tag)));
         log.info("[SessionQueue] enqueue sessionId={} userName={}", sessionId, userName);
         return item;
     }
@@ -321,6 +337,13 @@ public class SessionQueueService {
         }
         // 2. DB 关闭 + CSAT 邀请：无论 Redis 处理成功与否都必须执行
         publishSessionEnd(sessionId, closedBy);
+        // 通用 Webhook：会话关闭
+        webhookEventPublisher.publish(WebhookScope.SESSION_CLOSED,
+                WebhookEventContextFactory.buildSessionEvent(
+                        WebhookScope.SESSION_CLOSED,
+                        WebhookEventTypes.SESSION_CLOSED,
+                        sessionId, null,
+                        Map.of("closedBy", closedBy != null ? closedBy.name() : "")));
         // 同步推送 CSAT 邀请给访客 WS：必须在关闭访客连接之前完成，
         // 否则连接已从注册表移除，csat_request 帧会被丢弃（访客端收不到实时评价弹窗）。
         // 注意：此处为同实例自调用，@Async 代理不生效，保持同步以确保顺序。
@@ -397,6 +420,15 @@ public class SessionQueueService {
 
         publishEvent(new SessionEvent(SessionEventType.TRANSFER, transferred, fromAgentId, targetAgentId));
         publishSessionTransfer(sessionId, fromAgentId, targetAgentId, Instant.now().getEpochSecond());
+        // 通用 Webhook：座席间转接
+        webhookEventPublisher.publish(WebhookScope.SESSION_TRANSFERRED,
+                WebhookEventContextFactory.buildSessionEvent(
+                        WebhookScope.SESSION_TRANSFERRED,
+                        WebhookEventTypes.SESSION_TRANSFER,
+                        sessionId, null,
+                        Map.of(
+                                "fromAgentId", fromAgentId == null ? "" : fromAgentId,
+                                "toAgentId", targetAgentId == null ? "" : targetAgentId)));
         log.info("[SessionQueue] 会话转交 sessionId={} {} → {}", sessionId, fromAgentId, targetAgentId);
     }
 

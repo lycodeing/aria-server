@@ -3,8 +3,12 @@ package com.aria.conversation.application.service;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.conversation.application.dto.InitSessionResult;
 import com.aria.conversation.domain.SessionStatus;
+import com.aria.conversation.domain.model.WebhookScope;
 import com.aria.conversation.infrastructure.persistence.ConversationPersistRepository;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
+import com.aria.conversation.infrastructure.webhook.WebhookEventContextFactory;
+import com.aria.conversation.infrastructure.webhook.WebhookEventPublisher;
+import com.aria.conversation.infrastructure.webhook.WebhookEventTypes;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.redisson.api.RLock;
@@ -12,6 +16,7 @@ import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Service;
 
 import java.time.OffsetDateTime;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -40,6 +45,7 @@ public class VisitorSessionService {
 
     private final ConversationPersistRepository persistRepository;
     private final RedissonClient                redissonClient;
+    private final WebhookEventPublisher         webhookEventPublisher;
 
     /**
      * 获取或创建访客会话（幂等，分布式锁保护）。
@@ -85,6 +91,13 @@ public class VisitorSessionService {
             persistRepository.createAiChatSession(
                     sessionId, anonymousId, name, visitorIp, visitorDevice, OffsetDateTime.now());
             log.info("[VisitorSession] 新建会话 anonymousId={} sessionId={}", anonymousId, sessionId);
+            // 通用 Webhook：新会话事件（仅首次创建时发布，恢复旧会话不重复）
+            webhookEventPublisher.publish(WebhookScope.SESSION_CREATED,
+                    WebhookEventContextFactory.buildSessionEvent(
+                            WebhookScope.SESSION_CREATED,
+                            WebhookEventTypes.SESSION_CREATED,
+                            sessionId, name,
+                            Map.of("channel", "AI_CHAT")));
             return new InitSessionResult(sessionId, SessionStatus.AI_CHAT, true);
         } finally {
             if (lock.isHeldByCurrentThread()) {
