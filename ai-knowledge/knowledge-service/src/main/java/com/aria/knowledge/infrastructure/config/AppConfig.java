@@ -1,6 +1,10 @@
 package com.aria.knowledge.infrastructure.config;
 
+import com.aria.common.core.page.PageQuery;
 import com.aria.knowledge.domain.service.ChunkQualityDomainService;
+import com.baomidou.mybatisplus.annotation.DbType;
+import com.baomidou.mybatisplus.extension.plugins.MybatisPlusInterceptor;
+import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerInterceptor;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -18,6 +22,23 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Configuration
 @EnableConfigurationProperties(EmbeddingProperties.class)
 public class AppConfig {
+
+    /**
+     * MyBatis-Plus 分页插件。
+     *
+     * <p>未配置此前 {@code selectPage} 不会执行 count 也不截取分页，
+     * 导致 {@code Page.getTotal()} 恒为 0 且返回全部记录，
+     * 前端据 total 判空显示"暂无数据"。
+     */
+    @Bean
+    public MybatisPlusInterceptor mybatisPlusInterceptor() {
+        MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
+        // PostgreSQL，单页上限与 PageQuery.MAX_PAGE_SIZE 对齐，防止超大分页查询
+        PaginationInnerInterceptor pageInterceptor = new PaginationInnerInterceptor(DbType.POSTGRE_SQL);
+        pageInterceptor.setMaxLimit((long) PageQuery.MAX_PAGE_SIZE);
+        interceptor.addInnerInterceptor(pageInterceptor);
+        return interceptor;
+    }
 
     /**
      * Chunk 质量领域服务 Bean。

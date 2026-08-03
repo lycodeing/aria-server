@@ -36,7 +36,7 @@ class CsatServiceTest {
         CsatRatingDO result = service.createInvitation("sess1", "v1", null, CsatChannel.AI);
 
         assertThat(result.getId()).isEqualTo(1L);
-        verify(mapper, never()).insert(any(CsatRatingDO.class));
+        verify(mapper, never()).insertIfAbsent(any(CsatRatingDO.class));
     }
 
     @Test
@@ -47,7 +47,7 @@ class CsatServiceTest {
         created.setChannel(CsatChannel.HUMAN);
         created.setAgentId(99L);
         created.setStatus(CsatStatus.PENDING);
-        // 首次检查不存在走创建分支；回查返回插入后的记录
+        // 首次 findBySessionId 未命中 → insertIfAbsent 写入 → 回查 findBySessionId 返回权威记录
         when(mapper.findBySessionId("sess2"))
                 .thenReturn(Optional.empty())
                 .thenReturn(Optional.of(created));

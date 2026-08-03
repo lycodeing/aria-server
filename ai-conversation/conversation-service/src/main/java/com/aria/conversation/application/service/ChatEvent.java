@@ -95,6 +95,19 @@ public record ChatEvent(String eventType, String data) {
          */
         public static final String OFFLINE = "offline";
 
+        /**
+         * Agent 生成被用户主动取消，data 为 JSON：{"message":"已取消"}。
+         *
+         * <p>前端收到后须：
+         * <ol>
+         *   <li>停止 loading 状态，显示已输出的部分内容</li>
+         *   <li>调用 {@code GET /chat/state} 确认 session 最终状态
+         *       （取消前可能已发生 transfer_to_agent，需按转接流程处理）</li>
+         *   <li>启用发送按钮，允许用户继续对话</li>
+         * </ol>
+         */
+        public static final String CANCELLED = "cancelled";
+
         private EventType() { /* 工具类，不允许实例化 */ }
     }
 
@@ -190,5 +203,15 @@ public record ChatEvent(String eventType, String data) {
         return new ChatEvent(EventType.OFFLINE, SseJson.encode(mapper, java.util.Map.of(
                 "message",      offlineMessage != null ? offlineMessage : "",
                 "nextOpenTime", nextOpenTime   != null ? nextOpenTime   : "")));
+    }
+
+    /**
+     * Agent 生成被取消。data 为 JSON：{"message":"已取消"}。
+     *
+     * @param mapper Jackson ObjectMapper
+     */
+    public static ChatEvent cancelled(ObjectMapper mapper) {
+        return new ChatEvent(EventType.CANCELLED,
+                SseJson.encode(mapper, java.util.Map.of("message", "已取消")));
     }
 }

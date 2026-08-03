@@ -8,9 +8,11 @@ import com.aria.common.core.util.IdGenerator;
 import com.aria.knowledge.application.query.DocPageQuery;
 import com.aria.knowledge.domain.model.DocStatus;
 import com.aria.knowledge.domain.model.KnowledgeDoc;
+import com.aria.knowledge.domain.repository.KnowledgeChunkRepository;
 import com.aria.knowledge.domain.repository.KnowledgeDocRepository;
 import com.aria.knowledge.infrastructure.mq.DocIngestEvent;
 import com.aria.knowledge.infrastructure.mq.DocIngestPublisher;
+import com.aria.knowledge.infrastructure.parser.FileTypeResolver;
 import com.aria.knowledge.infrastructure.storage.MinioStorageService;
 import com.aria.knowledge.interfaces.rest.vo.DocStatusVO;
 import com.aria.knowledge.interfaces.rest.vo.DocUploadVO;
@@ -24,6 +26,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.regex.Pattern;
 
 /**
  * 文档摄取应用服务。
@@ -43,6 +46,12 @@ public class DocIngestAppService {
     private static final String FILE_TYPE_HTML          = "HTML";
     private static final String FILE_TYPE_DOCX          = "DOCX";
     private static final String FILE_TYPE_MARKDOWN      = "MARKDOWN";
+    private static final String FILE_TYPE_ZIP           = "ZIP";
+    /** 简历专用解析器：文件名含简历/resume/cv 等关键词时优先匹配 */
+    private static final String FILE_TYPE_RESUME        = "RESUME";
+    /** cv 词边界匹配（预编译，避免每次调用重新编译正则） */
+    private static final Pattern CV_WORD_BOUNDARY       =
+        Pattern.compile(".*(^|[^a-z])cv($|[^a-z]).*");
     /** 内容哈希待计算占位（异步管道处理后回填真实 SHA-256） */
     private static final String CONTENT_HASH_PENDING    = "pending";
     /** 未登录场景的兜底 uploaderId */
@@ -50,9 +59,10 @@ public class DocIngestAppService {
     /** 上传响应初始状态 */
     private static final String UPLOAD_STATUS_PENDING   = "PENDING";
 
-    private final KnowledgeDocRepository docRepository;
-    private final DocIngestPublisher     publisher;
-    private final MinioStorageService    minioStorageService;
+    private final KnowledgeDocRepository   docRepository;
+    private final KnowledgeChunkRepository chunkRepository;
+    private final DocIngestPublisher       publisher;
+    private final MinioStorageService      minioStorageService;
 
     // -------------------------------------------------------
     // 上传
@@ -247,10 +257,11 @@ public class DocIngestAppService {
     // -------------------------------------------------------
 
     /**
-     * 下线文档（更新状态为 DEPRECATED，chunk 由 Worker 异步清理）。
+     * 下线文档（更新状态为 DEPRECATED，同步 chunk 状态使其从检索结果中移除）。
      *
      * <p>使用条件 UPDATE（WHERE status = expectedStatus）替代 findById + update 两步，
-     * 消除并发下线时的 TOCTOU 竞态。
+     * 消除并发下线时的 TOCTOU 竞态。chunk 的 doc_status 同步更新为 DEPRECATED，
+     * 确保向量/全文检索的 WHERE doc_status='PUBLISHED' 条件不再命中已下线文档。
      *
      * @param docId 文档 ID
      */
@@ -268,6 +279,8 @@ public class DocIngestAppService {
             throw new BusinessException(ERROR_BAD_REQUEST,
                 "文档状态已被其他操作变更，请刷新后重试 docId=" + docId);
         }
+        // 同步 chunk 状态：检索 SQL 过滤 doc_status='PUBLISHED'，必须同步为 DEPRECATED
+        chunkRepository.updateDocStatusByDocId(docId, DocStatus.DEPRECATED.name());
         log.info("文档已下线，docId={}", docId);
     }
 
@@ -322,9 +335,12 @@ public class DocIngestAppService {
 
     /**
      * 批量下线文档（每条单独走状态模式校验，非 PUBLISHED 状态静默跳过）。
+     * 同步更新 chunk 的 doc_status，确保已下线文档从检索结果中移除。
+     * 事务保证：文档和 chunk 状态在同一事务内原子更新，避免中间状态。
      *
      * @param docIds 文档 ID 列表，最多 50 条
      */
+    @Transactional(rollbackFor = Exception.class)
     public void batchOffline(List<String> docIds) {
         if (docIds == null || docIds.isEmpty()) {
             return;
@@ -339,6 +355,8 @@ public class DocIngestAppService {
             .toList();
         if (!publishedIds.isEmpty()) {
             docRepository.updateStatusBatch(publishedIds, DocStatus.DEPRECATED);
+            // 同步 chunk 状态：单条 WHERE doc_id IN(...) 批量更新，消除 N+1
+            chunkRepository.updateDocStatusByDocIds(publishedIds, DocStatus.DEPRECATED.name());
             log.info("批量下线完成，数量={}", publishedIds.size());
         }
     }
@@ -348,23 +366,29 @@ public class DocIngestAppService {
     // -------------------------------------------------------
 
     /**
-     * 根据文件后缀解析文件类型，与 {@code MultiFormatParser} 分发逻辑一致。
+     * 根据文件名解析文件类型，与 {@code MultiFormatParser} 分发逻辑一致。
+     *
+     * <p>匹配优先级：
+     * <ol>
+     *   <li>文件名含简历关键词（简历/resume/cv/求职）→ RESUME（专用解析器，多格式支持）</li>
+     *   <li>文件后缀 → PDF / HTML / DOCX / ZIP / MARKDOWN（委托 {@link FileTypeResolver}）</li>
+     * </ol>
      */
     private String resolveFileType(String fileName) {
         if (fileName == null) {
             return FILE_TYPE_MARKDOWN;
         }
         String lower = fileName.toLowerCase();
-        if (lower.endsWith(".pdf")) {
-            return FILE_TYPE_PDF;
+        // 优先检测简历：文件名含简历/resume/求职 等关键词，走专用 ResumeParser
+        // cv 用词边界检测，避免误匹配 invoice/archive/recv 等含 "cv" 子串的文件名
+        if (lower.contains("简历") || lower.contains("resume")
+                || CV_WORD_BOUNDARY.matcher(lower).matches()
+                || lower.contains("求职")) {
+            return FILE_TYPE_RESUME;
         }
-        if (lower.endsWith(".html") || lower.endsWith(".htm")) {
-            return FILE_TYPE_HTML;
-        }
-        if (lower.endsWith(".docx")) {
-            return FILE_TYPE_DOCX;
-        }
-        return FILE_TYPE_MARKDOWN;
+        // 后缀 → fileType（委托 FileTypeResolver 统一映射）
+        String resolved = FileTypeResolver.resolveByExtension(fileName);
+        return resolved != null ? resolved : FILE_TYPE_MARKDOWN;
     }
 
     /**

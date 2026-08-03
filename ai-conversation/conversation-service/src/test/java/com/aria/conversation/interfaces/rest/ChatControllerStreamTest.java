@@ -63,7 +63,7 @@ class ChatControllerStreamTest {
     @Test
     @DisplayName("token 事件的 data 是合法 JSON，content 字段精确保留前导空格与换行")
     void tokenEvent_dataIsJsonEnvelopeAndPreservesWhitespace() {
-        when(chatService.stream(anyString(), anyString(), any()))
+        when(chatService.stream(anyString(), anyString(), any(), any()))
                 .thenReturn(Flux.just(
                         ChatEvent.token("### ", objectMapper),
                         ChatEvent.token(" 🔴 ", objectMapper),
@@ -96,7 +96,7 @@ class ChatControllerStreamTest {
     void transferEvent_hasTypeAndJsonPayload() {
         String payload = SseJson.encode(objectMapper,
                 new TransferPayload("agent_transfer", "已为您转接人工客服"));
-        when(chatService.stream(anyString(), anyString(), any()))
+        when(chatService.stream(anyString(), anyString(), any(), any()))
                 .thenReturn(Flux.just(ChatEvent.transfer(payload)));
 
         Flux<ServerSentEvent<String>> stream = controller.streamChat(request("s2", "转人工"));
@@ -123,7 +123,7 @@ class ChatControllerStreamTest {
         String doneJson = SseJson.encode(objectMapper,
                 new ToolDonePayload("get_weather", "SUCCESS", 1499L, null));
 
-        when(chatService.stream(anyString(), anyString(), any()))
+        when(chatService.stream(anyString(), anyString(), any(), any()))
                 .thenReturn(Flux.just(
                         ChatEvent.toolCall(callJson),
                         ChatEvent.toolDone(doneJson)));
@@ -159,7 +159,7 @@ class ChatControllerStreamTest {
     @Test
     @DisplayName("error 事件：event=error，data 为 ErrorPayload JSON（不是裸字符串）")
     void errorEvent_isJsonEnvelope() {
-        when(chatService.stream(anyString(), anyString(), any()))
+        when(chatService.stream(anyString(), anyString(), any(), any()))
                 .thenReturn(Flux.just(ChatEvent.error("上游服务异常", objectMapper)));
 
         Flux<ServerSentEvent<String>> stream = controller.streamChat(request("s4", "hi"));

@@ -5,6 +5,7 @@ import com.aria.conversation.infrastructure.persistence.entity.ConversationEntit
 import com.aria.conversation.infrastructure.persistence.entity.ConversationTagEntity;
 import com.aria.conversation.infrastructure.persistence.entity.TagEntity;
 import com.aria.conversation.infrastructure.persistence.entity.VisitorTagEntity;
+import com.aria.conversation.domain.TagSource;
 import com.aria.conversation.infrastructure.persistence.mapper.*;
 import com.aria.conversation.interfaces.rest.vo.TagVO;
 import org.junit.jupiter.api.BeforeEach;

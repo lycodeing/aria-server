@@ -1,5 +1,24 @@
 # Agent 取消与可靠性改造技术方案
 
+> **文档状态：设计提案（未实现）**
+>
+> 本文档基于当前 `main` 分支代码（HEAD: `d0290ff`）编写，所有"现状"描述均以实际代码为准。
+> 第 3～6 章中的代码片段均为**改造后**的目标代码，标注「新增」「改动」字样，尚未落地。
+>
+> | 改造项 | 当前状态 |
+> |--------|---------|
+> | `CancellationRegistry` 取消信号注册表 | ❌ 文件不存在 |
+> | `POST /stream/cancel` 取消端点 | ❌ 不存在 |
+> | `ChatEvent.EventType.CANCELLED` + `cancelled()` 工厂方法 | ❌ 不存在 |
+> | `ChatRequest.requestId` 幂等键字段 | ❌ 不存在 |
+> | `ChatAppService.stream()` requestId 参数 + 幂等检查 | ❌ 不存在 |
+> | `DomainAgentService` `takeUntilOther` + `isCancelled` | ❌ 不存在 |
+> | `DomainToolProviderFactory.build()` sessionId 参数 | ❌ 当前 3 参数，无 sessionId |
+> | `turnCallCache` per-turn 工具去重 | ❌ 不存在 |
+> | `SessionEnqueueMqFailedException` 专属异常 | ❌ 类不存在 |
+> | `enqueue()` MQ 失败补偿回滚 | ❌ `publishSafely` 吞异常，无回滚 |
+> | `saveDomainSwitch()` 补偿日志 | ❌ 两步裸写，无 try/catch |
+
 ## 1. 背景与目标
 
 ### 1.1 背景
@@ -52,23 +71,28 @@ aria-server 的 AI 对话核心链路基于 LangChain4j AiServices + Reactor Flu
 
 ```
 ChatController (POST /stream → SSE)
-  └─ ChatAppService.stream()
+  └─ ChatAppService.stream(sessionId, message, domainCode)     # 3 参数，无 requestId
        ├─ 已接入人工 → appendAndHint()
        ├─ 有 domainCode → streamDomain()
        │    ├─ DomainSessionAppService.resolveActiveDomain()   # Redis 读写（阻塞）
-       │    ├─ IntentService.classify()                        # 意图分类（阻塞）
-       │    └─ DomainAgentService.streamChat()                 # LLM loop
-       │         ├─ assistant.chat() → tokenFlux               # LangChain4j Flux<String>
-       │         └─ eventSink (Sinks.Many)                     # 工具事件推送
-       │              └─ DomainToolProviderFactory.build()
-       │                   ├─ MCP 工具（外部服务）
-       │                   ├─ 域 HTTP 工具 (HttpToolRunner.block())
-       │                   └─ 内置工具 (switch_domain / transfer_to_agent)
+       │    ├─ IntentService.classify()                        # 多意图分类（阻塞）
+       │    └─ DomainAgentService.streamChat()                  # 两个重载，均委托 doStream()
+       │         └─ doStream()                                  # 私有方法，构建 Flux
+       │              ├─ assistant.chat() → tokenFlux           # LangChain4j Flux<String>
+       │              └─ eventSink (Sinks.Many)                 # 工具事件推送
+       │                   └─ DomainToolProviderFactory.build(domainTools, eventSink, builtinTools)  # 3 参数
+       │                        └─ buildTracedExecutor()        # HTTP + MCP 共享骨架（Span + SSE 事件）
+       │                             ├─ MCP 工具（外部服务）
+       │                             ├─ 域 HTTP 工具 (HttpToolRunner.block())
+       │                             └─ 内置工具 (switch_domain / transfer_to_agent)
        └─ 无 domainCode → FaqChatAppService.stream()
 ```
 
 **关键特征：**
+- `streamChat()` 有两个公开重载（单意图 / 多意图 `intentCodes`），均委托私有 `doStream()` 构建 Flux
 - `assistant.chat()` 返回 `Flux<String>`（langchain4j-reactor 模块），与 Reactor cancel 语义兼容
+- `DomainToolProviderFactory.build()` 当前接收 **3 个参数**（`domainTools`、`eventSink`、`builtinTools`），无 `sessionId`
+- HTTP 工具和 MCP 工具共享 `buildTracedExecutor()` 骨架（统一 Span + `tool_call`/`tool_done` SSE 事件），无取消检查
 - `HttpToolRunner.execute()` 内部使用 `.block()`，运行在 `boundedElastic` 线程，**Reactor cancel 信号无法中断正在 block 的线程**
 - `BuiltinTools.transferToAgent()` 和 `switchDomain()` 在工具执行线程内同步写 Redis / MQ
 
@@ -145,109 +169,173 @@ T=3    前端 UI 停留在 AI 对话状态
 
 ### 3.2 新增组件：`CancellationRegistry`
 
+> **I1+I2 修复 — SRP 拆分 + 分层修正**：
+> 原方案将 Reactor Sink 管理（应用编排）和 Redis 标志位（基础设施）混在一个 `infrastructure/cancellation/CancellationRegistry` 中。
+> 拆分为两个单一职责组件：
+> - `CancelFlagStore`（infrastructure 层）— Redis 标志位 + 内存缓存，供 blocking 工具线程轮询
+> - `CancellationRegistry`（application 层）— 编排 Sink 注册 + 委托 `CancelFlagStore`，供 `DomainAgentService` 和 `ChatAppService` 调用
+
 ```java
-// infrastructure/cancellation/CancellationRegistry.java
+// infrastructure/cancellation/CancelFlagStore.java — 【新增】纯基础设施
 @Component
 @RequiredArgsConstructor
-public class CancellationRegistry {
+public class CancelFlagStore {
 
     private final StringRedisTemplate redisTemplate;
     private static final String KEY_PREFIX = "chat:cancel:";
     private static final Duration TTL = Duration.ofMinutes(5);
 
-    /**
-     * 内存注册表：sessionId → 取消触发器 Sink。
-     * 仅对当前实例有效；多实例部署场景见 §3.6（Phase 2 扩展点）。
-     */
+    /** 内存标志（当前实例有效，避免每次工具执行都查 Redis） */
+    private final ConcurrentHashMap<String, Boolean> localFlags = new ConcurrentHashMap<>();
+
+    /** 设置取消标志（先于 Sink 信号设置，确保工具线程立即感知） */
+    public void markCancelled(String sessionId) {
+        localFlags.put(sessionId, Boolean.TRUE);
+        redisTemplate.opsForValue().set(KEY_PREFIX + sessionId, "1", TTL);
+    }
+
+    /** 工具执行前检查（blocking 线程调用） */
+    public boolean isCancelled(String sessionId) {
+        return Boolean.TRUE.equals(localFlags.get(sessionId))
+                || Boolean.TRUE.equals(redisTemplate.hasKey(KEY_PREFIX + sessionId));
+    }
+
+    /** 清理标志（流结束时调用） */
+    public void clear(String sessionId) {
+        localFlags.remove(sessionId);
+        redisTemplate.delete(KEY_PREFIX + sessionId);
+    }
+}
+```
+
+```java
+// application/service/cancellation/CancellationRegistry.java — 【新增】应用编排
+@Component
+@RequiredArgsConstructor
+public class CancellationRegistry {
+
+    private final CancelFlagStore cancelFlagStore;
+
+    /** 内存注册表：sessionId → 取消触发器 Sink（应用运行时状态，非基础设施） */
     private final ConcurrentHashMap<String, Sinks.One<Void>> activeSinks =
             new ConcurrentHashMap<>();
 
     /**
      * Agent 流启动时注册，返回取消触发器。
-     * 调用方将此 Sink 传入 takeUntilOther() 以实现 Reactor 层面的取消。
+     * C4 修复：先清理可能残留的上一轮取消标志，避免污染本次请求。
      */
     public Sinks.One<Void> register(String sessionId) {
+        cancelFlagStore.clear(sessionId); // 清理残留标志（上一次取消未被 unregister 清除的竞态）
         Sinks.One<Void> sink = Sinks.one();
         activeSinks.put(sessionId, sink);
         return sink;
     }
 
     /**
-     * 触发取消：内存 Sink 发射完成信号 + Redis 写入标志位。
-     * Redis 标志供 blocking 工具线程轮询；Sink 供 Flux 链响应。
+     * 触发取消。
+     * I10 修复：先设标志位（工具线程立即感知），再触发 Reactor 信号。
+     * I9 修复：检查 tryEmitEmpty 返回值，失败时记录 WARN。
      */
     public void cancel(String sessionId) {
-        // 1. 触发 Reactor cancel 信号
+        // ① 先设标志位（工具 blocking 线程立即感知，缩小 TOCTOU 窗口）
+        cancelFlagStore.markCancelled(sessionId);
+        // ② 再触发 Reactor cancel 信号
         Sinks.One<Void> sink = activeSinks.remove(sessionId);
         if (sink != null) {
-            sink.tryEmitEmpty();
+            EmitResult result = sink.tryEmitEmpty();
+            if (result.isFailure()) {
+                log.warn("[Cancel] Sink 发射失败 sessionId={} result={}（流可能已结束）",
+                        sessionId, result);
+            }
         }
-        // 2. Redis 标志：工具 blocking 线程无法感知 Reactor cancel，靠此轮询
-        redisTemplate.opsForValue().set(KEY_PREFIX + sessionId, "1", TTL);
     }
 
     /** 流自然结束时清理注册，避免内存泄漏 */
     public void unregister(String sessionId) {
         activeSinks.remove(sessionId);
-        redisTemplate.delete(KEY_PREFIX + sessionId);
+        cancelFlagStore.clear(sessionId);
     }
 
-    /** 工具执行前检查（blocking 线程调用） */
+    /** 工具执行前检查（委托 CancelFlagStore） */
     public boolean isCancelled(String sessionId) {
-        return Boolean.TRUE.equals(redisTemplate.hasKey(KEY_PREFIX + sessionId));
+        return cancelFlagStore.isCancelled(sessionId);
     }
 }
 ```
 
 ### 3.3 `DomainAgentService` 改造
 
+> **当前代码**：`streamChat()` 有两个公开重载（单意图 / 多意图），均委托私有 `doStream()` 方法构建 Flux。
+> `doStream()` 中 `toolProviderFactory.build(domainTools, eventSink, builtinTools)` 当前为 **3 参数**（无 `sessionId`）。
+> 以下改造在 `doStream()` 内部进行，`streamChat()` 重载入口签名不变。
+
 在 `tokenFlux` 上挂 `takeUntilOther`，并在 `doFinally` 中区分正常结束与取消：
 
 ```java
-// DomainAgentService.java — streamChat() 关键改动（省略未变动部分）
+// DomainAgentService.java — doStream() 关键改动（省略未变动部分）
 
 @RequiredArgsConstructor
 public class DomainAgentService {
 
-    private final CancellationRegistry cancellationRegistry; // 新增注入
+    private final CancellationRegistry cancellationRegistry; // 【新增】注入
 
-    public Flux<ChatEvent> streamChat(String sessionId, String domainCode, String userMessage) {
+    private Flux<ChatEvent> doStream(String sessionId, String domainCode, String userMessage,
+                                      List<DomainSummary> allDomains, List<KnowledgeSearchResult.Hit> hits,
+                                      String systemPrompt) {
         // ... systemPrompt、tools 组装与现有逻辑完全一致 ...
 
         Sinks.Many<ChatEvent> eventSink = Sinks.many().unicast().onBackpressureBuffer();
 
-        // ① 注册取消触发器
+        // ①【新增】注册取消触发器
         Sinks.One<Void> cancelTrigger = cancellationRegistry.register(sessionId);
 
         DomainAssistant assistant = AiServices.builder(DomainAssistant.class)
                 // ... 与现有一致 ...
+                // 【改动】build() 新增第 4 个参数 sessionId（当前为 3 参数）
                 .toolProvider(toolProviderFactory.build(domainTools, eventSink, builtinTools, sessionId))
                 .build();
 
-        Flux<ChatEvent> tokenFlux = assistant.chat(sessionId, userMessage)
-                .map(content -> ChatEvent.token(content, objectMapper))
-                // ② takeUntilOther：cancelTrigger 发射时截断 Flux
-                //    Reactor 向上传播 cancel → LangChain4j reactor 模块关闭 LLM HTTP 连接
-                .takeUntilOther(cancelTrigger.asMono())
-                .doFinally(signal -> {
-                    log.info("[DomainAgent] done sessionId={} signal={}", sessionId, signal);
-                    // ③ 取消检查必须在 unregister() 之前执行，否则 Redis key 已被删除无法判断
-                    //    takeUntilOther 触发时 doFinally 收到 ON_COMPLETE（不是 CANCEL），
-                    //    因此必须通过 isCancelled() 检测用户 API 取消；
-                    //    CANCEL signal 仅在 SSE 客户端断开时由 Reactor 反压传播产生。
-                    boolean wasCancelled = cancellationRegistry.isCancelled(sessionId);
-                    // ④ 清理注册（自然完成 / 取消 / 错误 均需清理）
-                    cancellationRegistry.unregister(sessionId);
-                    if (wasCancelled || signal == SignalType.CANCEL) {
-                        // ⑤ 取消时发送语义明确的 cancelled 事件，让前端停止 loading
-                        eventSink.tryEmitNext(ChatEvent.cancelled(objectMapper));
-                    }
-                    eventSink.tryEmitComplete();
-                });
+        // I5 修复：提取 buildTokenFlux() + handleStreamTermination()，控制 doStream() 方法行数
+        Flux<ChatEvent> tokenFlux = buildTokenFlux(assistant, sessionId, userMessage,
+                cancelTrigger, eventSink);
 
         return Flux.merge(tokenFlux, eventSink.asFlux())
                 .doOnError(e -> log.error("[DomainAgent] error sessionId={}", sessionId, e))
                 .onErrorResume(e -> Flux.just(ChatEvent.error(e.getMessage(), objectMapper)));
+    }
+
+    /**
+     * 构建 token 流，挂载 takeUntilOther + doFinally 取消处理。
+     * I5 修复：从 doStream() 中提取，降低主方法圈复杂度。
+     */
+    private Flux<ChatEvent> buildTokenFlux(DomainAssistant assistant, String sessionId,
+                                            String userMessage, Sinks.One<Void> cancelTrigger,
+                                            Sinks.Many<ChatEvent> eventSink) {
+        return assistant.chat(sessionId, userMessage)
+                .map(content -> ChatEvent.token(content, objectMapper))
+                // ②【新增】takeUntilOther：cancelTrigger 发射时截断 Flux
+                //    Reactor 向上传播 cancel → LangChain4j reactor 模块关闭 LLM HTTP 连接
+                .takeUntilOther(cancelTrigger.asMono())
+                .doFinally(signal -> handleStreamTermination(sessionId, signal, eventSink));
+    }
+
+    /**
+     * 流终止处理：取消检查 + 清理注册 + 发射 cancelled 事件。
+     * I5 修复：从 doFinally lambda 中提取为独立方法，可测试性 + 可读性。
+     *
+     * <p>takeUntilOther 触发时 signal = ON_COMPLETE（不是 CANCEL），
+     * 必须通过 isCancelled() 检测用户 API 取消；
+     * CANCEL signal 仅在 SSE 客户端断开时由 Reactor 反压传播产生。
+     */
+    private void handleStreamTermination(String sessionId, SignalType signal,
+                                           Sinks.Many<ChatEvent> eventSink) {
+        log.info("[DomainAgent] done sessionId={} signal={}", sessionId, signal);
+        boolean wasCancelled = cancellationRegistry.isCancelled(sessionId);
+        cancellationRegistry.unregister(sessionId);
+        if (wasCancelled || signal == SignalType.CANCEL) {
+            eventSink.tryEmitNext(ChatEvent.cancelled(objectMapper));
+        }
+        eventSink.tryEmitComplete();
     }
 }
 ```
@@ -256,7 +344,11 @@ public class DomainAgentService {
 
 ### 3.4 `DomainToolProviderFactory` 工具前置检查
 
-工具执行是 blocking 调用，无法被 Reactor cancel 中断。在每次工具执行前主动检查取消标志：
+> **C3 修复 — 保留 `buildTracedExecutor` 统一骨架**：
+> 当前代码已有 `buildTracedExecutor(name, type, rethrowOnError, sink, action)` 统一骨架，
+> HTTP 和 MCP 工具均委托此方法（类 Javadoc 明确标注"消除 HTTP/MCP 两条路径的重复代码"）。
+> **改造原则**：取消检查 + 幂等去重作为 pre-execution hook 挂入 `buildTracedExecutor`，
+> **不重新内联**到 `buildHttpExecutor` / `wrapWithSseEvents`，保持 SRP 不回退。
 
 ```java
 // DomainToolProviderFactory.java
@@ -267,63 +359,120 @@ public ToolProvider build(List<ToolConfig> domainTools,
                            BuiltinTools builtinTools,
                            String sessionId) {          // ← 新增
     return request -> {
+        // per-turn 工具调用缓存：在 lambda 内部创建，生命周期 = 单次 LLM turn
+        // I6 修复：使用 ConcurrentHashMap 而非 HashMap——LangChain4j 1.1.0 不保证
+        // 同 turn 内串行调用工具（部分模型支持 parallel_tool_calls），并发写 HashMap
+        // 会导致内部表损坏（resize 时死循环）或返回错误结果。
+        Map<String, String> turnToolCallCache = new ConcurrentHashMap<>();
+
         Map<ToolSpecification, ToolExecutor> toolMap = new LinkedHashMap<>();
-        loadMcpTools(toolMap, eventSink, request, sessionId);
-        loadDomainTools(toolMap, domainTools, eventSink, sessionId);
+        loadMcpTools(toolMap, eventSink, request, sessionId, turnToolCallCache);
+        loadDomainTools(toolMap, domainTools, eventSink, sessionId, turnToolCallCache);
         toolMap.putAll(builtinTools.buildToolSpecs());
         return new ToolProviderResult(toolMap);
     };
 }
 
-// buildHttpExecutor() 新增取消检查
+// buildHttpExecutor / wrapWithSseEvents 保持现有的一行委托，不变：
 private ToolExecutor buildHttpExecutor(ToolConfig tc, Sinks.Many<ChatEvent> eventSink,
-                                        String sessionId) {
-    return (ToolExecutionRequest req, Object memId) -> {
-        // ⑤ 工具执行前：如果已取消则跳过，返回 [CANCELLED] 信号给 LLM
-        if (cancellationRegistry.isCancelled(sessionId)) {
-            log.info("[ToolFactory] HTTP 工具跳过（已取消）tool={} sessionId={}", tc.code(), sessionId);
-            emitToolDone(tc.code(), false, "已取消", 0L, eventSink);
-            return "[CANCELLED] 操作已取消，请告知用户操作已停止。";
-        }
-        long start = System.currentTimeMillis();
-        emitToolCall(tc.code(), eventSink);
-        // ... 其余执行逻辑与现有完全一致 ...
-    };
+                                        String sessionId, Map<String, String> turnToolCallCache) {
+    return buildTracedExecutor(tc.code(), "http", false, eventSink, sessionId,
+            turnToolCallCache, (req, memId) -> {
+                Map<String, Object> args = parseArgs(req.arguments());
+                ToolCallResult result = httpToolRunner.execute(tc, args, Map.of());
+                if (!result.isSuccess()) {
+                    throw new RuntimeException(result.getErrorMsg());
+                }
+                return result.getResponse();
+            });
 }
 
-// wrapWithSseEvents() 同样需要取消检查（MCP 工具同为外部调用）
-// I-1 修复：原版本仅对 HTTP 工具做了取消检查，MCP 工具遗漏，补充如下：
 private ToolExecutor wrapWithSseEvents(String name, ToolExecutor delegate,
-                                        Sinks.Many<ChatEvent> eventSink, String sessionId) {
-    return (req, memId) -> {
-        // ⑥ MCP 工具执行前检查取消标志（与 HTTP 工具保持一致）
+                                        Sinks.Many<ChatEvent> eventSink, String sessionId,
+                                        Map<String, String> turnToolCallCache) {
+    // MCP 工具不参与 turnCallCache 去重（传 null 跳过），但同样需要取消检查
+    return buildTracedExecutor(name, "mcp", true, eventSink, sessionId,
+            null, (req, memId) -> delegate.execute(req, memId));
+}
+
+/**
+ * 统一工具执行骨架（C3 修复：取消检查 + 幂等去重挂入此处，不重新内联到两个执行器）。
+ *
+ * @param name            工具名称（用于 Span 和 SSE 事件）
+ * @param type            工具类型（"http" / "mcp"）
+ * @param rethrowOnError  true=异常向上抛（MCP），false=返回错误字符串给 LLM（HTTP）
+ * @param sink            SSE 事件 Sink
+ * @param sessionId       会话 ID（取消检查用）
+ * @param turnToolCallCache per-turn 去重缓存（null=不参与去重，如 MCP 工具）
+ * @param action          实际工具执行逻辑
+ */
+private ToolExecutor buildTracedExecutor(String name, String type, boolean rethrowOnError,
+                                          Sinks.Many<ChatEvent> sink, String sessionId,
+                                          Map<String, String> turnToolCallCache,
+                                          TracedToolAction action) {
+    return (ToolExecutionRequest req, Object memId) -> {
+        // ① 统一取消检查（HTTP + MCP 共用，消除重复）
         if (cancellationRegistry.isCancelled(sessionId)) {
-            log.info("[ToolFactory] MCP 工具跳过（已取消）tool={} sessionId={}", name, sessionId);
-            emitToolDone(name, false, "已取消", 0L, eventSink);
+            log.info("[ToolFactory] 工具跳过（已取消）tool={} type={} sessionId={}", name, type, sessionId);
+            emitToolDone(name, false, "已取消", 0L, sink);
             return "[CANCELLED] 操作已取消，请告知用户操作已停止。";
         }
+        // ② 统一幂等去重（turnToolCallCache != null 时启用）
+        String cacheKey = null;
+        if (turnToolCallCache != null) {
+            // M5 修复：使用 \u0001 分隔符替代 ":"，避免 toolCode 或 arguments
+            // 中包含 ":" 导致 key 碰撞（如 toolCode="a:b" + args="c" 与 toolCode="a" + args="b:c"）
+            cacheKey = name + "\u0001" + (req.arguments() != null ? req.arguments() : "");
+            String cached = turnToolCallCache.get(cacheKey);
+            if (cached != null) {
+                log.warn("[ToolFactory] 同 turn 重复工具调用，返回缓存 tool={} sessionId={}", name, sessionId);
+                emitToolDone(name, true, null, 0L, sink);
+                return cached;
+            }
+        }
+
         long start = System.currentTimeMillis();
-        emitToolCall(name, eventSink);
-        var span = tracer.nextSpan().name("tool." + name).tag("tool.type", "mcp").start();
+        emitToolCall(name, sink);
+        var span = tracer.nextSpan().name("tool." + name).tag("tool.type", type).start();
         try (var ignored = tracer.withSpan(span)) {
-            String result = delegate.execute(req, memId);
+            String result = action.execute(req, memId);
             long durationMs = System.currentTimeMillis() - start;
             span.tag("tool.success", "true");
-            emitToolDone(name, true, null, durationMs, eventSink);
+            emitToolDone(name, true, null, durationMs, sink);
+            if (turnToolCallCache != null && cacheKey != null) {
+                turnToolCallCache.put(cacheKey, result);
+            }
             return result;
         } catch (Exception e) {
             long durationMs = System.currentTimeMillis() - start;
             span.tag("tool.success", "false").error(e);
-            emitToolDone(name, false, e.getMessage(), durationMs, eventSink);
-            throw e;
+            emitToolDone(name, false, e.getMessage(), durationMs, sink);
+            if (rethrowOnError) {
+                if (e instanceof RuntimeException re) throw re;
+                throw new RuntimeException(e);
+            }
+            log.error("[ToolFactory] 工具执行异常 tool={}", name, e);
+            return "工具执行失败: " + e.getMessage();
         } finally {
             span.end();
         }
     };
 }
+
+/** 工具执行函数式接口（供 buildTracedExecutor 委托） */
+@FunctionalInterface
+interface TracedToolAction {
+    String execute(ToolExecutionRequest req, Object memId) throws Exception;
+}
 ```
 
 ### 3.5 新增取消端点
+
+> **I3 修复 — 经 Application 层 + CORS 一致性**：
+> Controller 不直接调用 `CancellationRegistry`（interface → application 跳层），
+> 而是通过 `ChatAppService.cancel()` 委托。
+> CORS 不用 `@CrossOrigin(origins = "*")`（与 `/state` 保持一致，由网关统一管控，
+> 避免任意源 POST 取消任意 session）。
 
 ```java
 // ChatController.java — 新增接口
@@ -338,16 +487,29 @@ private ToolExecutor wrapWithSseEvents(String name, ToolExecutor delegate,
  * </ol>
  *
  * <p>接口幂等：若 sessionId 无活跃生成流，静默成功，不返回错误。
+ * <p>CORS：与 /state 一致，由网关统一管控，不单独放行。
  */
-@CrossOrigin(origins = "*")
 @PostMapping("/stream/cancel")
 public R<Void> cancelStream(@RequestParam String sessionId) {
     if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {
         return R.fail(400, "非法的 sessionId 格式");
     }
-    cancellationRegistry.cancel(sessionId);
+    chatService.cancel(sessionId);  // 经 Application 层委托
     log.info("[Chat] 用户取消 Agent 生成 sessionId={}", sessionId);
     return R.ok(null);
+}
+```
+
+```java
+// ChatAppService.java — 新增 cancel() 委托方法
+/**
+ * 取消指定会话正在进行的 Agent 生成。
+ * 触发取消标志（阻止后续工具执行）+ Reactor Sink 信号（截断 LLM 流）。
+ *
+ * @param sessionId 会话 ID
+ */
+public void cancel(String sessionId) {
+    cancellationRegistry.cancel(sessionId);
 }
 ```
 
@@ -436,24 +598,28 @@ public class ChatAppService {
 
     public Flux<ChatEvent> stream(String sessionId, String message,
                                    String domainCode, String requestId) {
-        // ① 幂等检查：requestId 不为空时才校验
+        // ① 幂等检查 + 流终止时标记 done（I8 修复：实际实现 doFinally 标记）
+        Flux<ChatEvent> stream = resolveStream(sessionId, message, domainCode);
         if (requestId != null && !requestId.isBlank()) {
             String key = REQ_KEY_PREFIX + sessionId + ":" + requestId;
             // 使用 "processing" 值而非 "1"，区分"处理中"和 key 不存在两种状态。
-            // setIfAbsent 返回 true 说明首次写入，可以继续处理；
-            // 返回 false 说明该 requestId 已在处理中或已完成，拒绝重复执行。
             Boolean isNew = redisTemplate.opsForValue()
                     .setIfAbsent(key, "processing", REQUEST_IDEMPOTENCY_TTL);
             if (!Boolean.TRUE.equals(isNew)) {
                 log.warn("[Chat] 重复请求被拦截 sessionId={} requestId={}", sessionId, requestId);
                 return Flux.just(ChatEvent.error("请勿重复提交，请等待上一条消息处理完成", objectMapper));
             }
-            // 请求完成后将状态更新为 "done"（保持 key 存活直到 TTL，
-            // 防止 TTL 内再次提交同 requestId 被误判为新请求）。
-            // 具体实现：在 tokenFlux.doFinally() 中调用 redisTemplate.opsForValue().set(key, "done", 剩余TTL)
+            // I8 修复：流终止时将状态从 "processing" 更新为 "done"，
+            // 防止 TTL 内再次提交同 requestId 被误判为新请求。
+            // doFinally 绑定在实际返回的 Flux 上，无论路由到哪个分支都会触发。
+            return stream.doFinally(signal ->
+                    redisTemplate.opsForValue().set(key, "done", REQUEST_IDEMPOTENCY_TTL));
         }
+        return stream;
+    }
 
-        // ② 现有路由逻辑不变
+    /** 现有路由逻辑提取为私有方法（SRP） */
+    private Flux<ChatEvent> resolveStream(String sessionId, String message, String domainCode) {
         if (sessionQueueService.isActive(sessionId)) {
             return faqChatService.appendAndHint(sessionId, message);
         }
@@ -482,80 +648,13 @@ public Flux<ServerSentEvent<String>> streamChat(@RequestBody ChatRequest req) {
 
 **问题**：LLM 在同一 turn 内可能因幻觉或 prompt 设计问题重复调用同一工具（如连续两次调用 `query_order`）。当前 `HttpToolRunner` 无感知地执行两次，外部系统收到两次请求。
 
-**方案**：在 `DomainToolProviderFactory` 的工具执行器中维护 per-turn 调用记录，对重复调用返回缓存结果。
+**方案**：已在 §3.4 的 `buildTracedExecutor()` 统一骨架中实现——per-turn `turnToolCallCache`（`ConcurrentHashMap`）在 `ToolProvider` lambda 内部创建，传入 `buildTracedExecutor`，对相同 `toolCode + arguments` 的重复调用返回缓存结果。
 
-```java
-// DomainToolProviderFactory.build() 中新增 per-turn 调用缓存
-
-public ToolProvider build(List<ToolConfig> domainTools,
-                           Sinks.Many<ChatEvent> eventSink,
-                           BuiltinTools builtinTools,
-                           String sessionId) {
-    // build() 的 ToolProvider lambda 由 LangChain4j 在每次 LLM turn 时调用（一次请求可多 turn）。
-    // turnCallCache 必须在 lambda 内部创建，保证生命周期 = 单次 LLM turn，不跨 turn 污染。
-    // LangChain4j 在同一 turn 内串行调用工具，无并发写，使用普通 HashMap 即可。
-    return request -> {
-        Map<String, String> turnCallCache = new HashMap<>(); // ← 每 turn 新建，不跨 turn 复用
-
-        Map<ToolSpecification, ToolExecutor> toolMap = new LinkedHashMap<>();
-        loadMcpTools(toolMap, eventSink, request, sessionId);
-        loadDomainTools(toolMap, domainTools, eventSink, sessionId, turnCallCache); // ← 传入缓存
-        toolMap.putAll(builtinTools.buildToolSpecs());
-        return new ToolProviderResult(toolMap);
-    };
-}
-
-private ToolExecutor buildHttpExecutor(ToolConfig tc, Sinks.Many<ChatEvent> eventSink,
-                                        String sessionId,
-                                        Map<String, String> turnCallCache) {
-    return (ToolExecutionRequest req, Object memId) -> {
-        // 取消检查
-        if (cancellationRegistry.isCancelled(sessionId)) {
-            emitToolDone(tc.code(), false, "已取消", 0L, eventSink);
-            return "[CANCELLED] 操作已取消。";
-        }
-
-        // 幂等去重：同 turn 内相同工具+参数 → 返回缓存结果
-        String cacheKey = tc.code() + ":" + (req.arguments() != null ? req.arguments() : "");
-        String cached = turnCallCache.get(cacheKey);
-        if (cached != null) {
-            log.warn("[ToolFactory] 同 turn 重复工具调用，返回缓存 tool={} sessionId={}",
-                    tc.code(), sessionId);
-            emitToolDone(tc.code(), true, null, 0L, eventSink);
-            return cached;
-        }
-
-        // 正常执行
-        long start = System.currentTimeMillis();
-        emitToolCall(tc.code(), eventSink);
-        var span = tracer.nextSpan().name("tool." + tc.code()).tag("tool.type", "http").start();
-        try (var ignored = tracer.withSpan(span)) {
-            Map<String, Object> args = parseArgs(req.arguments());
-            ToolCallResult result = httpToolRunner.execute(tc, args, Map.of());
-            long durationMs = System.currentTimeMillis() - start;
-            if (result.isSuccess()) {
-                span.tag("tool.success", "true");
-                emitToolDone(tc.code(), true, null, durationMs, eventSink);
-                turnCallCache.put(cacheKey, result.getResponse()); // ← 缓存结果
-                return result.getResponse();
-            } else {
-                span.tag("tool.success", "false").error(new RuntimeException(result.getErrorMsg()));
-                emitToolDone(tc.code(), false, result.getErrorMsg(), durationMs, eventSink);
-                return "工具执行失败: " + result.getErrorMsg();
-            }
-        } catch (Exception e) {
-            long durationMs = System.currentTimeMillis() - start;
-            span.tag("tool.success", "false").error(e);
-            emitToolDone(tc.code(), false, e.getMessage(), durationMs, eventSink);
-            return "工具执行失败: " + e.getMessage();
-        } finally {
-            span.end();
-        }
-    };
-}
-```
-
-> **设计权衡**：`turnCallCache` 按 `toolCode + arguments` 作为 key，参数相同才命中缓存。参数不同的重复调用（如查询不同订单 ID）视为合法，不命中缓存。此 Map 不跨 turn 复用（每次 `build()` 新建），不影响多轮对话。
+> **设计权衡**：
+> - `turnToolCallCache` 按 `toolCode + "\u0001" + arguments` 作为 key（`"\u0001"` 分隔符避免冒号碰撞），参数相同才命中缓存。参数不同的重复调用（如查询不同订单 ID）视为合法，不命中缓存。
+> - 生命周期 = 单次 LLM turn（LangChain4j 每次 turn 调用 `provideTools()` 时在 lambda 内新建），不跨 turn 复用，不影响多轮对话。
+> - 使用 `ConcurrentHashMap` 而非 `HashMap`：LangChain4j 1.1.0 不保证同 turn 内串行调用工具（部分模型支持 `parallel_tool_calls`），并发写 `HashMap` 会导致内部表损坏。
+> - MCP 工具传 `null` 跳过去重（MCP 工具由服务端自行保证幂等，见 §1.3 非目标）。
 
 ## 5. 第三层：状态机补偿设计
 
@@ -590,38 +689,52 @@ publishSessionStart(...);             // ← Direct → DB 持久化，失败只
 
 ```java
 // SessionQueueService.enqueue() — 改造后
+// I4 修复：提取 publishSessionLifecycleEvents() 私有方法，enqueue() 只管入队 + 委托，
+// 补偿回滚逻辑封装在私有方法中，保持主方法行数可控（< 20 行）。
+
 public SessionQueueItem enqueue(String sessionId, String userName,
                                  String transferReason, String tag) {
     // 业务时间检查（不变）
     ZonedDateTime now = ZonedDateTime.now(ZoneId.of("Asia/Shanghai"));
     if (!businessHoursService.isOpen(now)) {
-        String nextOpen = businessHoursService.nextOpenTime(now);
-        throw new ServiceOfflineException("当前不在服务时间...", nextOpen);
+        throw new ServiceOfflineException("当前不在服务时间...",
+                businessHoursService.nextOpenTime(now));
     }
 
     SessionQueueItem item = new SessionQueueItem(
             sessionId, userName, transferReason, tag,
             Instant.now().getEpochSecond(), SessionStatus.WAITING, null);
+    saveQueueItem(sessionId, item);                    // 第一步：Redis 入队
+    publishSessionLifecycleEvents(sessionId, userName, transferReason, tag, item); // 第二步+第三步
+    log.info("[SessionQueue] enqueue 成功 sessionId={} userName={}", sessionId, userName);
+    return item;
+}
 
-    // 第一步：Redis 入队
+/** Redis 入队，失败抛 SessionEnqueueException */
+private void saveQueueItem(String sessionId, SessionQueueItem item) {
     try {
         queueRepository.save(item);
     } catch (IllegalStateException e) {
         log.error("[SessionQueue] enqueue 失败 sessionId={}", sessionId, e);
         throw new SessionEnqueueException("会话入队失败，请稍后重试", sessionId, e);
     }
+}
 
-    // 第二步：Fanout 广播（非关键路径，失败可容忍）
+/**
+ * 发布会话生命周期事件（Fanout + SESSION_START）。
+ * Fanout 失败可容忍；SESSION_START 失败时补偿回滚 Redis 并抛专属异常。
+ */
+private void publishSessionLifecycleEvents(String sessionId, String userName,
+                                            String transferReason, String tag, SessionQueueItem item) {
+    // Fanout 广播（非关键路径，失败可容忍——坐席端下次刷新恢复）
     try {
         publishEvent(new SessionEvent(SessionEventType.ENQUEUE, item));
     } catch (org.springframework.amqp.AmqpException e) {
-        log.warn("[SessionQueue] ENQUEUE Fanout 发布失败（非关键），继续执行 sessionId={}", sessionId, e);
+        log.warn("[SessionQueue] ENQUEUE Fanout 发布失败（非关键）sessionId={}", sessionId, e);
     }
-
-    // 第三步：SESSION_START（关键路径：触发 DB 持久化）
-    // 失败时补偿回滚 Redis，并向调用方抛出专属异常 SessionEnqueueMqFailedException，
-    // 与"已入队（幂等）"场景的 SessionEnqueueException 明确区分，
-    // 避免 BuiltinTools.transferToAgent() 误判为幂等而继续发 SSE transfer 事件。
+    // SESSION_START（关键路径：触发 DB 持久化）
+    // 失败时补偿回滚 Redis，抛出 SessionEnqueueMqFailedException，
+    // 与"已入队（幂等）"场景的 SessionEnqueueException 明确区分。
     try {
         publisher.publishSessionStart(sessionId, userName, transferReason, tag, item.waitSince());
     } catch (org.springframework.amqp.AmqpException e) {
@@ -629,9 +742,6 @@ public SessionQueueItem enqueue(String sessionId, String userName,
         queueRepository.delete(sessionId);  // 补偿：Redis 入队回滚
         throw new SessionEnqueueMqFailedException("服务暂时不可用，请稍后重试", sessionId, e);
     }
-
-    log.info("[SessionQueue] enqueue 成功 sessionId={} userName={}", sessionId, userName);
-    return item;
 }
 ```
 
@@ -645,48 +755,69 @@ public SessionQueueItem enqueue(String sessionId, String userName,
 
 > "先更新 Redis 激活域绑定，再写入审计日志。两步操作相互独立，若第二步失败，Redis 已更新但审计记录缺失（最终一致，非原子）。业务可接受此风险；如需强一致，需引入补偿机制。"
 
-#### 补偿方案：审计失败不回滚 Redis，但记录补偿日志
+#### 补偿方案：审计失败不回滚 Redis，委托 `CompensationLogService` 记录补偿日志
 
-域切换的 Redis 更新（业务核心）比审计日志（辅助记录）优先级更高。补偿策略：审计失败时**不回滚 Redis**（回滚会破坏用户当前的域绑定），而是写入补偿日志，供后续异步补偿或人工对账：
+域切换的 Redis 更新（业务核心）比审计日志（辅助记录）优先级更高。补偿策略：审计失败时**不回滚 Redis**（回滚会破坏用户当前的域绑定），而是委托 `CompensationLogService` 写入补偿日志，供后续异步补偿或人工对账。
+
+> **SRP 拆分（I11 修复）**：补偿日志写入逻辑抽取为独立 `CompensationLogService`，避免 `DomainSessionAppService` 承担补偿持久化职责。`enqueue()` 回滚场景也复用此服务。
+
+```java
+// application/service/CompensationLogService.java — 【新增】
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class CompensationLogService {
+
+    private final StringRedisTemplate redisTemplate;
+    private final ObjectMapper objectMapper;
+    private static final String DOMAIN_SWITCH_KEY = "chat:compensation:domain_switch";
+    private static final Duration TTL = Duration.ofDays(7);
+
+    /**
+     * 记录域切换审计失败的补偿日志（Redis List，TTL 7 天）。
+     * 后续可由定时任务读取并重试写入审计表。
+     */
+    public void logDomainSwitch(String sessionId, String fromDomain, String toDomain,
+                                 String switchType, String userMessage, String reason) {
+        try {
+            String payload = objectMapper.writeValueAsString(Map.of(
+                    "sessionId", sessionId, "from", fromDomain, "to", toDomain,
+                    "switchType", switchType, "msg", userMessage, "reason", reason,
+                    "ts", Instant.now().getEpochSecond()));
+            redisTemplate.opsForList().rightPush(DOMAIN_SWITCH_KEY, payload);
+            redisTemplate.expire(DOMAIN_SWITCH_KEY, TTL);
+        } catch (Exception ex) {
+            log.error("[Compensation] 域切换补偿日志写入也失败 sessionId={}", sessionId, ex);
+        }
+    }
+}
+```
 
 ```java
 // DomainSessionAppService.saveDomainSwitch() — 改造后
+// 注意（C1 修复）：保留 switchType 参数，不硬编码 SwitchType.LLM_TOOL。
+// 实际调用方传入 SwitchType.INITIAL / ROUTER_MODEL / LLM_TOOL，
+// 硬编码会导致所有切换审计记录被误标为 LLM_TOOL。
 
-public void saveDomainSwitch(String sessionId, String fromDomain,
-                              String toDomain, String userMessage, String reason) {
+public void saveDomainSwitch(String sessionId, String fromDomain, String toDomain,
+                              String switchType, String userMessage, String reason) {
     // 第一步：Redis 更新（核心业务）
     sessionDomainRepo.save(sessionId, toDomain);
-    log.info("[DomainSwitch] Redis 更新完成 sessionId={} {} → {}", sessionId, fromDomain, toDomain);
+    log.info("[DomainSwitch] Redis 更新完成 sessionId={} {} → {} type={}",
+            sessionId, fromDomain, toDomain, switchType);
 
     // 第二步：审计日志（辅助记录）
     try {
         domainSwitchRepo.record(new DomainSwitchRecord(
                 sessionId, fromDomain, toDomain,
-                SwitchType.LLM_TOOL, userMessage, reason, null));
+                switchType, userMessage, reason, null));
     } catch (Exception e) {
         // 审计失败：不回滚 Redis（回滚会破坏用户当前域绑定）
-        // 写入补偿日志，供后续对账
-        log.error("[DomainSwitch] 审计日志写入失败，已写补偿日志 sessionId={} {} → {}",
-                sessionId, fromDomain, toDomain, e);
-        writeDomainSwitchCompensationLog(sessionId, fromDomain, toDomain, userMessage, reason);
-    }
-}
-
-/**
- * 写入域切换补偿日志（Redis List，TTL 7 天）。
- * 后续可由定时任务读取并重试写入审计表。
- */
-private void writeDomainSwitchCompensationLog(String sessionId, String fromDomain,
-                                               String toDomain, String userMessage, String reason) {
-    try {
-        String log = String.format("{\"sessionId\":\"%s\",\"from\":\"%s\",\"to\":\"%s\"," +
-                "\"msg\":\"%s\",\"reason\":\"%s\",\"ts\":%d}",
-                sessionId, fromDomain, toDomain, userMessage, reason, Instant.now().getEpochSecond());
-        redisTemplate.opsForList().rightPush("compensation:domain_switch", log);
-        redisTemplate.expire("compensation:domain_switch", Duration.ofDays(7));
-    } catch (Exception ex) {
-        // 补偿日志本身也失败：只能记录 ERROR 日志，供人工排查
-        log.error("[DomainSwitch] 补偿日志写入也失败 sessionId={}", sessionId, ex);
+        // 委托 CompensationLogService 写补偿日志
+        log.error("[DomainSwitch] 审计日志写入失败，已委托补偿 sessionId={} {} → {} type={}",
+                sessionId, fromDomain, toDomain, switchType, e);
+        compensationLogService.logDomainSwitch(
+                sessionId, fromDomain, toDomain, switchType, userMessage, reason);
     }
 }
 ```
@@ -885,16 +1016,23 @@ public static final String THINKING = "thinking";  // data: {"status":"thinking"
 
 ### 7.1 文件改动汇总
 
-| 文件路径 | 改动类型 | 改动要点 |
-|---------|---------|---------|
-| `infrastructure/cancellation/CancellationRegistry.java` | **新增** | Redis 标志 + 内存 Sink 双轨取消机制 |
-| `application/service/DomainAgentService.java` | 注入 + 改动 | 注入 `CancellationRegistry`；`register()` + `takeUntilOther()` + `doFinally` 区分 CANCEL signal；`build()` 新增 `sessionId` 参数 |
-| `application/service/tool/DomainToolProviderFactory.java` | 改动 | `build()` 新增 `sessionId` 参数；每个工具执行前调用 `isCancelled()`；新增 per-turn `turnCallCache` |
-| `interfaces/rest/ChatController.java` | 新增端点 + 字段 | `POST /stream/cancel` 端点；`ChatRequest` 新增 `requestId` 字段 |
-| `application/service/ChatAppService.java` | 改动 | `stream()` 新增 `requestId` 参数；Redis `setIfAbsent` 幂等检查 |
-| `application/service/ChatEvent.java` | 新增 | `CANCELLED` 常量 + `cancelled()` 工厂方法 |
-| `application/service/SessionQueueService.java` | 改动 | `enqueue()` SESSION_START 失败时补偿回滚 Redis |
-| `application/service/DomainSessionAppService.java` | 改动 | `saveDomainSwitch()` 审计失败时写补偿日志 |
+> **说明**：以下均为**待实施**改动。当前 `main` 分支代码尚未落地任何一项。
+
+| 文件路径 | 当前状态 | 改动类型 | 改动要点 |
+|---------|---------|---------|---------|
+| `infrastructure/cancellation/CancelFlagStore.java` | **文件不存在** | **新增** | Redis 标志位 + 内存 `ConcurrentHashMap` 缓存，供 blocking 工具线程轮询 |
+| `application/service/cancellation/CancellationRegistry.java` | **文件不存在** | **新增** | 编排 Sink 注册 + 委托 `CancelFlagStore`；`register()` 清理残留标志；`cancel()` 先设标志再触发 Sink |
+| `application/service/CompensationLogService.java` | **文件不存在** | **新增** | 统一补偿日志写入（`ObjectMapper` 序列化，Redis List），供 `saveDomainSwitch` 和 `enqueue` 回滚复用 |
+| `application/service/DomainAgentService.java` | `doStream()` 无取消逻辑；`build()` 调用为 3 参数 | 注入 + 改动 | 注入 `CancellationRegistry`；`doStream()` 内 `register()` + 提取 `buildTokenFlux()` + `handleStreamTermination()` 私有方法；`build()` 调用新增第 4 参数 `sessionId` |
+| `application/service/tool/DomainToolProviderFactory.java` | `build()` 3 参数；`buildTracedExecutor()` 共享骨架无取消检查 | 改动 | `build()` 新增 `sessionId` + `turnToolCallCache` 参数；`buildTracedExecutor()` 内挂入取消检查 + 幂等去重（**保持统一骨架，不重新内联**）；`buildHttpExecutor` / `wrapWithSseEvents` 维持一行委托 |
+| `interfaces/rest/ChatController.java` | 无 cancel 端点；`ChatRequest` 内部类 3 字段 | 新增端点 + 字段 | `POST /stream/cancel` 端点（经 `ChatAppService` 委托，CORS 由网关管控）；`ChatRequest` 新增 `requestId` 字段 |
+| `application/service/ChatAppService.java` | `stream()` 3 参数，无幂等检查 | 改动 | `stream()` 新增 `requestId` 参数；幂等检查提取 `resolveStream()` 私有方法；`doFinally` 标记 `"done"`；新增 `cancel()` 委托方法 |
+| `application/service/ChatEvent.java` | `EventType` 10 个常量，无 `CANCELLED` | 新增 | `CANCELLED` 常量 + `cancelled()` 工厂方法 |
+| `application/service/SessionQueueService.java` | `enqueue()` 用 `publishSafely` 吞 MQ 异常；无补偿 | 改动 | `enqueue()` 提取 `saveQueueItem()` + `publishSessionLifecycleEvents()`；SESSION_START 失败补偿回滚；注入 `CompensationLogService` |
+| `application/exception/SessionEnqueueMqFailedException.java` | **文件不存在** | **新增** | `SessionEnqueueException` 子类，区分 MQ 失败回滚 vs 幂等兜底 |
+| `application/exception/SessionEnqueueException.java` | Javadoc 声明"MQ 失败不抛此异常" | Javadoc 更新 | 同步更新基类 Javadoc 契约（C2 修复） |
+| `application/service/tool/BuiltinTools.java` | `transferToAgent()` catch `SessionEnqueueException` 继续发 SSE | 改动 | 新增 `catch (SessionEnqueueMqFailedException)` 分支（子类在前），MQ 失败时不发 SSE |
+| `application/service/DomainSessionAppService.java` | `saveDomainSwitch()` 两步裸写，无 try/catch | 改动 | 审计失败时委托 `CompensationLogService.logDomainSwitch()`；保留 `switchType` 参数不硬编码 |
 
 ### 7.2 新增依赖
 
@@ -902,7 +1040,8 @@ public static final String THINKING = "thinking";  // data: {"status":"thinking"
 
 - `StringRedisTemplate`（已存在）— 取消标志位 + 幂等 key + 补偿日志
 - `Sinks.One<Void>`（Reactor Core，已引入）— 取消触发器
-- `ConcurrentHashMap`（JDK）— per-turn 工具调用缓存
+- `ConcurrentHashMap`（JDK）— `CancellationRegistry` 内存注册表
+- `HashMap`（JDK）— per-turn 工具调用缓存（LangChain4j 同 turn 串行调用，无需并发容器）
 
 ### 7.3 配置项
 
@@ -917,6 +1056,8 @@ conversation:
   compensation:
     domain-switch-log-ttl-days: 7  # 域切换补偿日志 TTL（默认 7 天）
 ```
+
+> **M4 修复**：以上配置项应通过 `@ConfigurationProperties` 或 `@Value` 绑定到代码中的 `Duration` 常量，而非 `private static final` 硬编码。实施时建议统一使用 `@ConfigurationProperties(prefix = "conversation.cancellation")` 注入，保持配置与代码一致。
 
 ### 7.4 分阶段交付计划
 
@@ -975,37 +1116,21 @@ conversation:
 
 每次工具执行前都调用 `redisTemplate.hasKey()`，引入一次 Redis 网络往返。当工具链较长（5+ 个工具）时，这些检查会积累延迟。
 
-**优化方案**：将 Redis 标志位缓存到 `CancellationRegistry` 的 `activeSinks` map 中——触发取消时同时设置一个内存标志，`isCancelled()` 优先检查内存标志，降级到 Redis：
-
-```java
-private final ConcurrentHashMap<String, Boolean> cancelledFlags = new ConcurrentHashMap<>();
-
-public void cancel(String sessionId) {
-    cancelledFlags.put(sessionId, Boolean.TRUE);  // 内存标志（当前实例有效）
-    // ... Sink + Redis 逻辑不变 ...
-}
-
-public boolean isCancelled(String sessionId) {
-    // 优先检查内存（无网络开销），兜底检查 Redis（多实例场景）
-    return Boolean.TRUE.equals(cancelledFlags.get(sessionId))
-        || Boolean.TRUE.equals(redisTemplate.hasKey(KEY_PREFIX + sessionId));
-}
-
-public void unregister(String sessionId) {
-    activeSinks.remove(sessionId);
-    cancelledFlags.remove(sessionId);
-    redisTemplate.delete(KEY_PREFIX + sessionId);
-}
-```
+**优化方案**：已通过 `CancelFlagStore.localFlags`（内存 `ConcurrentHashMap`）解决——`isCancelled()` 优先检查内存标志（无网络开销），兜底检查 Redis（多实例场景）。触发取消时同时设置内存标志和 Redis 标志，工具线程绝大多数命中内存，仅当前实例无记录时查 Redis。
 
 #### 7.5.4 `enqueue()` 补偿方案的幂等性
 
 `BuiltinTools.transferToAgent()` 中捕获 `SessionEnqueueException` 的逻辑（幂等兜底）仍然有效，但补偿方案在 SESSION_START MQ 失败时现在抛出专属子类 `SessionEnqueueMqFailedException`，需在 `transferToAgent()` 中明确区分：
 
+> **C2 修复 — 基类 Javadoc 契约更新**：
+> 当前 `SessionEnqueueException` 的 Javadoc 明确声明 *"MQ 发布失败属于可降级场景，不抛此异常"*。
+> 新增 `SessionEnqueueMqFailedException extends SessionEnqueueException` 后，此契约被打破。
+> **必须同步更新基类 Javadoc**：*"当 Redis 写入失败时抛出基类；当 SESSION_START MQ 发布失败并已回滚 Redis 时抛出 `SessionEnqueueMqFailedException` 子类。调用方若需区分两种场景，须先 catch 子类再 catch 基类。"*
+
 | 异常类型 | 含义 | `transferToAgent()` 处理 |
 |---------|------|------------------------|
 | `SessionEnqueueMqFailedException` | MQ 失败，Redis 已回滚，会话**未入队** | 返回错误提示，**不发** SSE transfer |
-| `SessionEnqueueException`（基类） | 会话已在队列（幂等兜底） | 继续发 SSE transfer（与现有逻辑一致） |
+| `SessionEnqueueException`（基类） | 会话已在队列（幂等兜底）或 Redis 写入失败 | 继续发 SSE transfer（与现有逻辑一致） |
 
 ```java
 // 新增专属异常类
