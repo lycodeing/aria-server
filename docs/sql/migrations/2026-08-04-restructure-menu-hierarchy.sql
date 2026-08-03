@@ -77,30 +77,31 @@ UPDATE cs_auth.sys_menu SET
     updated_at = NOW()
 WHERE id = 209;
 
--- [206] SLA管理 → 会话管理(248)下，路径改为 /session/sla
+-- [206] SLA管理 → 客服管理(100)下，路径改为 /customerservice/sla
 UPDATE cs_auth.sys_menu SET
-    parent_id = 248,
-    path = '/session/sla',
-    component = 'session/sla/index',
-    sort_order = 3,
+    parent_id = 100,
+    path = '/customerservice/sla',
+    component = 'customerservice/sla/index',
+    sort_order = 6,
     updated_at = NOW()
 WHERE id = 206;
 
--- [245] 通知配置 → 会话管理(248)下，路径改为 /session/webhooks
+-- [245] 通知配置 → 客服管理(100)下，路径改为 /customerservice/webhooks
 UPDATE cs_auth.sys_menu SET
-    parent_id = 248,
-    path = '/session/webhooks',
-    component = 'session/sla/webhook',
-    sort_order = 4,
+    parent_id = 100,
+    path = '/customerservice/webhooks',
+    component = 'customerservice/sla/webhook',
+    sort_order = 7,
     updated_at = NOW()
 WHERE id = 245;
 
--- [246] SLA违规记录 → 会话管理(248)下，路径改为 /session/breaches
+-- [246] SLA违规记录 → 客服管理(100)下，作为SLA管理页内的tab（is_visible=false，不独立显示菜单）
 UPDATE cs_auth.sys_menu SET
-    parent_id = 248,
-    path = '/session/breaches',
-    component = 'session/sla/breaches',
-    sort_order = 5,
+    parent_id = 100,
+    path = '/customerservice/sla/breaches',
+    component = 'customerservice/sla/breaches',
+    is_visible = false,
+    sort_order = 8,
     updated_at = NOW()
 WHERE id = 246;
 
