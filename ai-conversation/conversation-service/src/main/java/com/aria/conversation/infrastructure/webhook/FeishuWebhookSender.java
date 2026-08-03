@@ -57,7 +57,7 @@ public class FeishuWebhookSender extends AbstractWebhookSender {
                   }
                 }
                 """.formatted(WebhookDefaultTemplate.text(ctx.getScope(), vars)
-                        .replace("\\", "\\\\").replace("\"", "\\\""));
+                        .replace("\\", "\\\\").replace("\n", "\\n").replace("\"", "\\\""));
     }
 
     private String sign(long timestamp, String secret) {

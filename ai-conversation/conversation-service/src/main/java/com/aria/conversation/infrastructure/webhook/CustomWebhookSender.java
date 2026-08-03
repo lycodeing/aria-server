@@ -15,25 +15,27 @@ import java.util.Map;
 @Component
 public class CustomWebhookSender extends AbstractWebhookSender {
 
-    private static final String DEFAULT_TEMPLATE =
-            "{\"message\":\"SLA ${breachTypeLabel} 违规，会话：${sessionId}，"
-            + "目标：${targetSec}s，实际：${actualSec}s\"}";
-
     @Override
     public String supportedType() { return "CUSTOM"; }
 
     @Override
     public void send(WebhookConfigEntity config, WebhookEventContext ctx) {
-        Map<String, String> vars = buildVariables(ctx);
-        String template = (config.getMessageTemplate() != null
-                && !config.getMessageTemplate().isBlank())
-                ? config.getMessageTemplate() : DEFAULT_TEMPLATE;
-        String body = renderTemplate(template, vars);
+        String body = buildRequestBody(config, ctx);
 
         Map<String, String> headers = new HashMap<>();
         if (config.getCustomHeaders() != null) {
             config.getCustomHeaders().forEach(headers::put);
         }
         doPost(config.getUrl(), headers, body);
+    }
+
+    /** 构造请求体（供测试调用） */
+    String buildRequestBody(WebhookConfigEntity config, WebhookEventContext ctx) {
+        Map<String, String> vars = buildVariables(ctx);
+        if (config.getMessageTemplate() != null && !config.getMessageTemplate().isBlank()) {
+            return renderTemplate(config.getMessageTemplate(), vars);
+        }
+        return "{\"message\":\"" + WebhookDefaultTemplate.text(ctx.getScope(), vars)
+                .replace("\\", "\\\\").replace("\n", "\\n").replace("\"", "\\\"") + "\"}";
     }
 }
