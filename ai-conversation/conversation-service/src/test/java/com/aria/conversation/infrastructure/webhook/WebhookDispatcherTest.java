@@ -84,4 +84,26 @@ class WebhookDispatcherTest {
         dispatcher.dispatch(null, WebhookEventContext.builder().build());
         verify(feishuSender, never()).send(any(), any());
     }
+
+    @Test
+    @DisplayName("发送失败重试 3 次后成功调用回调")
+    void dispatch_retriesUntilSuccess() {
+        WebhookConfigEntity config = WebhookConfigEntity.builder().id(4L).type("FEISHU").build();
+        AtomicInteger calls = new AtomicInteger();
+        // 前两次抛异常，第三次成功
+        doThrow(new RuntimeException("temporary"))
+                .doThrow(new RuntimeException("temporary"))
+                .doNothing()
+                .when(feishuSender).send(eq(config), any(WebhookEventContext.class));
+        WebhookEventContext ctx = WebhookEventContext.builder()
+                .scope(WebhookScope.SLA_BREACH)
+                .sessionId("sess-4")
+                .onSuccess(calls::incrementAndGet)
+                .build();
+
+        dispatcher.dispatch(config, ctx);
+
+        verify(feishuSender, times(3)).send(eq(config), any(WebhookEventContext.class));
+        assertEquals(1, calls.get());
+    }
 }
