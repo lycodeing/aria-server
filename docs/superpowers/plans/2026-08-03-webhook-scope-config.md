@@ -20,6 +20,7 @@
 - 后端在 `aria-server` 仓库，前端在 `/Users/lycodeing/WebstormProjects/aria-frontend` 仓库，两个仓库各自独立 commit。
 - 现有接口路径 `/api/v1/admin/sla/webhooks` 不变（历史命名，本期不迁移）。
 - 分发的异步线程池 `webhookExecutor`、重试逻辑（3 次指数退避）、`SlaBreachMapper.updateWebhookNotifiedAt` 批量回写均**复用现有实现**，不新增。
+- **现状基线（I6，2026-08-03 核实）**：conversation-service 现有测试套件在 HEAD **不可编译**——`WebhookDispatcherTest`/`FeishuWebhookSenderTest` 使用 `breachType("WAIT")`/`stage("BREACH")`（String），而 `SlaBreachEntity.breachType/stage` 已枚举化（BreachType/BreachStage）；且 conversation-service 编译依赖本地 maven 仓库的 `aria-common-web`，未 install 时 `SessionQueueRepository.hPutIfAbsent` 找不到符号。**Task 5/6 重写相关测试即修复枚举问题；所有 Maven 命令必须从仓库根执行 `mvn -pl ai-conversation/conversation-service -am ...`（-am 连带构建 common 模块）。**
 - 每个任务结束必须运行对应测试并 commit；提交信息遵循仓库现有约定（`feat(conversation): ...` / `fix(conversation): ...` / `feat: ...`）。
 
 ## 文件结构总览
@@ -30,7 +31,9 @@
 |---|---|---|
 | `ai-conversation/conversation-service/src/main/java/com/aria/conversation/domain/model/WebhookScope.java` | 新建 | 事件范围枚举 |
 | `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/WebhookEventContext.java` | 新建 | 泛化事件上下文（替代 SlaBreachContext） |
-| `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/WebhookEventContextFactory.java` | 新建 | SLA 违规事件上下文工厂 |
+| `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/WebhookEventContextFactory.java` | 新建 | 事件上下文工厂（覆盖 5 个 scope） |
+| `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/WebhookEventTypes.java` | 新建 | 事件细化类型常量 |
+| `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/WebhookDefaultTemplate.java` | 新建 | 按 scope 的默认模板提供者 |
 | `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/SlaBreachContext.java` | 删除 | 被 WebhookEventContext 替代 |
 | `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/WebhookEventPublisher.java` | 新建 | 事件发布器（scope 匹配 + 异步分发） |
 | `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/persistence/entity/WebhookConfigEntity.java` | 修改 | 加 `scopes` 字段 |
@@ -77,6 +80,7 @@
 **Files:**
 - Create: `ai-conversation/conversation-service/src/main/java/com/aria/conversation/domain/model/WebhookScope.java`
 - Create: `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/WebhookEventContext.java`
+- Create: `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/WebhookEventTypes.java`
 - Create: `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/WebhookEventContextFactory.java`
 - Create: `ai-conversation/conversation-service/src/test/java/com/aria/conversation/infrastructure/webhook/WebhookEventContextTest.java`
 - Delete: `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/SlaBreachContext.java`
@@ -84,8 +88,9 @@
 **Interfaces:**
 - Produces:
   - `enum WebhookScope { SLA_BREACH, SESSION_CREATED, SESSION_TRANSFERRED, SESSION_CLOSED, CSAT_RATED }`
-  - `@Builder @Data class WebhookEventContext { WebhookScope scope; String eventType; String sessionId; String visitorName; Map<String,Object> payload; }`
-  - `WebhookEventContextFactory.buildSlaBreach(ConversationEntity session, SlaPolicyEntity policy, List<SlaBreachEntity> breaches)` → `WebhookEventContext`
+  - `@Builder @Data class WebhookEventContext { WebhookScope scope; String eventType; String sessionId; String visitorName; Map<String,Object> payload; Runnable onSuccess; }`
+  - `WebhookEventTypes` 常量类（SESSION_CREATED/SESSION_ENQUEUE/SESSION_TRANSFER/SESSION_CLOSED/CSAT_RATED）
+  - `WebhookEventContextFactory.buildSlaBreach(...)` / `buildSessionEvent(...)` / `buildCsatRated(...)` → `WebhookEventContext`
 
 - [ ] **Step 1: 删除 SlaBreachContext**
 
@@ -130,6 +135,9 @@ import java.util.Map;
 /**
  * 通用 Webhook 事件上下文（替代 SlaBreachContext）。
  * 携带触发事件的范围、细化类型与业务 payload，供各 WebhookSender 渲染消息。
+ *
+ * <p>并发注意：同一实例可能被 {@link WebhookDispatcher} 并发传给多个 @Async 分发任务，
+ * Sender 必须只读本对象（当前字段仅读），不要在其内部修改 ctx。
  */
 @Builder
 @Data
@@ -149,10 +157,40 @@ public class WebhookEventContext {
 
     /** 事件专属业务字段（SLA 违规明细 / 会话状态 / 评分等） */
     private Map<String, Object> payload;
+
+    /**
+     * 推送成功后的回调（可选）。由事件发布方注入（如 SLA 违规回写 webhook_notified_at），
+     * WebhookDispatcher 发送成功后统一调用；失败不调用。
+     * 使 dispatcher 保持通用，无需按 scope 特判。
+     */
+    private Runnable onSuccess;
 }
 ```
 
-- [ ] **Step 4: 新建 WebhookEventContextFactory**
+- [ ] **Step 4a: 新建 WebhookEventTypes 常量类（集中 eventType 魔法串）**
+
+```java
+package com.aria.conversation.infrastructure.webhook;
+
+/**
+ * Webhook 事件细化类型常量，集中定义避免各处魔法字符串。
+ */
+public final class WebhookEventTypes {
+
+    private WebhookEventTypes() {}
+
+    // SLA 违规（eventType 复用 BreachType：WAIT/FRT/HANDLE）
+    // 会话生命周期
+    public static final String SESSION_CREATED = "CREATED";
+    public static final String SESSION_ENQUEUE = "ENQUEUE";
+    public static final String SESSION_TRANSFER = "TRANSFER";
+    public static final String SESSION_CLOSED = "CLOSED";
+    // 客户评价
+    public static final String CSAT_RATED = "RATED";
+}
+```
+
+- [ ] **Step 4b: 新建 WebhookEventContextFactory（覆盖全部 5 个 scope，统一构造）**
 
 ```java
 package com.aria.conversation.infrastructure.webhook;
@@ -167,18 +205,13 @@ import java.util.Map;
 
 /**
  * Webhook 事件上下文工厂：统一构造各事件类型的上下文，避免调用方重复拼装。
+ * 所有 scope 的事件上下文均通过本工厂构造，事件类型使用 {@link WebhookEventTypes} 常量。
  */
 public final class WebhookEventContextFactory {
 
     private WebhookEventContextFactory() {}
 
-    /**
-     * 构造 SLA 违规事件上下文。
-     *
-     * @param session  违规会话
-     * @param policy   命中的 SLA 策略
-     * @param breaches 本轮新写入的违规实体列表（非空，调用方保证）
-     */
+    /** 构造 SLA 违规事件上下文（payload 含 policyName/breaches/breachIds）。 */
     public static WebhookEventContext buildSlaBreach(ConversationEntity session,
                                                       SlaPolicyEntity policy,
                                                       List<SlaBreachEntity> breaches) {
@@ -192,6 +225,39 @@ public final class WebhookEventContextFactory {
                         "policyName", policy.getName(),
                         "breaches", breaches,
                         "breachIds", breaches.stream().map(SlaBreachEntity::getId).toList()))
+                .build();
+    }
+
+    /** 构造会话生命周期事件上下文（SESSION_CREATED / SESSION_TRANSFERRED / SESSION_CLOSED）。 */
+    public static WebhookEventContext buildSessionEvent(WebhookScope scope,
+                                                        String eventType,
+                                                        String sessionId,
+                                                        String visitorName,
+                                                        Map<String, Object> extra) {
+        return WebhookEventContext.builder()
+                .scope(scope)
+                .eventType(eventType)
+                .sessionId(sessionId)
+                .visitorName(visitorName)
+                .payload(extra)
+                .build();
+    }
+
+    /** 构造客户评价事件上下文（payload 含 csatId/score/comment/channel）。 */
+    public static WebhookEventContext buildCsatRated(String sessionId,
+                                                     Long csatId,
+                                                     Object score,
+                                                     String comment,
+                                                     String channel) {
+        return WebhookEventContext.builder()
+                .scope(WebhookScope.CSAT_RATED)
+                .eventType(WebhookEventTypes.CSAT_RATED)
+                .sessionId(sessionId)
+                .payload(Map.of(
+                        "csatId", csatId,
+                        "score", score == null ? "" : score,
+                        "comment", comment == null ? "" : comment,
+                        "channel", channel == null ? "" : channel))
                 .build();
     }
 }
@@ -259,7 +325,7 @@ class WebhookEventContextTest {
 
 - [ ] **Step 6: 运行测试确认通过**
 
-Run: `cd ai-conversation && mvn -pl conversation-service test -Dtest=WebhookEventContextTest`
+Run: `mvn -pl ai-conversation/conversation-service test -Dtest=WebhookEventContextTest`
 Expected: BUILD SUCCESS，2 tests passed
 
 - [ ] **Step 7: Commit**
@@ -352,39 +418,53 @@ git commit -m "feat(conversation): cs_webhook_config 增加 scopes 事件范围�
 
 - [ ] **Step 2: Mapper 加按范围查询**
 
-在 `WebhookConfigMapper` 接口中新增方法（`@Mapper` 注解接口，用 `@Select` 注解 SQL）：
+在 `WebhookConfigMapper` 接口中新增方法。**注意：不能使用 `@Select("SELECT *")` 手写 SQL（违反项目约定 + 自定映射无法处理 jsonb 列）**，必须使用 `BaseMapper` 的 `LambdaQueryWrapper` + `apply`：
 
 ```java
     /**
      * 查询订阅了指定事件范围且启用的 Webhook 配置（按 id 升序）。
-     * 使用 jsonb 数组包含操作符 {@code @>}。
+     * 使用 jsonb 数组包含操作符 {@code @>}，通过 MyBatis-Plus apply 参数化注入。
+     *
+     * <p>使用 apply 而非 @Select 手写 SQL，原因：
+     * <ol>
+     *   <li>保持 MyBatis-Plus 自动 ResultMap，确保 jsonb 列（scopes/customHeaders）通过 StringListTypeHandler/StringMapTypeHandler 正确映射</li>
+     *   <li>避免 @Select 全量 SELECT * 不走 LambdaQueryWrapper 的自动列映射</li>
+     * </ol>
      *
      * @param scope WebhookScope 枚举名，如 "SLA_BREACH"
      * @return 匹配的启用配置列表，无则返回空列表
      */
-    @Select("""
-            SELECT *
-            FROM cs_conversation.cs_webhook_config
-            WHERE is_enabled = 1
-              AND scopes @> ('["' || #{scope} || '"]')::jsonb
-            ORDER BY id ASC
-            """)
-    List<WebhookConfigEntity> selectEnabledByScope(String scope);
+    default List<WebhookConfigEntity> selectEnabledByScope(String scope) {
+        return selectList(Wrappers.<WebhookConfigEntity>lambdaQuery()
+                .eq(WebhookConfigEntity::getIsEnabled, 1)
+                .apply("scopes @> ('[\"' || {0} || '\"]')::jsonb", scope)
+                .orderByAsc(WebhookConfigEntity::getId));
+    }
 ```
 
 - [ ] **Step 3: 编译验证**
 
-Run: `cd ai-conversation && mvn -pl conversation-service -am compile`
-Expected: BUILD SUCCESS
+Run: `mvn -pl ai-conversation/conversation-service -am compile`
+Expected: BUILD SUCCESS（注意：`-am` 自动编译 common-web 模块解决 `hPutIfAbsent` 签名缺失问题）
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 4: 使用 Testcontainers 或真实 PG 集成验证 JSONB 查询**
+
+新增集成测试（`src/test/.../persistence/mapper/WebhookConfigMapperIntegrationTest.java`），覆盖以下场景：
+- 插入一条 `scopes=["SLA_BREACH","SESSION_CREATED"]` 的 webhook，查询 `"SLA_BREACH"` → 命中
+- 查询未订阅的 `"CSAT_RATED"` → 不命中
+- `is_enabled=0` 的配置不命中
+- `scopes=[]`（空数组）的配置不命中
+
+需使用 Testcontainers（PostgreSQL image），在 `@DataJpaTest` 或 `@MybatisPlusTest` 中执行。若无 Testcontainers 基础设施，至少准备一段真实 PG 手动验证 SQL 并在计划文档中记录。
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/persistence/entity/WebhookConfigEntity.java ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/persistence/mapper/WebhookConfigMapper.java
 git commit -m "feat(conversation): Webhook 配置实体与 Mapper 支持 scopes 事件范围"
 ```
 
-> 注：`selectEnabledByScope` 的 SQL 正确性由 Task 12 端到端验证（真实 jsonb 数据）；本任务仅保证编译与类型正确。
+> 注：`apply("{0}")` 的占位符语法为 MyBatis-Plus 原生参数化机制，由 `Wrappers` 内部处理，无 SQL 注入风险。
 
 ---
 
@@ -435,20 +515,35 @@ public class WebhookEventPublisher {
 
     /**
      * 发布事件：查询订阅该 scope 的启用 webhook，逐个异步分发。
-     * 无匹配 webhook 时直接返回（零开销），不抛异常。
      *
-     * @param scope 事件范围
-     * @param ctx   事件上下文（scope 未设置时以入参为准）
+     * <p><b>故障隔离（关键）</b>：整体 try/catch 包裹，任何异常（DB 查询失败、
+     * dispatcher 异常）都只记 ERROR 日志后返回，绝不向上抛出——
+     * 调用点位于 {@code CsatService.rate}（@Transactional）、
+     * {@code SessionQueueService.enqueue/close/transfer}、
+     * {@code VisitorSessionService.getOrCreate}（Redisson 锁内）等业务主流程，
+     * 一旦抛出会导致评分事务回滚、会话关闭 500、锁内异常等连锁故障。
+     * 保持"通知失败不影响主流程"语义。
+     *
+     * @param scope 事件范围（必须非 null）
+     * @param ctx   事件上下文；若 ctx.scope 为 null 则以入参为准兜底赋值
      */
     public void publish(WebhookScope scope, WebhookEventContext ctx) {
-        List<WebhookConfigEntity> targets = webhookConfigMapper.selectEnabledByScope(scope.name());
-        if (targets.isEmpty()) {
-            log.debug("[WebhookPublisher] scope={} 无匹配 webhook，跳过", scope);
-            return;
+        try {
+            List<WebhookConfigEntity> targets = webhookConfigMapper.selectEnabledByScope(scope.name());
+            if (targets.isEmpty()) {
+                log.debug("[WebhookPublisher] scope={} 无匹配 webhook，跳过", scope);
+                return;
+            }
+            if (ctx.getScope() == null) {
+                ctx.setScope(scope); // 仅 null 时兜底，不静默覆盖调用方显式值
+            }
+            targets.forEach(webhook -> webhookDispatcher.dispatch(webhook, ctx));
+            log.debug("[WebhookPublisher] scope={} 命中 {} 个 webhook", scope, targets.size());
+        } catch (Exception e) {
+            // 故障隔离：通知链路异常绝不回抛到业务主流程
+            log.error("[WebhookPublisher] 发布失败 scope={} sessionId={}",
+                    scope, ctx.getSessionId(), e);
         }
-        ctx.setScope(scope); // 兜底：调用方未设置时以参数为准
-        targets.forEach(webhook -> webhookDispatcher.dispatch(webhook, ctx));
-        log.info("[WebhookPublisher] scope={} 命中 {} 个 webhook", scope, targets.size());
     }
 }
 ```
@@ -516,13 +611,43 @@ class WebhookEventPublisherTest {
         verify(webhookDispatcher, times(2))
                 .dispatch(any(), argThat(c -> c.getScope() == WebhookScope.SESSION_CLOSED));
     }
+
+    @Test
+    @DisplayName("DB 查询异常时故障隔离：不抛异常、不分发（关键）")
+    void publish_mapperThrows_isSwallowed() {
+        when(webhookConfigMapper.selectEnabledByScope("SLA_BREACH"))
+                .thenThrow(new RuntimeException("db down"));
+
+        // 不抛异常
+        publisher.publish(WebhookScope.SLA_BREACH,
+                WebhookEventContext.builder().sessionId("sess-1").build());
+
+        verify(webhookDispatcher, never()).dispatch(any(), any());
+    }
+
+    @Test
+    @DisplayName("ctx 已显式设置 scope 时不被覆盖")
+    void publish_explicitScope_keepsValue() {
+        WebhookConfigEntity a = WebhookConfigEntity.builder().id(1L).type("FEISHU").build();
+        when(webhookConfigMapper.selectEnabledByScope("SLA_BREACH"))
+                .thenReturn(List.of(a));
+
+        // 调用方显式设置了一个"错误"scope，publisher 不得覆盖
+        WebhookEventContext ctx = WebhookEventContext.builder()
+                .scope(WebhookScope.CSAT_RATED)
+                .build();
+        publisher.publish(WebhookScope.SLA_BREACH, ctx);
+
+        verify(webhookDispatcher).dispatch(eq(a),
+                argThat(c -> c.getScope() == WebhookScope.CSAT_RATED));
+    }
 }
 ```
 
 - [ ] **Step 3: 运行测试**
 
-Run（需 Task 5 的 dispatcher 新签名就绪后）: `cd ai-conversation && mvn -pl conversation-service test -Dtest=WebhookEventPublisherTest`
-Expected: BUILD SUCCESS，2 tests passed
+Run（需 Task 5 的 dispatcher 新签名就绪后）: `mvn -pl ai-conversation/conversation-service test -Dtest=WebhookEventPublisherTest`
+Expected: BUILD SUCCESS，4 tests passed
 
 - [ ] **Step 4: Commit**
 
@@ -603,28 +728,81 @@ public interface WebhookSender {
             Object breachesObj = ctx.getPayload().get("breaches");
             if (breachesObj instanceof List<?> list && !list.isEmpty()
                     && list.get(0) instanceof SlaBreachEntity breach) {
-                String label = switch (breach.getBreachType()) {
+                BreachType type = breach.getBreachType();
+                String label = type == null ? "" : switch (type) {
                     case WAIT   -> "排队等待超时";
                     case FRT    -> "首响超时";
                     case HANDLE -> "处理超时";
                 };
-                vars.put("breachType",      breach.getBreachType() != null ? breach.getBreachType().getValue() : "");
+                vars.put("breachType",      type != null ? type.getValue() : "");
                 vars.put("breachTypeLabel", label);
-                vars.put("targetSec",       String.valueOf(breach.getTargetSec()));
-                vars.put("actualSec",       String.valueOf(breach.getActualSec()));
-                vars.put("breachAt",        breach.getBreachAt() != null ? breach.getBreachAt().toString() : "");
-                vars.put("stage",           breach.getStage() != null ? breach.getStage().getValue() : "");
+                vars.put("targetSec",       breach.getTargetSec()  != null ? String.valueOf(breach.getTargetSec())  : "");
+                vars.put("actualSec",       breach.getActualSec()  != null ? String.valueOf(breach.getActualSec())  : "");
+                vars.put("breachAt",        breach.getBreachAt()   != null ? breach.getBreachAt().toString()       : "");
+                vars.put("stage",           breach.getStage()      != null ? breach.getStage().getValue()          : "");
             }
         }
         return vars;
     }
 ```
 
-新增 imports：`com.aria.conversation.domain.model.WebhookScope`、`com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity`、`java.util.HashMap`。删除 import `com.aria.conversation.domain.model.BreachType`（不再直接使用，见下）。
+新增 imports：`com.aria.conversation.domain.model.WebhookScope`、`com.aria.conversation.domain.model.BreachType`、`com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity`、`java.util.HashMap`。
+
+- [ ] **Step 2b: 新建 WebhookDefaultTemplate（按 scope 的共享默认模板提供者，消除 3 个 Sender 模板重复）**
+
+新增文件 `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/WebhookDefaultTemplate.java`：
+
+```java
+package com.aria.conversation.infrastructure.webhook;
+
+import com.aria.conversation.domain.model.WebhookScope;
+import org.springframework.util.StringUtils;
+
+import java.util.Map;
+
+/**
+ * 按 scope 分类的默认消息模板提供者。
+ *
+ * <p>各 Sender（Feishu/Dingtalk/Wecom）在无自定义 messageTemplate 时调用
+ * {@link #render(String, Map)}，避免 3 个 Sender 各自内联 scope 分支导致模板重复。
+ * 占位符语法统一为 {@code ${var}}（与 AbstractWebhookSender.renderTemplate 一致）。
+ */
+public final class WebhookDefaultTemplate {
+
+    private WebhookDefaultTemplate() {}
+
+    /** 返回 scope 的默认纯文本（SLA 违规文本兼容既有格式；各 Sender 负责包装成平台 JSON）。 */
+    public static String text(WebhookScope scope, Map<String, String> vars) {
+        return switch (scope) {
+            case SLA_BREACH -> "⚠️ SLA %s 违规\n会话：%s\n访客：%s\n策略：%s\n目标：%ss｜实际：%ss"
+                    .formatted(vars.getOrDefault("breachTypeLabel", ""),
+                            vars.getOrDefault("sessionId", ""),
+                            vars.getOrDefault("visitorName", "未知访客"),
+                            vars.getOrDefault("policyName", ""),
+                            vars.getOrDefault("targetSec", ""),
+                            vars.getOrDefault("actualSec", ""));
+            case SESSION_CREATED -> "【新会话】访客 %s 进入会话 %s"
+                    .formatted(vars.getOrDefault("visitorName", "未知访客"),
+                            vars.getOrDefault("sessionId", ""));
+            case SESSION_TRANSFERRED -> "【转人工】访客 %s 转接会话 %s"
+                    .formatted(vars.getOrDefault("visitorName", "未知访客"),
+                            vars.getOrDefault("sessionId", ""));
+            case SESSION_CLOSED -> "【会话关闭】会话 %s 已结束"
+                    .formatted(vars.getOrDefault("sessionId", ""));
+            case CSAT_RATED -> "【客户评价】会话 %s 评分 %s 星，评价：%s"
+                    .formatted(vars.getOrDefault("sessionId", ""),
+                            vars.getOrDefault("score", ""),
+                            vars.getOrDefault("comment", ""));
+        };
+    }
+}
+```
+
+> 说明：`text()` 返回纯文本，各 Sender（Feishu text / Dingtalk·Wecom markdown）将其包装进平台 JSON 结构。模板变量由 `AbstractWebhookSender.buildVariables(ctx)` 统一提供；自定义模板走 `renderTemplate(messageTemplate, vars)` 原链路（占位符 `${var}`）。
 
 - [ ] **Step 3: FeishuWebhookSender 适配**
 
-`send(WebhookConfigEntity config, WebhookEventContext ctx)` 签名变更；`buildRequestBody` 默认模板按 scope 分支：
+`send(WebhookConfigEntity config, WebhookEventContext ctx)` 签名变更；默认模板统一走 `WebhookDefaultTemplate.text()`，不再内联 scope 分支：
 
 ```java
     @Override
@@ -648,70 +826,45 @@ public interface WebhookSender {
         if (config.getMessageTemplate() != null && !config.getMessageTemplate().isBlank()) {
             return renderTemplate(config.getMessageTemplate(), vars);
         }
-        if (ctx.getScope() == WebhookScope.SLA_BREACH) {
-            // 默认 SLA 告警文本（兼容原有格式）
-            return """
-                    {
-                      "msg_type": "text",
-                      "content": {
-                        "text": "⚠️ SLA %s 违规\\n会话：%s\\n访客：%s\\n策略：%s\\n目标：%ss｜实际：%ss"
-                      }
-                    }
-                    """.formatted(
-                    vars.get("breachTypeLabel"), vars.get("sessionId"),
-                    vars.get("visitorName"), vars.get("policyName"),
-                    vars.get("targetSec"), vars.get("actualSec"));
-        }
-        // 其他事件默认文本
+        // 默认模板：WebhookDefaultTemplate 按 scope 提供纯文本，包装为飞书 text 消息
         return """
                 {
                   "msg_type": "text",
                   "content": {
-                    "text": "【%s】%s 会话：%s"
+                    "text": "%s"
                   }
                 }
-                """.formatted(
-                ctx.getScope(), ctx.getEventType(), ctx.getSessionId());
+                """.formatted(WebhookDefaultTemplate.text(ctx.getScope(), vars)
+                        .replace("\\", "\\\\").replace("\"", "\\\""));
     }
 ```
 
-新增 import：`com.aria.conversation.domain.model.WebhookScope`。
+新增 import：`com.aria.conversation.domain.model.WebhookScope`（`WebhookDefaultTemplate` 同包无需 import）。
 
 - [ ] **Step 4: DingtalkWebhookSender 适配**
 
-`send` 签名改 `WebhookEventContext ctx`；默认模板按 scope 分支（markdown 格式）：
+`send` 签名改 `WebhookEventContext ctx`；默认模板统一走 `WebhookDefaultTemplate.text()`（markdown 格式）：
 
 ```java
     @Override
     public void send(WebhookConfigEntity config, WebhookEventContext ctx) {
         Map<String, String> vars = buildVariables(ctx);
+        String text = WebhookDefaultTemplate.text(ctx.getScope(), vars);
         String body;
         if (config.getMessageTemplate() != null && !config.getMessageTemplate().isBlank()) {
             body = renderTemplate(config.getMessageTemplate(), vars);
-        } else if (ctx.getScope() == WebhookScope.SLA_BREACH) {
-            body = """
-                    {
-                      "msgtype": "markdown",
-                      "markdown": {
-                        "title": "SLA违规告警",
-                        "text": "### ⚠️ SLA %s 违规\\n- 会话：%s\\n- 访客：%s\\n- 策略：%s\\n- 目标：%ss｜实际：%ss"
-                      }
-                    }
-                    """.formatted(
-                    vars.get("breachTypeLabel"), vars.get("sessionId"),
-                    vars.get("visitorName"), vars.get("policyName"),
-                    vars.get("targetSec"), vars.get("actualSec"));
         } else {
             body = """
                     {
                       "msgtype": "markdown",
                       "markdown": {
                         "title": "%s",
-                        "text": "### %s\\n- 事件：%s\\n- 会话：%s"
+                        "text": "### %s"
                       }
                     }
-                    """.formatted(ctx.getScope(), ctx.getScope(),
-                    ctx.getEventType(), ctx.getSessionId());
+                    """.formatted(
+                    ctx.getScope() == WebhookScope.SLA_BREACH ? "SLA违规告警" : ctx.getScope(),
+                    text.replace("\\", "\\\\").replace("\n", "\\n").replace("\"", "\\\""));
         }
         // URL 签名逻辑不变（timestamp + sign 参数）
         String url = config.getUrl();
@@ -730,7 +883,7 @@ public interface WebhookSender {
 
 - [ ] **Step 5: WecomWebhookSender 适配**
 
-`send` 签名改 `WebhookEventContext ctx`；默认模板按 scope 分支：
+`send` 签名改 `WebhookEventContext ctx`；默认模板统一走 `WebhookDefaultTemplate.text()`：
 
 ```java
     @Override
@@ -739,27 +892,16 @@ public interface WebhookSender {
         String body;
         if (config.getMessageTemplate() != null && !config.getMessageTemplate().isBlank()) {
             body = renderTemplate(config.getMessageTemplate(), vars);
-        } else if (ctx.getScope() == WebhookScope.SLA_BREACH) {
-            body = """
-                    {
-                      "msgtype": "markdown",
-                      "markdown": {
-                        "content": "## ⚠️ SLA %s 违规\\n> 会话：%s\\n> 访客：%s\\n> 策略：%s\\n> 目标：%ss / 实际：%ss"
-                      }
-                    }
-                    """.formatted(
-                    vars.get("breachTypeLabel"), vars.get("sessionId"),
-                    vars.get("visitorName"), vars.get("policyName"),
-                    vars.get("targetSec"), vars.get("actualSec"));
         } else {
             body = """
                     {
                       "msgtype": "markdown",
                       "markdown": {
-                        "content": "## %s\\n> 事件：%s\\n> 会话：%s"
+                        "content": "## %s"
                       }
                     }
-                    """.formatted(ctx.getScope(), ctx.getEventType(), ctx.getSessionId());
+                    """.formatted(WebhookDefaultTemplate.text(ctx.getScope(), vars)
+                            .replace("\\", "\\\\").replace("\n", "\\n").replace("\"", "\\\""));
         }
         doPost(config.getUrl(), Map.of(), body);
     }
@@ -793,13 +935,17 @@ public interface WebhookSender {
 
 `sender.send(config, mockCtx)` 调用不变。imports：删除 `SlaBreachContext`，新增 `com.aria.conversation.domain.model.WebhookScope`（`WebhookEventContext` 同包无需 import）。
 
-- [ ] **Step 7: WebhookDispatcher 改造**
+- [ ] **Step 7: WebhookDispatcher 改造（去 SLA 特判，通用回调）**
 
-`dispatch` 签名从 `(List<Long> webhookIds, SlaBreachContext ctx, List<Long> breachIds)` 改为 `(WebhookConfigEntity webhook, WebhookEventContext ctx)`；保留重试与 SLA 成功后回写 `webhook_notified_at`：
+`dispatch` 签名从 `(List<Long> webhookIds, SlaBreachContext ctx, List<Long> breachIds)` 改为 `(WebhookConfigEntity webhook, WebhookEventContext ctx)`；发送成功后通过 `ctx.getOnSuccess()` 回调（由事件发布方注入，dispatcher 不感知 scope）：
 
 ```java
     /**
      * 异步分发单条 Webhook 通知（webhookExecutor 线程池）。
+     *
+     * <p>通用分发器：不感知任何业务 scope。发送成功后调用
+     * {@link WebhookEventContext#getOnSuccess()} 回调（如 SLA 违规回写 notified），
+     * 失败不调用且不抛异常。
      *
      * @param webhook 目标 Webhook 配置（已启用）
      * @param ctx     事件上下文
@@ -816,43 +962,29 @@ public interface WebhookSender {
             sendWithRetry(sender, webhook, ctx);
             log.info("[Webhook] 推送成功 id={} type={} scope={} session={}",
                      webhook.getId(), webhook.getType(), ctx.getScope(), ctx.getSessionId());
-            markNotifiedIfSlaBreach(ctx);
+            if (ctx.getOnSuccess() != null) {
+                ctx.getOnSuccess().run();
+            }
         } catch (Exception e) {
             log.error("[Webhook] 推送失败 id={} type={} scope={} session={}",
                       webhook.getId(), webhook.getType(), ctx.getScope(), ctx.getSessionId(), e);
         }
     }
-
-    /**
-     * SLA 违规推送成功后回写 webhook_notified_at（复用既有批量更新）。
-     * 从 ctx.payload.breachIds 提取违规 ID 列表。
-     */
-    private void markNotifiedIfSlaBreach(WebhookEventContext ctx) {
-        if (ctx.getScope() != WebhookScope.SLA_BREACH || ctx.getPayload() == null) return;
-        Object ids = ctx.getPayload().get("breachIds");
-        if (ids instanceof List<?> list && !list.isEmpty()) {
-            List<Long> breachIds = list.stream()
-                    .map(o -> ((Number) o).longValue())
-                    .toList();
-            slaBreachMapper.updateWebhookNotifiedAt(breachIds, OffsetDateTime.now());
-        }
-    }
 ```
 
 改动要点：
-- 删除字段 `webhookConfigMapper` 及其注入（不再需要按 ID 查配置）；`WebhookDispatcher` 构造器改为 `(List<WebhookSender> senderList, SlaBreachMapper slaBreachMapper, @Value(...) long retryBaseMs)`。
+- **删除** `markNotifiedIfSlaBreach` 方法与 `SlaBreachMapper` 依赖（SLA 回写逻辑由 `SlaBreachNotifier` 通过 `onSuccess` 回调注入，Task 6 实现）。
+- 删除字段 `webhookConfigMapper`、`slaBreachMapper`；`WebhookDispatcher` 构造器改为 `(List<WebhookSender> senderList, @Value(...) long retryBaseMs)`。
 - `sendWithRetry(WebhookSender sender, WebhookConfigEntity config, SlaBreachContext ctx)` 参数改 `WebhookEventContext ctx`。
-- 新增 imports：`com.aria.conversation.domain.model.WebhookScope`；删除 `WebhookConfigMapper` import。
+- 删除不再使用的 imports（`SlaBreachMapper`、`WebhookConfigMapper`、`OffsetDateTime`）。
 
-- [ ] **Step 8: 更新 WebhookDispatcherTest（新签名 + 回写逻辑）**
+- [ ] **Step 8: 更新 WebhookDispatcherTest（通用回调验证）**
 
 ```java
 package com.aria.conversation.infrastructure.webhook;
 
 import com.aria.conversation.domain.model.WebhookScope;
-import com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity;
 import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEntity;
-import com.aria.conversation.infrastructure.persistence.mapper.SlaBreachMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -861,62 +993,84 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
-import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class WebhookDispatcherTest {
 
-    @Mock SlaBreachMapper slaBreachMapper;
-    @Mock WebhookSender   feishuSender;
+    @Mock WebhookSender feishuSender;
 
     WebhookDispatcher dispatcher;
 
     @BeforeEach
     void setUp() {
         when(feishuSender.supportedType()).thenReturn("FEISHU");
-        dispatcher = new WebhookDispatcher(List.of(feishuSender), slaBreachMapper, 0L);
+        dispatcher = new WebhookDispatcher(List.of(feishuSender), 0L);
         clearInvocations(feishuSender);
     }
 
     @Test
-    @DisplayName("SLA_BREACH 推送成功回写 webhook_notified_at")
-    void dispatch_slaBreachSuccess_marksNotified() {
+    @DisplayName("推送成功后调用 onSuccess 回调（通用，不区分 scope）")
+    void dispatch_success_invokesOnSuccess() {
         WebhookConfigEntity config = WebhookConfigEntity.builder().id(1L).type("FEISHU").build();
+        AtomicInteger calls = new AtomicInteger();
         WebhookEventContext ctx = WebhookEventContext.builder()
                 .scope(WebhookScope.SLA_BREACH)
                 .eventType("WAIT")
                 .sessionId("sess-1")
-                .payload(Map.of("breachIds", List.of(10L, 11L)))
+                .onSuccess(calls::incrementAndGet)
                 .build();
 
         dispatcher.dispatch(config, ctx);
 
         verify(feishuSender).send(eq(config), any(WebhookEventContext.class));
-        verify(slaBreachMapper).updateWebhookNotifiedAt(anyList(), any());
+        assertEquals(1, calls.get());
     }
 
     @Test
-    @DisplayName("非 SLA scope 不回写 notified")
-    void dispatch_nonSlaScope_noMark() {
+    @DisplayName("推送失败不调用回调且不抛异常")
+    void dispatch_failure_skipsCallback() {
         WebhookConfigEntity config = WebhookConfigEntity.builder().id(2L).type("FEISHU").build();
+        AtomicInteger calls = new AtomicInteger();
+        doThrow(new RuntimeException("network down"))
+                .when(feishuSender).send(eq(config), any(WebhookEventContext.class));
         WebhookEventContext ctx = WebhookEventContext.builder()
                 .scope(WebhookScope.SESSION_CLOSED)
-                .eventType("CLOSED")
                 .sessionId("sess-2")
+                .onSuccess(calls::incrementAndGet)
                 .build();
 
-        dispatcher.dispatch(config, ctx);
+        dispatcher.dispatch(config, ctx); // 不抛异常
 
-        verify(slaBreachMapper, never()).updateWebhookNotifiedAt(anyList(), any());
+        assertEquals(0, calls.get());
+    }
+
+    @Test
+    @DisplayName("未知类型 sender 跳过")
+    void dispatch_unknownType_skips() {
+        WebhookConfigEntity config = WebhookConfigEntity.builder().id(3L).type("WHAT").build();
+
+        dispatcher.dispatch(config,
+                WebhookEventContext.builder().scope(WebhookScope.SLA_BREACH).build());
+
+        verify(feishuSender, never()).send(any(), any());
+    }
+
+    @Test
+    @DisplayName("webhook 为 null 时安全返回")
+    void dispatch_nullWebhook_safe() {
+        dispatcher.dispatch(null, WebhookEventContext.builder().build());
+        verify(feishuSender, never()).send(any(), any());
     }
 }
 ```
 
-> 若原 `WebhookDispatcherTest` 还有其他用例（如重试、未知类型跳过），按新签名同步改写；未知类型用例改为构造一个 `type` 无对应 Sender 的 `WebhookConfigEntity` 验证跳过。
+> 若原 `WebhookDispatcherTest` 还有其他用例（如重试、未知类型跳过），按新签名同步改写。重试用例：`doThrow` 连续两次 + 第三次成功，验证 `send` 被调用 3 次（`retryBaseMs=0` 无 sleep）。
 
 - [ ] **Step 9: 更新 FeishuWebhookSenderTest**
 
@@ -924,7 +1078,7 @@ class WebhookDispatcherTest {
 
 - [ ] **Step 10: 运行全部 webhook 测试**
 
-Run: `cd ai-conversation && mvn -pl conversation-service test -Dtest='WebhookDispatcherTest,FeishuWebhookSenderTest,WebhookEventContextTest,WebhookEventPublisherTest'`
+Run: `mvn -pl ai-conversation/conversation-service test -Dtest='WebhookDispatcherTest,FeishuWebhookSenderTest,WebhookEventContextTest,WebhookEventPublisherTest'`
 Expected: BUILD SUCCESS，全部通过
 
 - [ ] **Step 11: Commit**
@@ -1017,7 +1171,7 @@ class SlaBreachNotifierTest {
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cd ai-conversation && mvn -pl conversation-service test -Dtest=SlaBreachNotifierTest`
+Run: `mvn -pl ai-conversation/conversation-service test -Dtest=SlaBreachNotifierTest`
 Expected: 编译失败（`SlaBreachNotifier` 构造器参数与现有签名不一致）
 
 - [ ] **Step 3: 改造 SlaBreachNotifier**
@@ -1039,15 +1193,37 @@ Expected: 编译失败（`SlaBreachNotifier` 构造器参数与现有签名不�
     }
 ```
 
-`notifyBatch` 中删除原 webhook 分支（`List<Long> webhookIds = actions.getWebhookIds(); ... webhookDispatcher.dispatch(...)` 整段），替换为：
+`notifyBatch` 中删除原 webhook 分支（`List<Long> webhookIds = actions.getWebhookIds(); ... webhookDispatcher.dispatch(...)` 整段），替换为发布事件 + 注入成功回调（SLA 回写 `webhook_notified_at`，通用 dispatcher 不感知 SLA）：
 
 ```java
         // 通用 Webhook 推送：按 scope（SLA_BREACH）自动匹配订阅配置，无匹配时零开销
-        webhookEventPublisher.publish(WebhookScope.SLA_BREACH,
-                WebhookEventContextFactory.buildSlaBreach(session, policy, newBreaches));
+        WebhookEventContext ctx = WebhookEventContextFactory.buildSlaBreach(session, policy, newBreaches);
+        // 推送成功后才回写 webhook_notified_at（onSuccess 回调由通用 dispatcher 统一调用）
+        ctx.setOnSuccess(() -> recorder.markWebhookNotified(
+                newBreaches.stream().map(SlaBreachEntity::getId).toList(),
+                OffsetDateTime.now()));
+        webhookEventPublisher.publish(WebhookScope.SLA_BREACH, ctx);
 ```
 
-删除 imports：`WebhookDispatcher`、`SlaBreachContext`、`Map`（若不再使用）；新增 imports：`com.aria.conversation.domain.model.WebhookScope`、`com.aria.conversation.infrastructure.webhook.WebhookEventContextFactory`、`com.aria.conversation.infrastructure.webhook.WebhookEventPublisher`。若 `Map` 仍用于 SSE 事件构造则保留。
+删除 imports：`WebhookDispatcher`、`SlaBreachContext`（若不再使用）、`Map`（若不再使用）；新增 imports：`com.aria.conversation.domain.model.WebhookScope`、`com.aria.conversation.infrastructure.webhook.WebhookEventContext`、`com.aria.conversation.infrastructure.webhook.WebhookEventContextFactory`、`com.aria.conversation.infrastructure.webhook.WebhookEventPublisher`、`com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity`、`java.time.OffsetDateTime`（若未引入）。若 `Map` 仍用于 SSE 事件构造则保留。
+
+- [ ] **Step 3b: SlaBreachRecorder 新增 markWebhookNotified 批量方法**
+
+在 `SlaBreachRecorder` 中新增（委托给既有 `SlaBreachMapper.updateWebhookNotifiedAt`）：
+
+```java
+    /**
+     * 批量标记 Webhook 已通知时间。
+     * 由 SLA 违规推送成功回调调用（WebhookDispatcher 不感知 SLA 语义）。
+     *
+     * @param breachIds 违规记录 ID 列表
+     * @param at        推送成功时间
+     */
+    public void markWebhookNotified(List<Long> breachIds, OffsetDateTime at) {
+        if (breachIds == null || breachIds.isEmpty()) return;
+        slaBreachMapper.updateWebhookNotifiedAt(breachIds, at);
+    }
+```
 
 - [ ] **Step 4: 移除 SlaBreachActions.webhookIds 字段**
 
@@ -1067,7 +1243,7 @@ rm ai-conversation/conversation-service/src/main/java/com/aria/conversation/infr
 
 - [ ] **Step 6: 运行测试**
 
-Run: `cd ai-conversation && mvn -pl conversation-service test -Dtest='SlaBreachNotifierTest,WebhookDispatcherTest,FeishuWebhookSenderTest,WebhookEventPublisherTest,SlaBreachRecorderTest,SlaBreachEvaluatorTest'`
+Run: `mvn -pl ai-conversation/conversation-service test -Dtest='SlaBreachNotifierTest,WebhookDispatcherTest,FeishuWebhookSenderTest,WebhookEventPublisherTest,SlaBreachRecorderTest,SlaBreachEvaluatorTest'`
 Expected: BUILD SUCCESS，全部通过
 
 - [ ] **Step 7: Commit**
@@ -1116,6 +1292,10 @@ git commit -m "refactor(conversation): SLA 通知改为 scope 自动匹配，移
         if (scopes == null) {
             return; // 未传：DB 默认 ["SLA_BREACH"]
         }
+        // 重复校验
+        if (new HashSet<>(scopes).size() != scopes.size()) {
+            throw new BusinessException(INVALID_PARAM, "webhook 范围存在重复值");
+        }
         for (String s : scopes) {
             try {
                 WebhookScope.valueOf(s);
@@ -1128,13 +1308,13 @@ git commit -m "refactor(conversation): SLA 通知改为 scope 自动匹配，移
 
 常量补充：`private static final int INVALID_PARAM = 40000;`
 
-`createWebhook` 开头调用 `validateScopes(entity.getScopes())`；`updateWebhook` 开头调用 `validateScopes(update.getScopes())`。
+补充 import：`java.util.HashSet`、`com.aria.conversation.domain.model.WebhookScope`。
 
-补充 import：`com.aria.conversation.domain.model.WebhookScope`。
+`createWebhook` 开头调用 `validateScopes(entity.getScopes())`；`updateWebhook` 开头调用 `validateScopes(update.getScopes())`。
 
 - [ ] **Step 3: 编译验证**
 
-Run: `cd ai-conversation && mvn -pl conversation-service -am compile`
+Run: `mvn -pl ai-conversation/conversation-service -am compile`
 Expected: BUILD SUCCESS
 
 - [ ] **Step 4: Commit**
@@ -1172,13 +1352,11 @@ git commit -m "feat(conversation): Webhook 管理接口支持 scopes 事件范�
 ```java
             // 通用 Webhook：新会话事件（仅首次创建时发布，恢复旧会话不重复）
             webhookEventPublisher.publish(WebhookScope.SESSION_CREATED,
-                    WebhookEventContext.builder()
-                            .scope(WebhookScope.SESSION_CREATED)
-                            .eventType("CREATED")
-                            .sessionId(sessionId)
-                            .visitorName(name)
-                            .payload(Map.of("channel", "AI_CHAT"))
-                            .build());
+                    WebhookEventContextFactory.buildSessionEvent(
+                            WebhookScope.SESSION_CREATED,
+                            WebhookEventTypes.SESSION_CREATED,
+                            sessionId, name,
+                            Map.of("channel", "AI_CHAT")));
 ```
 
 - [ ] **Step 2: SessionQueueService.enqueue 发布转人工事件**
@@ -1190,15 +1368,13 @@ git commit -m "feat(conversation): Webhook 管理接口支持 scopes 事件范�
 ```java
         // 通用 Webhook：用户请求转人工（幂等：仅真正入队时发布）
         webhookEventPublisher.publish(WebhookScope.SESSION_TRANSFERRED,
-                WebhookEventContext.builder()
-                        .scope(WebhookScope.SESSION_TRANSFERRED)
-                        .eventType("ENQUEUE")
-                        .sessionId(sessionId)
-                        .visitorName(userName)
-                        .payload(Map.of(
+                WebhookEventContextFactory.buildSessionEvent(
+                        WebhookScope.SESSION_TRANSFERRED,
+                        WebhookEventTypes.SESSION_ENQUEUE,
+                        sessionId, userName,
+                        Map.of(
                                 "transferReason", transferReason == null ? "" : transferReason,
-                                "tag", tag == null ? "" : tag))
-                        .build());
+                                "tag", tag == null ? "" : tag)));
 ```
 
 - [ ] **Step 3: SessionQueueService.transfer 发布座席转接事件**
@@ -1208,14 +1384,13 @@ git commit -m "feat(conversation): Webhook 管理接口支持 scopes 事件范�
 ```java
         // 通用 Webhook：座席间转接
         webhookEventPublisher.publish(WebhookScope.SESSION_TRANSFERRED,
-                WebhookEventContext.builder()
-                        .scope(WebhookScope.SESSION_TRANSFERRED)
-                        .eventType("TRANSFER")
-                        .sessionId(sessionId)
-                        .payload(Map.of(
+                WebhookEventContextFactory.buildSessionEvent(
+                        WebhookScope.SESSION_TRANSFERRED,
+                        WebhookEventTypes.SESSION_TRANSFER,
+                        sessionId, null,
+                        Map.of(
                                 "fromAgentId", fromAgentId == null ? "" : fromAgentId,
-                                "toAgentId", targetAgentId == null ? "" : targetAgentId))
-                        .build());
+                                "toAgentId", targetAgentId == null ? "" : targetAgentId)));
 ```
 
 - [ ] **Step 4: SessionQueueService.close 发布会话关闭事件**
@@ -1225,13 +1400,11 @@ git commit -m "feat(conversation): Webhook 管理接口支持 scopes 事件范�
 ```java
         // 通用 Webhook：会话关闭
         webhookEventPublisher.publish(WebhookScope.SESSION_CLOSED,
-                WebhookEventContext.builder()
-                        .scope(WebhookScope.SESSION_CLOSED)
-                        .eventType("CLOSED")
-                        .sessionId(sessionId)
-                        .payload(Map.of("closedBy",
-                                closedBy != null ? closedBy.name() : ""))
-                        .build());
+                WebhookEventContextFactory.buildSessionEvent(
+                        WebhookScope.SESSION_CLOSED,
+                        WebhookEventTypes.SESSION_CLOSED,
+                        sessionId, null,
+                        Map.of("closedBy", closedBy != null ? closedBy.name() : "")));
 ```
 
 - [ ] **Step 5: 同步更新直接 new SessionQueueService 的测试**
@@ -1244,7 +1417,7 @@ git commit -m "feat(conversation): Webhook 管理接口支持 scopes 事件范�
 
 - [ ] **Step 7: 编译与测试**
 
-Run: `cd ai-conversation && mvn -pl conversation-service test -Dtest='SessionQueueEnqueueOfflineTest,SessionQueueServiceGetAgentIdTest,VisitorSessionServiceTest'`
+Run: `mvn -pl ai-conversation/conversation-service test -Dtest='SessionQueueEnqueueOfflineTest,SessionQueueServiceGetAgentIdTest,VisitorSessionServiceTest'`
 Expected: BUILD SUCCESS，全部通过
 
 - [ ] **Step 8: Commit**
@@ -1280,16 +1453,9 @@ git commit -m "feat(conversation): 会话创建/转人工/关闭发布 Webhook �
 ```java
         // 通用 Webhook：客户评价（异步分发，不影响评分主流程）
         webhookEventPublisher.publish(WebhookScope.CSAT_RATED,
-                WebhookEventContext.builder()
-                        .scope(WebhookScope.CSAT_RATED)
-                        .eventType("RATED")
-                        .sessionId(rating.getSessionId())
-                        .payload(Map.of(
-                                "csatId", csatId,
-                                "score", score == null ? "" : score,
-                                "comment", comment == null ? "" : comment,
-                                "channel", rating.getChannel() == null ? "" : rating.getChannel().name()))
-                        .build());
+                WebhookEventContextFactory.buildCsatRated(
+                        rating.getSessionId(), csatId, score, comment,
+                        rating.getChannel() == null ? "" : rating.getChannel().name()));
 ```
 
 - [ ] **Step 2: 更新 CsatServiceTest / CsatServicePendingTest**
@@ -1298,7 +1464,7 @@ git commit -m "feat(conversation): 会话创建/转人工/关闭发布 Webhook �
 
 - [ ] **Step 3: 运行测试**
 
-Run: `cd ai-conversation && mvn -pl conversation-service test -Dtest='CsatServiceTest,CsatServicePendingTest'`
+Run: `mvn -pl ai-conversation/conversation-service test -Dtest='CsatServiceTest,CsatServicePendingTest'`
 Expected: BUILD SUCCESS，全部通过
 
 - [ ] **Step 4: Commit**
@@ -1379,7 +1545,7 @@ const emptyForm = (): FormState => ({
 
 `buildPayload` 中提交：`scopes: form.scopes`。
 
-`submit` 校验中增加：若 `form.scopes.length === 0`，`message.warning('请至少选择一个事件范围（不订阅任何事件将不会收到推送）')` 并 return。
+`submit` 校验中增加：若 `form.scopes.length === 0`，`message.warning('未选择任何事件范围，该 Webhook 不会收到任何推送（如需保存请继续）')` **仅提示、不阻断**（与后端语义一致：空数组 = 不订阅任何事件，允许保存）。
 
 模板表单中（"消息模板" FormItem 之前）插入：
 
@@ -1490,8 +1656,8 @@ git commit -m "chore(admin): SLA 策略页移除 webhook 绑定说明"
 
 - [ ] **Step 1: 后端全量编译 + 测试**
 
-Run: `cd /Users/lycodeing/IdeaProjects/aria-server/ai-conversation && mvn -pl conversation-service -am clean test`
-Expected: BUILD SUCCESS，conversation-service 全部单测通过（含新增 `WebhookEventContextTest` / `WebhookEventPublisherTest` / `SlaBreachNotifierTest`）
+Run: `cd /Users/lycodeing/IdeaProjects/aria-server && mvn -pl ai-conversation/conversation-service -am clean test`
+Expected: BUILD SUCCESS，conversation-service 全部单测通过（含新增 `WebhookEventContextTest` / `WebhookEventPublisherTest` / `SlaBreachNotifierTest`；`-am` 连带构建 common 模块，`hPutIfAbsent` 符号正常解析）
 
 - [ ] **Step 2: 重建并部署 conversation-service 镜像**
 

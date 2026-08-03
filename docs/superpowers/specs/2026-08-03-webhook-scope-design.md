@@ -114,9 +114,9 @@ ALTER TABLE cs_conversation.cs_webhook_config
 |---|---|---|
 | id | bigint PK | 自增 |
 | name | varchar(50) | 名称，唯一约束 |
-| type | varchar(20) | FEISHU / DINGTALK / WECOM / CUSTOM |
+| type | varchar(10) | FEISHU / DINGTALK / WECOM / CUSTOM |
 | url | varchar(500) | HTTPS webhook 地址 |
-| secret | varchar(255) | 飞书/钉钉签名密钥，可空 |
+| secret | varchar(200) | 飞书/钉钉签名密钥，可空 |
 | custom_headers | jsonb | CUSTOM 类型专用请求头 |
 | message_template | text | 自定义模板，空则用默认 |
 | is_enabled | smallint | 1 启用 / 0 禁用 |
@@ -204,6 +204,11 @@ public class WebhookEventContext {
     private String visitorName;
     /** 事件专属业务字段（SLA 违规明细 / 会话状态 / 评分等） */
     private Map<String, Object> payload;
+    /**
+     * 推送成功后的回调（可选）。由事件发布方注入（如 SLA 违规回写 webhook_notified_at），
+     * WebhookDispatcher 发送成功后统一调用；失败不调用。使 dispatcher 保持通用，无需按 scope 特判。
+     */
+    private Runnable onSuccess;
 }
 ```
 
@@ -224,14 +229,26 @@ public class WebhookEventPublisher {
     /**
      * 发布事件：查询订阅该 scope 的启用 webhook，逐个异步分发。
      * 无匹配 webhook 时直接返回（零开销）。
+     *
+     * <p><b>故障隔离（关键）</b>：整体 try/catch 包裹，任何异常只记 ERROR 日志后返回，
+     * 绝不向上抛出——调用点位于 CsatService.rate（@Transactional）、
+     * SessionQueueService.enqueue/close/transfer、VisitorSessionService.getOrCreate
+     * （Redisson 锁内）等业务主流程，抛出会导致事务回滚 / 接口 500 / 锁内异常。
      */
     public void publish(WebhookScope scope, WebhookEventContext ctx) {
-        List<WebhookConfigEntity> targets = webhookConfigMapper.selectEnabledByScope(scope.name());
-        if (targets.isEmpty()) {
-            return;
+        try {
+            List<WebhookConfigEntity> targets = webhookConfigMapper.selectEnabledByScope(scope.name());
+            if (targets.isEmpty()) {
+                return;
+            }
+            if (ctx.getScope() == null) {
+                ctx.setScope(scope); // 仅 null 时兜底，不静默覆盖调用方显式值
+            }
+            targets.forEach(webhook -> webhookDispatcher.dispatch(webhook, ctx));
+        } catch (Exception e) {
+            log.error("[WebhookPublisher] 发布失败 scope={} sessionId={}",
+                    scope, ctx.getSessionId(), e);
         }
-        ctx.setScope(scope); // 兜底：调用方未设置时以参数为准
-        targets.forEach(webhook -> webhookDispatcher.dispatch(webhook, ctx));
     }
 }
 ```
@@ -252,8 +269,8 @@ public void dispatch(WebhookConfigEntity webhook, WebhookEventContext ctx)
 
 **内部流程：**
 1. 按 `webhook.getType()` 路由到对应 Sender（Feishu / Dingtalk / Wecom / Custom）。
-2. 模板选择：`webhook.getMessageTemplate()` 为空时使用按 `scope` 分类的默认模板；否则渲染自定义模板（占位符如 `{{sessionId}}`、`{{visitorName}}`、`{{policyName}}`、`{{score}}` 等）。
-3. 发送成功后：若 `scope == SLA_BREACH` 且 payload 携带 `breachIds`，调用 `SlaBreachRecorder.markWebhookNotified(breachIds, now)`（**新增的批量方法**，与既有 `markAlerted`/`markEscalated` 单 ID 方法并列，批量更新 `webhook_notified_at`）。
+2. 模板选择：`webhook.getMessageTemplate()` 为空时使用按 `scope` 分类的默认模板（由 `WebhookDefaultTemplate` 提供）；否则渲染自定义模板（占位符统一为 `${var}` 语法，如 `${sessionId}`、`${visitorName}`、`${policyName}`、`${score}` 等，与 `AbstractWebhookSender.renderTemplate` 现有实现一致）。
+3. 发送成功后：若 `scope == SLA_BREACH` 且 payload 携带 `breachIds`，调用 `SlaBreachRecorder.markWebhookNotified(breachIds, now)`（新增批量方法，委托给既有 `SlaBreachMapper.updateWebhookNotifiedAt`）。
 4. 发送失败：记录 WARN 日志，不重试、不抛错（保持"通知失败不影响主流程"的既有语义）。
 
 **各 Sender 现状复用：** `FeishuWebhookSender` / `DingtalkWebhookSender` / `WecomWebhookSender` / `CustomWebhookSender` 保留，仅调整入参（从 `SlaBreachContext` 改为 `WebhookEventContext`）；`WebhookTestSender` 发送固定测试消息不变。
@@ -272,7 +289,7 @@ webhookEventPublisher.publish(WebhookScope.SLA_BREACH,
 
 - `payload.breachIds` = 本轮新违规的 ID 列表，用于推送成功后回写 `webhook_notified_at`。
 - 移除 `SlaBreachContext`、`WebhookDispatcher` 的构造依赖（改注入 `WebhookEventPublisher`）。
-- 该发布点在 SSE 聚合推送之后、升级判断之前执行，顺序不依赖 webhook 推送结果。
+- 该发布点在 SSE 聚合推送之后、升级判断之后执行（与原 webhook 分支位置一致），顺序不依赖 webhook 推送结果。
 
 ### 5.6 会话生命周期发布点
 
@@ -303,15 +320,15 @@ webhookEventPublisher.publish(WebhookScope.CSAT_RATED,
 
 ### 5.8 默认消息模板
 
-按 scope 提供默认模板（既有 SLA 默认模板内容保留并迁移到 `SLA_BREACH` 分类下）：
+按 scope 提供默认模板（既有 SLA 默认模板内容保留并迁移到 `SLA_BREACH` 分类下）。模板占位符统一为 `${var}` 语法，由 `WebhookDefaultTemplate` 按 scope 提供，各 Sender 共享：
 
 | Scope | 默认模板示例 |
 |---|---|
-| SLA_BREACH | `【SLA违规】会话 {sessionId} 触发 {eventType} {stage}：目标 {targetSec}s / 实际 {actualSec}s` |
-| SESSION_CREATED | `【新会话】访客 {visitorName} 进入会话 {sessionId}` |
-| SESSION_TRANSFERRED | `【转人工】访客 {visitorName} 转接会话 {sessionId}` |
-| SESSION_CLOSED | `【会话关闭】会话 {sessionId} 已结束` |
-| CSAT_RATED | `【客户评价】会话 {sessionId} 评分 {score} 星，评价：{comment}` |
+| SLA_BREACH | `【SLA违规】会话 ${sessionId} 触发 ${eventType} ${stage}：目标 ${targetSec}s / 实际 ${actualSec}s` |
+| SESSION_CREATED | `【新会话】访客 ${visitorName} 进入会话 ${sessionId}` |
+| SESSION_TRANSFERRED | `【转人工】访客 ${visitorName} 转接会话 ${sessionId}` |
+| SESSION_CLOSED | `【会话关闭】会话 ${sessionId} 已结束` |
+| CSAT_RATED | `【客户评价】会话 ${sessionId} 评分 ${score} 星，评价：${comment}` |
 
 ## 6. API 变更
 
