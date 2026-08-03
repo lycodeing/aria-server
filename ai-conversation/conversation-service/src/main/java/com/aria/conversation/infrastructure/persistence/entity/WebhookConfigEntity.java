@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.persistence.entity;
 
+import com.aria.conversation.infrastructure.config.StringListTypeHandler;
 import com.aria.conversation.infrastructure.config.StringMapTypeHandler;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
@@ -12,6 +13,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -49,6 +51,10 @@ public class WebhookConfigEntity {
 
     /** 自定义消息模板，支持 ${变量}，空则用平台默认模板 */
     private String messageTemplate;
+
+    /** 订阅的事件范围列表（WebhookScope 枚举名），空数组表示不订阅任何事件 */
+    @TableField(typeHandler = StringListTypeHandler.class)
+    private List<String> scopes;
 
     /** 是否启用：1=启用，0=禁用 */
     private Integer isEnabled;
