@@ -7,7 +7,7 @@ import lombok.Data;
 import java.util.Map;
 
 /**
- * 通用 Webhook 事件上下文（替代 SlaBreachContext）。
+ * 通用 Webhook 事件上下文。
  * 携带触发事件的范围、细化类型与业务 payload，供各 WebhookSender 渲染消息。
  *
  * <p>并发注意：同一实例可能被 {@link WebhookDispatcher} 并发传给多个 @Async 分发任务，

@@ -7,6 +7,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.Optional;
 
 /**
@@ -65,5 +66,17 @@ public class SlaBreachRecorder {
      */
     public void markEscalated(Long breachId, OffsetDateTime at) {
         slaBreachMapper.updateEscalatedAt(breachId, at);
+    }
+
+    /**
+     * 批量标记 Webhook 已通知时间。
+     * 由 SLA 违规推送成功回调调用（WebhookDispatcher 不感知 SLA 语义）。
+     *
+     * @param breachIds 违规记录 ID 列表
+     * @param at        推送成功时间
+     */
+    public void markWebhookNotified(List<Long> breachIds, OffsetDateTime at) {
+        if (breachIds == null || breachIds.isEmpty()) return;
+        slaBreachMapper.updateWebhookNotifiedAt(breachIds, at);
     }
 }

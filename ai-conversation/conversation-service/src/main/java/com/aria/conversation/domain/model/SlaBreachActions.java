@@ -2,13 +2,14 @@ package com.aria.conversation.domain.model;
 
 import lombok.Data;
 
-import java.util.List;
-
 /**
  * SLA 违规行为配置（对应 cs_sla_policy.actions JSON 字段）。
  *
  * <p>使用 MyBatis-Plus {@code JacksonTypeHandler} 反序列化，
  * 因此需要无参构造 + setter（由 {@code @Data} 提供）。
+ *
+ * <p>Webhook 通知不再策略级绑定配置 ID 列表，改为按 Webhook 配置的事件范围
+ * （{@link WebhookScope#SLA_BREACH}）自动匹配订阅，策略中无需配置。
  */
 @Data
 public class SlaBreachActions {
@@ -24,7 +25,4 @@ public class SlaBreachActions {
 
     /** 自动升级的目标座席 ID（autoEscalate=true 时有效） */
     private String escalateToUserId;
-
-    /** 违规时推送的 Webhook 配置 ID 列表，空列表表示不推送 */
-    private List<Long> webhookIds;
 }
