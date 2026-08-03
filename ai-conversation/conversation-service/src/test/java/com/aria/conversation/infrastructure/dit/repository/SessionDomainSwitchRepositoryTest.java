@@ -12,6 +12,8 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.OffsetDateTime;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.any;
@@ -32,6 +34,14 @@ class SessionDomainSwitchRepositoryTest {
     void record_insertsCorrectFields() {
         ArgumentCaptor<SessionDomainSwitchDO> captor =
                 ArgumentCaptor.forClass(SessionDomainSwitchDO.class);
+
+        // 纯 Mockito 单元测试无 Spring 上下文，MyBatis-Plus 的 MetaObjectHandler
+        // (FieldFill.INSERT) 不会自动回填 createdAt；由 mock 在 insert 时模拟回填，
+        // 与生产环境"插入时由自动填充器写入审计字段"的行为一致。
+        when(switchMapper.insert(any(SessionDomainSwitchDO.class))).thenAnswer(inv -> {
+            ((SessionDomainSwitchDO) inv.getArgument(0)).setCreatedAt(OffsetDateTime.now());
+            return 1;
+        });
 
         repository.record(new DomainSwitchRecord(
                 "session-001", "ecommerce", "finance",
