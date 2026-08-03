@@ -18,7 +18,7 @@ public class WecomWebhookSender extends AbstractWebhookSender {
     public String supportedType() { return "WECOM"; }
 
     @Override
-    public void send(WebhookConfigEntity config, SlaBreachContext ctx) {
+    public void send(WebhookConfigEntity config, WebhookEventContext ctx) {
         Map<String, String> vars = buildVariables(ctx);
         String body;
         if (config.getMessageTemplate() != null && !config.getMessageTemplate().isBlank()) {
@@ -28,13 +28,11 @@ public class WecomWebhookSender extends AbstractWebhookSender {
                     {
                       "msgtype": "markdown",
                       "markdown": {
-                        "content": "## ⚠️ SLA %s 违规\\n> 会话：%s\\n> 访客：%s\\n> 策略：%s\\n> 目标：%ss / 实际：%ss"
+                        "content": "## %s"
                       }
                     }
-                    """.formatted(
-                    vars.get("breachTypeLabel"), vars.get("sessionId"),
-                    vars.get("visitorName"), vars.get("policyName"),
-                    vars.get("targetSec"), vars.get("actualSec"));
+                    """.formatted(WebhookDefaultTemplate.text(ctx.getScope(), vars)
+                            .replace("\\", "\\\\").replace("\n", "\\n").replace("\"", "\\\""));
         }
         doPost(config.getUrl(), Map.of(), body);
     }

@@ -23,7 +23,7 @@ public class CustomWebhookSender extends AbstractWebhookSender {
     public String supportedType() { return "CUSTOM"; }
 
     @Override
-    public void send(WebhookConfigEntity config, SlaBreachContext ctx) {
+    public void send(WebhookConfigEntity config, WebhookEventContext ctx) {
         Map<String, String> vars = buildVariables(ctx);
         String template = (config.getMessageTemplate() != null
                 && !config.getMessageTemplate().isBlank())

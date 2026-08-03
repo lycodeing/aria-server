@@ -7,8 +7,12 @@ import com.aria.conversation.domain.model.event.SlaEscalationRequestedEvent;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
 import com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity;
 import com.aria.conversation.infrastructure.persistence.entity.SlaPolicyEntity;
-import com.aria.conversation.infrastructure.webhook.SlaBreachContext;
+import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEntity;
+import com.aria.conversation.infrastructure.persistence.mapper.SlaBreachMapper;
+import com.aria.conversation.infrastructure.persistence.mapper.WebhookConfigMapper;
 import com.aria.conversation.infrastructure.webhook.WebhookDispatcher;
+import com.aria.conversation.infrastructure.webhook.WebhookEventContext;
+import com.aria.conversation.infrastructure.webhook.WebhookEventContextFactory;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -41,18 +45,24 @@ public class SlaBreachNotifier {
     private final ApplicationEventPublisher springEventPublisher;
     private final SlaBreachRecorder recorder;
     private final WebhookDispatcher webhookDispatcher;
+    private final WebhookConfigMapper webhookConfigMapper;
+    private final SlaBreachMapper     slaBreachMapper;
 
     public SlaBreachNotifier(
             @Value("${conversation.events.exchange}") String eventsExchange,
             @Qualifier("eventsRabbitTemplate") RabbitTemplate eventsRabbitTemplate,
             ApplicationEventPublisher springEventPublisher,
             SlaBreachRecorder recorder,
-            WebhookDispatcher webhookDispatcher) {
+            WebhookDispatcher webhookDispatcher,
+            WebhookConfigMapper webhookConfigMapper,
+            SlaBreachMapper slaBreachMapper) {
         this.eventsExchange = eventsExchange;
         this.eventsRabbitTemplate = eventsRabbitTemplate;
         this.springEventPublisher = springEventPublisher;
         this.recorder = recorder;
         this.webhookDispatcher = webhookDispatcher;
+        this.webhookConfigMapper = webhookConfigMapper;
+        this.slaBreachMapper = slaBreachMapper;
     }
 
     /**
@@ -116,14 +126,17 @@ public class SlaBreachNotifier {
         // Webhook 推送（异步，不阻塞主线程）
         List<Long> webhookIds = actions.getWebhookIds();
         if (webhookIds != null && !webhookIds.isEmpty()) {
-            List<Long> allBreachIds = newBreaches.stream()
-                    .map(SlaBreachEntity::getId).toList();
-            SlaBreachContext webhookCtx = new SlaBreachContext(
-                    session.getSessionId(),
-                    session.getVisitorName(),
-                    policy.getName(),
-                    newBreaches);
-            webhookDispatcher.dispatch(webhookIds, webhookCtx, allBreachIds);
+            List<WebhookConfigEntity> configs = webhookConfigMapper.selectEnabledByIds(webhookIds);
+            if (!configs.isEmpty()) {
+                List<Long> allBreachIds = newBreaches.stream()
+                        .map(SlaBreachEntity::getId).toList();
+                WebhookEventContext webhookCtx =
+                        WebhookEventContextFactory.buildSlaBreach(session, policy, newBreaches);
+                // 推送成功后回写 webhook_notified_at（dispatcher 不感知 SLA，通过回调注入）
+                webhookCtx.setOnSuccess(() ->
+                        slaBreachMapper.updateWebhookNotifiedAt(allBreachIds, OffsetDateTime.now()));
+                configs.forEach(config -> webhookDispatcher.dispatch(config, webhookCtx));
+            }
         }
     }
 }

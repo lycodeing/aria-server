@@ -1,11 +1,7 @@
 package com.aria.conversation.infrastructure.webhook;
 
-import com.aria.conversation.domain.model.BreachStage;
-import com.aria.conversation.domain.model.BreachType;
-import com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity;
+import com.aria.conversation.domain.model.WebhookScope;
 import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEntity;
-import com.aria.conversation.infrastructure.persistence.mapper.SlaBreachMapper;
-import com.aria.conversation.infrastructure.persistence.mapper.WebhookConfigMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -14,73 +10,78 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
-import static org.mockito.Mockito.clearInvocations;
 
 @ExtendWith(MockitoExtension.class)
 class WebhookDispatcherTest {
 
-    @Mock WebhookConfigMapper webhookConfigMapper;
-    @Mock SlaBreachMapper     slaBreachMapper;
-    @Mock WebhookSender       feishuSender;
+    @Mock WebhookSender feishuSender;
 
     WebhookDispatcher dispatcher;
 
     @BeforeEach
     void setUp() {
         when(feishuSender.supportedType()).thenReturn("FEISHU");
-        // Pass retryBaseMs=0 directly to skip sleep delays in unit tests
-        dispatcher = new WebhookDispatcher(
-                List.of(feishuSender), webhookConfigMapper, slaBreachMapper, 0L);
-        // supportedType() was called during construction to build the router map;
-        // clear that recorded interaction so verifyNoInteractions() in tests is accurate.
+        dispatcher = new WebhookDispatcher(List.of(feishuSender), 0L);
         clearInvocations(feishuSender);
     }
 
     @Test
-    @DisplayName("启用的 Webhook 配置调用对应 sender.send()")
-    void dispatch_callsSenderForEnabledConfig() {
-        WebhookConfigEntity config = WebhookConfigEntity.builder()
-                .id(1L).type("FEISHU").url("https://example.com").isEnabled(1).build();
-        when(webhookConfigMapper.selectEnabledByIds(List.of(1L))).thenReturn(List.of(config));
+    @DisplayName("推送成功后调用 onSuccess 回调（通用，不区分 scope）")
+    void dispatch_success_invokesOnSuccess() {
+        WebhookConfigEntity config = WebhookConfigEntity.builder().id(1L).type("FEISHU").build();
+        AtomicInteger calls = new AtomicInteger();
+        WebhookEventContext ctx = WebhookEventContext.builder()
+                .scope(WebhookScope.SLA_BREACH)
+                .eventType("WAIT")
+                .sessionId("sess-1")
+                .onSuccess(calls::incrementAndGet)
+                .build();
 
-        SlaBreachEntity breach = SlaBreachEntity.builder()
-                .id(10L).sessionId("s1").breachType(BreachType.WAIT).stage(BreachStage.BREACH)
-                .targetSec(120).actualSec(185).build();
-        SlaBreachContext ctx = new SlaBreachContext("s1", "张三", "默认SLA", List.of(breach));
+        dispatcher.dispatch(config, ctx);
 
-        dispatcher.dispatch(List.of(1L), ctx, List.of(10L));
-
-        verify(feishuSender).send(eq(config), eq(ctx));
-        verify(slaBreachMapper).updateWebhookNotifiedAt(eq(List.of(10L)), any());
+        verify(feishuSender).send(eq(config), any(WebhookEventContext.class));
+        assertEquals(1, calls.get());
     }
 
     @Test
-    @DisplayName("sender.send() 抛出异常时不影响其他 Webhook 执行")
-    void dispatch_senderException_doesNotAbortOthers() {
-        WebhookConfigEntity config = WebhookConfigEntity.builder()
-                .id(1L).type("FEISHU").url("https://example.com").isEnabled(1).build();
-        when(webhookConfigMapper.selectEnabledByIds(any())).thenReturn(List.of(config));
-        doThrow(new RuntimeException("timeout")).when(feishuSender).send(any(), any());
+    @DisplayName("推送失败不调用回调且不抛异常")
+    void dispatch_failure_skipsCallback() {
+        WebhookConfigEntity config = WebhookConfigEntity.builder().id(2L).type("FEISHU").build();
+        AtomicInteger calls = new AtomicInteger();
+        doThrow(new RuntimeException("network down"))
+                .when(feishuSender).send(eq(config), any(WebhookEventContext.class));
+        WebhookEventContext ctx = WebhookEventContext.builder()
+                .scope(WebhookScope.SESSION_CLOSED)
+                .sessionId("sess-2")
+                .onSuccess(calls::incrementAndGet)
+                .build();
 
-        SlaBreachContext ctx = new SlaBreachContext("s1", "张三", "默认SLA",
-                List.of(SlaBreachEntity.builder().breachType(BreachType.WAIT).stage(BreachStage.BREACH)
-                        .targetSec(120).actualSec(185).build()));
+        dispatcher.dispatch(config, ctx); // 不抛异常
 
-        // 不应抛出异常
-        dispatcher.dispatch(List.of(1L), ctx, List.of(10L));
-
-        // 发送失败时不标记 webhook_notified_at
-        verify(slaBreachMapper, never()).updateWebhookNotifiedAt(any(), any());
+        assertEquals(0, calls.get());
     }
 
     @Test
-    @DisplayName("webhookIds 为空时不调用任何 sender")
-    void dispatch_emptyIds_doesNothing() {
-        dispatcher.dispatch(List.of(), new SlaBreachContext("s1", "张三", "SLA", List.of()), List.of());
-        verifyNoInteractions(webhookConfigMapper, slaBreachMapper, feishuSender);
+    @DisplayName("未知类型 sender 跳过")
+    void dispatch_unknownType_skips() {
+        WebhookConfigEntity config = WebhookConfigEntity.builder().id(3L).type("WHAT").build();
+
+        dispatcher.dispatch(config,
+                WebhookEventContext.builder().scope(WebhookScope.SLA_BREACH).build());
+
+        verify(feishuSender, never()).send(any(), any());
+    }
+
+    @Test
+    @DisplayName("webhook 为 null 时安全返回")
+    void dispatch_nullWebhook_safe() {
+        dispatcher.dispatch(null, WebhookEventContext.builder().build());
+        verify(feishuSender, never()).send(any(), any());
     }
 }

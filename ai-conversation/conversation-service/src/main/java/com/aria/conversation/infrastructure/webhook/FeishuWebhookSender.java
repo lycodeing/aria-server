@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.webhook;
 
+import com.aria.conversation.domain.model.WebhookScope;
 import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEntity;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -26,7 +27,7 @@ public class FeishuWebhookSender extends AbstractWebhookSender {
     public String supportedType() { return "FEISHU"; }
 
     @Override
-    public void send(WebhookConfigEntity config, SlaBreachContext ctx) {
+    public void send(WebhookConfigEntity config, WebhookEventContext ctx) {
         String body = buildRequestBody(config, ctx);
         String url  = config.getUrl();
 
@@ -41,24 +42,22 @@ public class FeishuWebhookSender extends AbstractWebhookSender {
     }
 
     /** 构造请求体（供测试调用） */
-    String buildRequestBody(WebhookConfigEntity config, SlaBreachContext ctx) {
+    String buildRequestBody(WebhookConfigEntity config, WebhookEventContext ctx) {
         Map<String, String> vars = buildVariables(ctx);
 
         if (config.getMessageTemplate() != null && !config.getMessageTemplate().isBlank()) {
             return renderTemplate(config.getMessageTemplate(), vars);
         }
-        // 默认飞书 text 消息
+        // 默认模板：WebhookDefaultTemplate 按 scope 提供纯文本，包装为飞书 text 消息
         return """
                 {
                   "msg_type": "text",
                   "content": {
-                    "text": "⚠️ SLA %s 违规\\n会话：%s\\n访客：%s\\n策略：%s\\n目标：%ss｜实际：%ss"
+                    "text": "%s"
                   }
                 }
-                """.formatted(
-                vars.get("breachTypeLabel"), vars.get("sessionId"),
-                vars.get("visitorName"), vars.get("policyName"),
-                vars.get("targetSec"), vars.get("actualSec"));
+                """.formatted(WebhookDefaultTemplate.text(ctx.getScope(), vars)
+                        .replace("\\", "\\\\").replace("\"", "\\\""));
     }
 
     private String sign(long timestamp, String secret) {

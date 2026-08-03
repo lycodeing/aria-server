@@ -1,6 +1,8 @@
 package com.aria.conversation.infrastructure.webhook;
 
 import com.aria.conversation.domain.model.BreachType;
+import com.aria.conversation.domain.model.WebhookScope;
+import com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity;
 
 import lombok.extern.slf4j.Slf4j;
 import java.net.URI;
@@ -8,6 +10,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 @Slf4j
@@ -65,28 +69,34 @@ public abstract class AbstractWebhookSender implements WebhookSender {
         return result;
     }
 
-    /** 从 SlaBreachContext 构造模板变量 Map（取第一条违规的信息） */
-    protected Map<String, String> buildVariables(SlaBreachContext ctx) {
-        if (ctx.breaches() == null || ctx.breaches().isEmpty()) {
-            throw new IllegalArgumentException("SlaBreachContext breaches 列表不能为空");
+    /** 从 WebhookEventContext 构造模板变量 Map（SLA 违规取第一条违规信息） */
+    protected Map<String, String> buildVariables(WebhookEventContext ctx) {
+        Map<String, String> vars = new HashMap<>();
+        vars.put("sessionId",   ctx.getSessionId()   != null ? ctx.getSessionId()   : "");
+        vars.put("visitorName", ctx.getVisitorName() != null ? ctx.getVisitorName() : "未知访客");
+        vars.put("eventType",   ctx.getEventType()   != null ? ctx.getEventType()   : "");
+        if (ctx.getPayload() != null) {
+            ctx.getPayload().forEach((k, v) ->
+                    vars.put(k, v == null ? "" : String.valueOf(v)));
         }
-        var breach = ctx.breaches().get(0);
-        String label = switch (breach.getBreachType()) {
-            case WAIT   -> "排队等待超时";
-            case FRT    -> "首响超时";
-            case HANDLE -> "处理超时";
-        };
-        return Map.of(
-            "sessionId",       ctx.sessionId(),
-            "visitorName",     ctx.visitorName() != null ? ctx.visitorName() : "未知访客",
-            "breachType",      breach.getBreachType() != null ? breach.getBreachType().getValue() : "",
-            "breachTypeLabel", label,
-            "targetSec",       String.valueOf(breach.getTargetSec()),
-            "actualSec",       String.valueOf(breach.getActualSec()),
-            "policyName",      ctx.policyName(),
-            "breachAt",        breach.getBreachAt() != null
-                               ? breach.getBreachAt().toString() : "",
-            "stage",           breach.getStage() != null ? breach.getStage().getValue() : ""
-        );
+        if (ctx.getScope() == WebhookScope.SLA_BREACH && ctx.getPayload() != null) {
+            Object breachesObj = ctx.getPayload().get("breaches");
+            if (breachesObj instanceof List<?> list && !list.isEmpty()
+                    && list.get(0) instanceof SlaBreachEntity breach) {
+                BreachType type = breach.getBreachType();
+                String label = type == null ? "" : switch (type) {
+                    case WAIT   -> "排队等待超时";
+                    case FRT    -> "首响超时";
+                    case HANDLE -> "处理超时";
+                };
+                vars.put("breachType",      type != null ? type.getValue() : "");
+                vars.put("breachTypeLabel", label);
+                vars.put("targetSec",       breach.getTargetSec()  != null ? String.valueOf(breach.getTargetSec())  : "");
+                vars.put("actualSec",       breach.getActualSec()  != null ? String.valueOf(breach.getActualSec())  : "");
+                vars.put("breachAt",        breach.getBreachAt()   != null ? breach.getBreachAt().toString()       : "");
+                vars.put("stage",           breach.getStage()      != null ? breach.getStage().getValue()          : "");
+            }
+        }
+        return vars;
     }
 }

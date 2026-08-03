@@ -2,7 +2,9 @@ package com.aria.conversation.infrastructure.webhook;
 
 import com.aria.conversation.domain.model.BreachStage;
 import com.aria.conversation.domain.model.BreachType;
+import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
 import com.aria.conversation.infrastructure.persistence.entity.SlaBreachEntity;
+import com.aria.conversation.infrastructure.persistence.entity.SlaPolicyEntity;
 import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEntity;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -33,14 +35,21 @@ class FeishuWebhookSenderTest {
     void buildRequestBody_containsSessionAndType() {
         WebhookConfigEntity config = WebhookConfigEntity.builder()
                 .url("https://example.com").build();
+        ConversationEntity session = new ConversationEntity();
+        session.setSessionId("sess-001");
+        session.setVisitorName("张三");
+        SlaPolicyEntity policy = new SlaPolicyEntity();
+        policy.setName("VIP-SLA");
         SlaBreachEntity breach = SlaBreachEntity.builder()
                 .sessionId("sess-001").breachType(BreachType.WAIT).stage(BreachStage.BREACH)
                 .targetSec(120).actualSec(185).build();
-        SlaBreachContext ctx = new SlaBreachContext("sess-001", "张三", "VIP-SLA", List.of(breach));
+        WebhookEventContext ctx = WebhookEventContextFactory.buildSlaBreach(
+                session, policy, List.of(breach));
 
         String body = sender.buildRequestBody(config, ctx);
 
         assertThat(body).contains("sess-001");
         assertThat(body).contains("排队等待超时");
+        assertThat(body).contains("SLA 排队等待超时 违规");
     }
 }

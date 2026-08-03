@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.webhook;
 
+import com.aria.conversation.domain.model.WebhookScope;
 import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEntity;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -24,8 +25,9 @@ public class DingtalkWebhookSender extends AbstractWebhookSender {
     public String supportedType() { return "DINGTALK"; }
 
     @Override
-    public void send(WebhookConfigEntity config, SlaBreachContext ctx) {
+    public void send(WebhookConfigEntity config, WebhookEventContext ctx) {
         Map<String, String> vars = buildVariables(ctx);
+        String text = WebhookDefaultTemplate.text(ctx.getScope(), vars);
         String body;
         if (config.getMessageTemplate() != null && !config.getMessageTemplate().isBlank()) {
             body = renderTemplate(config.getMessageTemplate(), vars);
@@ -34,16 +36,15 @@ public class DingtalkWebhookSender extends AbstractWebhookSender {
                     {
                       "msgtype": "markdown",
                       "markdown": {
-                        "title": "SLA违规告警",
-                        "text": "### ⚠️ SLA %s 违规\\n- 会话：%s\\n- 访客：%s\\n- 策略：%s\\n- 目标：%ss｜实际：%ss"
+                        "title": "%s",
+                        "text": "### %s"
                       }
                     }
                     """.formatted(
-                    vars.get("breachTypeLabel"), vars.get("sessionId"),
-                    vars.get("visitorName"), vars.get("policyName"),
-                    vars.get("targetSec"), vars.get("actualSec"));
+                    ctx.getScope() == WebhookScope.SLA_BREACH ? "SLA违规告警" : ctx.getScope(),
+                    text.replace("\\", "\\\\").replace("\n", "\\n").replace("\"", "\\\""));
         }
-
+        // URL 签名逻辑不变（timestamp + sign 参数）
         String url = config.getUrl();
         if (config.getSecret() != null && !config.getSecret().isBlank()) {
             long timestamp = System.currentTimeMillis();
