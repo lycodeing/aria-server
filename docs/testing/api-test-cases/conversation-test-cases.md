@@ -298,16 +298,22 @@
 
 ## 11. Webhook
 
+> Webhook 配置支持通过 `scopes` 字段订阅事件范围（`WebhookScope` 枚举：`SLA_BREACH` / `SESSION_CREATED` / `SESSION_TRANSFERRED` / `SESSION_CLOSED` / `CSAT_RATED`）。
+> 业务事件按 scope 自动匹配推送；未传 `scopes` 时由数据库列默认值兜底为 `["SLA_BREACH"]`，传空数组 `[]` 表示不订阅任何事件。
+
 | ID | 标题 | 前置条件 | 步骤 | 预期结果 | 优先级 | 备注 |
 |---|---|---|---|---|---|---|
 | CONV-WH-001 | Webhook 列表 | admin token | GET `/api/v1/admin/sla/webhooks` | HTTP 200 | P0 | |
 | CONV-WH-002 | 非 HTTPS URL 被拒 | 同上 | POST body `url:"http://insecure.example.com/hook"` | HTTP 400 | P1 | 强制 HTTPS |
 | CONV-WH-003 | 缺少 name 被拒 | 同上 | POST body 不含 `name` | HTTP 400 | P1 | |
-| CONV-WH-004 | 创建 CUSTOM Webhook | 同上 | POST body 含 `name/type/url/customHeaders/isEnabled` | HTTP 200；返回 `data.id` | P0 | |
+| CONV-WH-004 | 创建 CUSTOM Webhook | 同上 | POST body 含 `name/type/url/customHeaders/isEnabled`，可带 `scopes` | HTTP 200；返回 `data.id`；带 `scopes` 时 `data.scopes` 与提交值一致，未传时创建响应 `data.scopes=null`、但 DB 列默认值兜底为 `["SLA_BREACH"]`（GET 重新查询可见） | P0 | |
 | CONV-WH-005 | 更新 Webhook | 承接 CONV-WH-004 | PUT `/{id}` body 修改字段（含 `messageTemplate`） | HTTP 200 | P1 | |
 | CONV-WH-006 | 测试发送已执行 | 承接 CONV-WH-004 | POST `/{id}/test` | 业务码 200 或 500（两者都证明链路被执行；网关自签证书场景下常见 500） | P1 | 断言"链路执行"而非固定业务码 |
 | CONV-WH-007 | 测试不存在的 Webhook | 无 | POST `/api/v1/admin/sla/webhooks/999999999/test` | 业务码 40400 | P1 | |
 | CONV-WH-008 | 删除 Webhook（清理） | 承接 CONV-WH-004 | DELETE `/{id}` | HTTP 200 | P1 | |
+| CONV-WH-009 | 创建携带 scopes 的 Webhook | 同上 | POST body 含 `"scopes":["SLA_BREACH","SESSION_TRANSFERRED"]` | HTTP 200；返回 `data.scopes` 与提交值一致 | P1 | 多 scope 订阅 |
+| CONV-WH-010 | 创建空 scopes 的 Webhook | 同上 | POST body 含 `"scopes":[]` | HTTP 200；`data.scopes` 为空数组（不订阅任何事件） | P1 | 空数组=不订阅 |
+| CONV-WH-011 | 非法 scope 被拒 | 同上 | POST body 含 `"scopes":["NOT_A_SCOPE"]` | HTTP 400（业务码 40000） | P1 | `WebhookAppService.validateScopes` 拒绝非枚举值；重复值/空元素同样返回 40000 |
 
 ---
 
