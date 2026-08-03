@@ -3,8 +3,11 @@ package com.aria.conversation.application.service;
 import com.aria.common.core.exception.BusinessException;
 import com.aria.conversation.domain.CsatChannel;
 import com.aria.conversation.domain.CsatStatus;
+import com.aria.conversation.domain.model.WebhookScope;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import com.aria.conversation.infrastructure.csat.CsatRatingMapper;
+import com.aria.conversation.infrastructure.webhook.WebhookEventContextFactory;
+import com.aria.conversation.infrastructure.webhook.WebhookEventPublisher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -26,6 +29,7 @@ public class CsatService {
     private static final long EXPIRY_HOURS = 24;
 
     private final CsatRatingMapper mapper;
+    private final WebhookEventPublisher webhookEventPublisher;
 
     /**
      * 创建评价邀请（幂等：同一 session 已存在时直接返回已有记录）。
@@ -81,6 +85,11 @@ public class CsatService {
         rating.setStatus(CsatStatus.RATED);
         rating.setRatedAt(OffsetDateTime.now());
         mapper.updateById(rating);
+        // 通用 Webhook：客户评价（异步分发，不影响评分主流程）
+        webhookEventPublisher.publish(WebhookScope.CSAT_RATED,
+                WebhookEventContextFactory.buildCsatRated(
+                        rating.getSessionId(), csatId, score, comment,
+                        rating.getChannel() == null ? "" : rating.getChannel().name()));
         log.info("[CSAT] 评价已提交 csatId={} score={}", csatId, score);
     }
 

@@ -3,6 +3,7 @@ package com.aria.conversation.application.service;
 import com.aria.conversation.domain.CsatStatus;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import com.aria.conversation.infrastructure.csat.CsatRatingMapper;
+import com.aria.conversation.infrastructure.webhook.WebhookEventPublisher;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -19,6 +20,7 @@ import static org.mockito.Mockito.when;
 class CsatServicePendingTest {
 
     @Mock CsatRatingMapper mapper;
+    @Mock WebhookEventPublisher webhookEventPublisher;
     @InjectMocks CsatService service;
 
     @Test
