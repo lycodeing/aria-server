@@ -121,6 +121,61 @@ public class AuthClient extends BaseClient {
         return unwrap(resp, "校验 token 失败");
     }
 
+    // ---- 用户查询 ----
+
+    /**
+     * 分页搜索用户（内部接口，供会话查询页面搜索客服列表）。
+     * 调用 auth-service GET /api/v1/internal/users/search
+     *
+     * @param keyword 搜索关键词（可选，模糊匹配 username/displayName/email）
+     * @param page    页码（0-based）
+     * @param size    每页大小
+     * @return 用户列表分页结果；服务异常时返回空结果
+     */
+    public java.util.Map<String, Object> searchUsers(String keyword, int page, int size) {
+        try {
+            StringBuilder path = new StringBuilder("/api/v1/internal/users/search?page=")
+                    .append(page).append("&size=").append(size);
+            if (keyword != null && !keyword.isBlank()) {
+                path.append("&keyword=").append(URLEncoder.encode(keyword, StandardCharsets.UTF_8));
+            }
+            ApiResponse<java.util.Map<String, Object>> resp = doGet(
+                    path.toString(),
+                    new TypeRef<>() {},
+                    "搜索用户失败 keyword=" + keyword);
+            return unwrap(resp, "搜索用户失败 keyword=" + keyword);
+        } catch (AuthClientException e) {
+            log.warn("[AuthClient] 搜索用户失败 keyword={}: {}", keyword, e.getMessage());
+            return java.util.Map.of("total", 0, "page", page, "size", size, "items", java.util.List.of());
+        }
+    }
+
+    /**
+     * 批量查询用户显示名称。
+     * 调用 auth-service GET /api/v1/internal/users/names?ids=1,2,3
+     *
+     * @param ids 用户 ID 字符串列表
+     * @return id → displayName 映射；服务异常时返回空 Map
+     */
+    public java.util.Map<String, String> getDisplayNames(java.util.List<String> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return java.util.Map.of();
+        }
+        try {
+            String idsParam = URLEncoder.encode(String.join(",", ids), StandardCharsets.UTF_8);
+            ApiResponse<java.util.Map<String, String>> resp = doGet(
+                    "/api/v1/internal/users/names?ids=" + idsParam,
+                    new TypeRef<>() {},
+                    "批量查询用户名称失败");
+            return resp != null && resp.isSuccess() && resp.data() != null
+                    ? resp.data()
+                    : java.util.Map.of();
+        } catch (AuthClientException e) {
+            log.warn("[AuthClient] 批量查询用户名称失败: {}", e.getMessage());
+            return java.util.Map.of();
+        }
+    }
+
     // ---- 内部工具 ----
 
     private <T> ApiResponse<T> doGet(String path, TypeRef<ApiResponse<T>> ref, String errPrefix) {

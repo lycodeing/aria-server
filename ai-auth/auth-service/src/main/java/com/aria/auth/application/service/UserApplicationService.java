@@ -12,7 +12,11 @@ import com.aria.common.core.util.IdGenerator;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 用户管理应用服务。
@@ -108,6 +112,39 @@ public class UserApplicationService {
      */
     public PageResult<User> search(UserPageQuery query) {
         return userRepo.search(query);
+    }
+
+    /**
+     * 批量查询用户显示名称（根据 ID 字符串列表）。
+     * 供内部服务将 agentId 解析为 displayName 使用。
+     *
+     * @param ids 用户 ID 字符串列表
+     * @return id → displayName 映射；找不到的 ID 不包含在结果中
+     */
+    public Map<String, String> getDisplayNamesByIds(List<String> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return Map.of();
+        }
+        // 字符串 ID → UserId，跳过非数字脏数据
+        List<UserId> userIds = ids.stream()
+                .map(idStr -> {
+                    try {
+                        return UserId.of(Long.valueOf(idStr.trim()));
+                    } catch (NumberFormatException e) {
+                        return null;
+                    }
+                })
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        if (userIds.isEmpty()) {
+            return Map.of();
+        }
+        // 一条 IN 查询批量取回，消除逐个 findById 的 N+1
+        return userRepo.findByIds(userIds).stream()
+                .collect(Collectors.toMap(
+                        u -> String.valueOf(u.getId().getValue()),
+                        u -> u.getDisplayName() != null ? u.getDisplayName() : u.getUsername()));
     }
 
     // -------------------------------------------------------

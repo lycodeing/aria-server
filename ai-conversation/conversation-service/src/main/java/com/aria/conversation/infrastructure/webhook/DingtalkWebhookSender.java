@@ -27,22 +27,37 @@ public class DingtalkWebhookSender extends AbstractWebhookSender {
     @Override
     public void send(WebhookConfigEntity config, WebhookEventContext ctx) {
         Map<String, String> vars = buildVariables(ctx);
-        String text = WebhookDefaultTemplate.text(ctx.getScope(), vars);
         String body;
         if (config.getMessageTemplate() != null && !config.getMessageTemplate().isBlank()) {
-            body = renderTemplate(config.getMessageTemplate(), vars);
+            String rendered = renderTemplate(config.getMessageTemplate(), vars);
+            if (isRawJson(rendered)) {
+                body = rendered; // 向后兼容：用户手写的平台 JSON
+            } else {
+                body = """
+                        {
+                          "msgtype": "markdown",
+                          "markdown": {
+                            "title": "%s",
+                            "text": "%s"
+                          }
+                        }
+                        """.formatted(
+                        escapeJson(ctx.getScope() == WebhookScope.SLA_BREACH ? "SLA违规告警" : ctx.getScope().name()),
+                        escapeJson(rendered));
+            }
         } else {
+            String text = WebhookDefaultTemplate.text(ctx.getScope(), vars);
             body = """
                     {
                       "msgtype": "markdown",
                       "markdown": {
                         "title": "%s",
-                        "text": "### %s"
+                        "text": "%s"
                       }
                     }
                     """.formatted(
-                    ctx.getScope() == WebhookScope.SLA_BREACH ? "SLA违规告警" : ctx.getScope(),
-                    text.replace("\\", "\\\\").replace("\n", "\\n").replace("\"", "\\\""));
+                    escapeJson(ctx.getScope() == WebhookScope.SLA_BREACH ? "⚠️ SLA违规告警" : ctx.getScope().name()),
+                    escapeJson(text));
         }
         // URL 签名逻辑不变（timestamp + sign 参数）
         String url = config.getUrl();

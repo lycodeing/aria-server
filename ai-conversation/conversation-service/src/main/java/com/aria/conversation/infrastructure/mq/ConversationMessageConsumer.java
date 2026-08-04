@@ -4,6 +4,7 @@ import com.aria.conversation.domain.ClosedBy;
 import com.aria.conversation.domain.MessageRole;
 import com.aria.conversation.infrastructure.persistence.ConversationPersistRepository;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationMessageEntity;
+import com.aria.sdk.auth.AuthClient;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.slf4j.MDC;
@@ -37,6 +38,7 @@ public class ConversationMessageConsumer {
     private static final String MDC_TRACE_ID = "traceId";
 
     private final ConversationPersistRepository persistRepository;
+    private final AuthClient authClient;
 
     /**
      * 消费持久化队列中的消息，按事件类型分发到对应处理方法。
@@ -105,22 +107,49 @@ public class ConversationMessageConsumer {
     }
 
     /**
-     * 处理 SESSION_ACCEPT：更新会话状态为 ACTIVE，写入接入座席 ID。
+     * 处理 SESSION_ACCEPT：更新会话状态为 ACTIVE，写入接入座席 ID 及其显示名称快照。
+     *
+     * <p>agentName 在接入时刻从 auth-service 解析并冻结落库，保证历史会话
+     * 始终反映"当时是谁接待的"，不受客服后续改名/离职删号影响。
      */
     private void handleSessionAccept(Map<String, Object> payload, String sessionId) {
+        String agentId = str(payload, ConversationStreamEvent.FIELD_AGENT_ID);
         persistRepository.activateConversation(
                 sessionId,
-                str(payload, ConversationStreamEvent.FIELD_AGENT_ID),
+                agentId,
+                resolveAgentName(agentId),
                 toOffsetDateTime(longVal(payload, ConversationStreamEvent.FIELD_TIMESTAMP)));
     }
 
     /**
-     * 处理 SESSION_TRANSFER：更新 DB 中的 agent_id 为目标座席。
+     * 处理 SESSION_TRANSFER：更新 DB 中的 agent_id 及 agent_name 快照为目标座席。
      */
     private void handleSessionTransfer(Map<String, Object> payload, String sessionId) {
+        String targetAgentId = str(payload, ConversationStreamEvent.FIELD_TO_AGENT_ID);
         persistRepository.transferConversation(
                 sessionId,
-                str(payload, ConversationStreamEvent.FIELD_TO_AGENT_ID));
+                targetAgentId,
+                resolveAgentName(targetAgentId));
+    }
+
+    /**
+     * 解析座席显示名称快照。调用 auth-service 将 agentId 翻译为 displayName，
+     * 解析失败或客服不存在时回退为 agentId，保证不写入 null 且不阻断状态转换。
+     *
+     * @param agentId 座席 ID（可能为 null）
+     * @return 座席显示名称；agentId 为空时返回 null，解析失败时回退 agentId
+     */
+    private String resolveAgentName(String agentId) {
+        if (agentId == null || agentId.isBlank()) {
+            return null;
+        }
+        try {
+            String name = authClient.getDisplayNames(List.of(agentId)).get(agentId);
+            return name != null ? name : agentId;
+        } catch (RuntimeException e) {
+            log.warn("[MQ Consumer] 解析座席名称失败，回退 agentId={}: {}", agentId, e.getMessage());
+            return agentId;
+        }
     }
 
     /**

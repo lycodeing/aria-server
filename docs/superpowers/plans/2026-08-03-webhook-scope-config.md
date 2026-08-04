@@ -83,7 +83,7 @@
 - Create: `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/WebhookEventTypes.java`
 - Create: `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/WebhookEventContextFactory.java`
 - Create: `ai-conversation/conversation-service/src/test/java/com/aria/conversation/infrastructure/webhook/WebhookEventContextTest.java`
-- Delete: `ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/SlaBreachContext.java`
+- （`SlaBreachContext.java` 的删除在 Task 6，本任务不动）
 
 **Interfaces:**
 - Produces:
@@ -92,11 +92,9 @@
   - `WebhookEventTypes` 常量类（SESSION_CREATED/SESSION_ENQUEUE/SESSION_TRANSFER/SESSION_CLOSED/CSAT_RATED）
   - `WebhookEventContextFactory.buildSlaBreach(...)` / `buildSessionEvent(...)` / `buildCsatRated(...)` → `WebhookEventContext`
 
-- [ ] **Step 1: 删除 SlaBreachContext**
+- [ ] **Step 1: 明确 SlaBreachContext 删除时机（本任务不删）**
 
-```bash
-rm ai-conversation/conversation-service/src/main/java/com/aria/conversation/infrastructure/webhook/SlaBreachContext.java
-```
+`SlaBreachContext` 当前被 `WebhookSender`/`AbstractWebhookSender`/各 Sender/`WebhookDispatcher`/`SlaBreachNotifier`/`WebhookTestSender` 引用。本任务**仅新建** `WebhookScope`/`WebhookEventContext`/`WebhookEventTypes`/`WebhookEventContextFactory`，**不删除** `SlaBreachContext`（保证本任务提交后工程可编译）。删除动作统一放在 Task 6（SlaBreachNotifier 改造完成后），届时全部引用已切换到 `WebhookEventContext`。
 
 - [ ] **Step 2: 新建 WebhookScope 枚举**
 

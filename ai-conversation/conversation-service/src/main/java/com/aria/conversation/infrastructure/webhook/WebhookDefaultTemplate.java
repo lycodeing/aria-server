@@ -15,28 +15,56 @@ public final class WebhookDefaultTemplate {
 
     private WebhookDefaultTemplate() {}
 
-    /** 返回 scope 的默认纯文本（SLA 违规文本兼容既有格式；各 Sender 负责包装成平台 JSON）。 */
+    /** 返回 scope 的默认 Markdown 文本（各 Sender 负责包装成平台 JSON）。 */
     public static String text(WebhookScope scope, Map<String, String> vars) {
         return switch (scope) {
-            case SLA_BREACH -> "⚠️ SLA %s 违规\n会话：%s\n访客：%s\n策略：%s\n目标：%ss｜实际：%ss"
-                    .formatted(vars.getOrDefault("breachTypeLabel", ""),
-                            vars.getOrDefault("sessionId", ""),
-                            vars.getOrDefault("visitorName", "未知访客"),
-                            vars.getOrDefault("policyName", ""),
-                            vars.getOrDefault("targetSec", ""),
-                            vars.getOrDefault("actualSec", ""));
-            case SESSION_CREATED -> "【新会话】访客 %s 进入会话 %s"
-                    .formatted(vars.getOrDefault("visitorName", "未知访客"),
-                            vars.getOrDefault("sessionId", ""));
-            case SESSION_TRANSFERRED -> "【转人工】访客 %s 转接会话 %s"
-                    .formatted(vars.getOrDefault("visitorName", "未知访客"),
-                            vars.getOrDefault("sessionId", ""));
-            case SESSION_CLOSED -> "【会话关闭】会话 %s 已结束"
-                    .formatted(vars.getOrDefault("sessionId", ""));
-            case CSAT_RATED -> "【客户评价】会话 %s 评分 %s 星，评价：%s"
-                    .formatted(vars.getOrDefault("sessionId", ""),
-                            vars.getOrDefault("score", ""),
-                            vars.getOrDefault("comment", ""));
+            case SLA_BREACH -> """
+                    ⚠️ **SLA 违规告警**
+
+                    ---
+
+                    **会话ID**：%s
+                    **访客**：%s
+                    **策略**：%s
+
+                    ---
+
+                    **违规类型**：%s
+                    **目标**：%ss ｜ **实际**：%ss""".formatted(
+                    vars.getOrDefault("sessionId", ""),
+                    vars.getOrDefault("visitorName", "未知访客"),
+                    vars.getOrDefault("policyName", ""),
+                    vars.getOrDefault("breachTypeLabel", ""),
+                    vars.getOrDefault("targetSec", ""),
+                    vars.getOrDefault("actualSec", ""));
+            case SESSION_CREATED -> """
+                    📢 **新会话**
+
+                    **访客**：%s
+                    **会话ID**：%s""".formatted(
+                    vars.getOrDefault("visitorName", "未知访客"),
+                    vars.getOrDefault("sessionId", ""));
+            case SESSION_TRANSFERRED -> """
+                    🔄 **转人工**
+
+                    **访客**：%s
+                    **会话ID**：%s""".formatted(
+                    vars.getOrDefault("visitorName", "未知访客"),
+                    vars.getOrDefault("sessionId", ""));
+            case SESSION_CLOSED -> """
+                    🔒 **会话关闭**
+
+                    **会话ID**：%s""".formatted(
+                    vars.getOrDefault("sessionId", ""));
+            case CSAT_RATED -> """
+                    ⭐ **客户评价**
+
+                    **会话ID**：%s
+                    **评分**：%s 星
+                    **评价**：%s""".formatted(
+                    vars.getOrDefault("sessionId", ""),
+                    vars.getOrDefault("score", ""),
+                    vars.getOrDefault("comment", ""));
         };
     }
 }

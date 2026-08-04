@@ -49,6 +49,15 @@ public class ConversationEntity extends BaseDO {
     private String agentId;
 
     /**
+     * 接入座席显示名称快照（接入/转交时从 auth-service 解析并冻结写入）。
+     * 历史数据不可变原则：冻结"当时接待的客服名"，客服改名或离职删号后历史记录不受影响，
+     * 会话查询页直接读此快照，免去每次查询实时跨服务解析 agentId → displayName。
+     * WAITING / AI_CHAT 状态或解析失败时为 null。
+     */
+    @TableField("agent_name")
+    private String agentName;
+
+    /**
      * 会话状态枚举（WAITING / ACTIVE / CLOSED）。
      * MyBatis-Plus 自动将枚举的 {@code @EnumValue} 字段值映射到 DB VARCHAR 列。
      */

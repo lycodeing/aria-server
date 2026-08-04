@@ -1,19 +1,30 @@
 package com.aria.conversation.infrastructure.persistence;
 
+import com.aria.common.core.exception.BusinessException;
+import com.aria.common.core.page.PageResult;
+import com.aria.common.core.page.PageUtil;
+import com.aria.conversation.application.query.ConversationPageQuery;
 import com.aria.conversation.domain.ClosedBy;
 import com.aria.conversation.domain.SessionStatus;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationEntity;
 import com.aria.conversation.infrastructure.persistence.entity.ConversationMessageEntity;
 import com.aria.conversation.infrastructure.persistence.mapper.ConversationMapper;
 import com.aria.conversation.infrastructure.persistence.mapper.ConversationMessageMapper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Repository;
+import org.springframework.util.StringUtils;
 
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -37,6 +48,9 @@ import java.util.Optional;
 @RequiredArgsConstructor
 public class ConversationPersistRepository {
 
+    /** 会话查询时间范围按东八区（CST）解释日期边界，与业务运营时区一致 */
+    private static final ZoneId CST_ZONE = ZoneOffset.ofHours(8);
+
     private final ConversationMapper conversationMapper;
     private final ConversationMessageMapper messageMapper;
 
@@ -50,8 +64,9 @@ public class ConversationPersistRepository {
      * @param agentId    接入座席 ID
      * @param acceptedAt 接入时间
      */
-    public void activateConversation(String sessionId, String agentId, OffsetDateTime acceptedAt) {
-        int affected = conversationMapper.activateBySessionId(sessionId, agentId, acceptedAt);
+    public void activateConversation(String sessionId, String agentId, String agentName,
+                                     OffsetDateTime acceptedAt) {
+        int affected = conversationMapper.activateBySessionId(sessionId, agentId, agentName, acceptedAt);
         if (affected == 0) {
             log.debug("[Persist] 会话不存在或已非 WAITING，忽略激活 sessionId={}", sessionId);
         } else {
@@ -65,8 +80,8 @@ public class ConversationPersistRepository {
      * @param sessionId     会话唯一标识
      * @param targetAgentId 目标座席 ID
      */
-    public void transferConversation(String sessionId, String targetAgentId) {
-        int affected = conversationMapper.transferBySessionId(sessionId, targetAgentId);
+    public void transferConversation(String sessionId, String targetAgentId, String targetAgentName) {
+        int affected = conversationMapper.transferBySessionId(sessionId, targetAgentId, targetAgentName);
         if (affected == 0) {
             log.debug("[Persist] 会话不存在或非 ACTIVE，忽略转交 sessionId={}", sessionId);
         } else {
@@ -317,5 +332,110 @@ public class ConversationPersistRepository {
                     "[Persist] 部分消息写入失败，等待 PEL 重试: " + failures, failures);
         }
         log.debug("[Persist] 批量写入消息 count={}", messages.size());
+    }
+
+    // ===== 会话查询 =====
+
+    /**
+     * 分页查询会话记录，支持多条件筛选。
+     *
+     * @param query 查询参数（含分页、筛选条件）
+     * @return 分页结果
+     */
+    public PageResult<ConversationEntity> search(ConversationPageQuery query) {
+        LambdaQueryWrapper<ConversationEntity> qw = Wrappers.lambdaQuery(ConversationEntity.class);
+
+        // 时间范围（按 startedAt 筛选）
+        if (StringUtils.hasText(query.getStartDate())) {
+            OffsetDateTime start = parseDate(query.getStartDate(), "startDate")
+                    .atStartOfDay(CST_ZONE).toOffsetDateTime();
+            qw.ge(ConversationEntity::getStartedAt, start);
+        }
+        if (StringUtils.hasText(query.getEndDate())) {
+            OffsetDateTime end = parseDate(query.getEndDate(), "endDate")
+                    .plusDays(1).atStartOfDay(CST_ZONE).toOffsetDateTime();
+            qw.lt(ConversationEntity::getStartedAt, end);
+        }
+
+        // 会话状态（逗号分隔多选）
+        if (StringUtils.hasText(query.getStatus())) {
+            List<SessionStatus> statuses = Arrays.stream(query.getStatus().split(","))
+                    .map(String::trim)
+                    .filter(StringUtils::hasText)
+                    .map(s -> parseEnum(SessionStatus.class, s, "status"))
+                    .toList();
+            if (!statuses.isEmpty()) {
+                qw.in(ConversationEntity::getStatus, statuses);
+            }
+        }
+
+        // 客服 ID（单选精确匹配）
+        if (StringUtils.hasText(query.getAgentId())) {
+            qw.eq(ConversationEntity::getAgentId, query.getAgentId());
+        }
+
+        // 客服 ID（多选，逗号分隔）
+        if (StringUtils.hasText(query.getAgentIds())) {
+            List<String> ids = Arrays.stream(query.getAgentIds().split(","))
+                    .map(String::trim)
+                    .filter(StringUtils::hasText)
+                    .toList();
+            if (!ids.isEmpty()) {
+                qw.in(ConversationEntity::getAgentId, ids);
+            }
+        }
+
+        // 关键词（访客名称模糊匹配 + 会话ID 前缀匹配走索引）
+        if (StringUtils.hasText(query.getKeyword())) {
+            String kw = query.getKeyword().trim();
+            qw.and(w -> w.like(ConversationEntity::getVisitorName, kw)
+                    .or().likeRight(ConversationEntity::getSessionId, kw));
+        }
+
+        // 问题标签
+        if (StringUtils.hasText(query.getTag())) {
+            qw.eq(ConversationEntity::getTag, query.getTag());
+        }
+
+        // 结束方
+        if (StringUtils.hasText(query.getClosedBy())) {
+            qw.eq(ConversationEntity::getClosedBy,
+                    parseEnum(ClosedBy.class, query.getClosedBy().trim(), "closedBy"));
+        }
+
+        // 默认按 startedAt 降序
+        qw.orderByDesc(ConversationEntity::getStartedAt);
+
+        var page = conversationMapper.selectPage(PageUtil.toMpPage(query), qw);
+        return PageUtil.toPageResult(page, query);
+    }
+
+    /**
+     * 解析 yyyy-MM-dd 日期字符串，非法格式抛 {@link BusinessException}(400)。
+     *
+     * @param raw   原始日期字符串
+     * @param field 字段名（用于错误提示）
+     */
+    private LocalDate parseDate(String raw, String field) {
+        try {
+            return LocalDate.parse(raw.trim());
+        } catch (DateTimeParseException e) {
+            throw new BusinessException(400, "参数 " + field + " 日期格式非法，应为 yyyy-MM-dd：" + raw);
+        }
+    }
+
+    /**
+     * 解析枚举值，非法值抛 {@link BusinessException}(400) 而非 500。
+     *
+     * @param enumType 枚举类型
+     * @param raw      原始字符串
+     * @param field    字段名（用于错误提示）
+     */
+    private <E extends Enum<E>> E parseEnum(Class<E> enumType, String raw, String field) {
+        try {
+            return Enum.valueOf(enumType, raw);
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(400, "参数 " + field + " 取值非法：" + raw);
+        }
     }
 }

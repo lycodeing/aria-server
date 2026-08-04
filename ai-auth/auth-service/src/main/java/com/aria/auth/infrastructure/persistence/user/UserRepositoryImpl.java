@@ -79,6 +79,27 @@ public class UserRepositoryImpl implements IUserRepository {
     }
 
     @Override
+    public List<User> findByIds(Collection<UserId> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return List.of();
+        }
+        List<Long> rawIds = ids.stream()
+                .filter(Objects::nonNull)
+                .map(UserId::getValue)
+                .distinct()
+                .toList();
+        if (rawIds.isEmpty()) {
+            return List.of();
+        }
+        // 一条 IN 查询批量取回，消除逐个 findById 的 N+1；
+        // 名称解析用途无需角色，用空角色 Map 重建，避免 toDomain 内的角色查询二次 N+1
+        Map<Long, Set<Long>> emptyRoles = Map.of();
+        return mapper.selectBatchIds(rawIds).stream()
+                .map(userDO -> toDomainWithRoles(userDO, emptyRoles))
+                .toList();
+    }
+
+    @Override
     public Optional<User> findByUsername(String username) {
         return Optional.ofNullable(mapper.selectOne(
                         new LambdaQueryWrapper<UserDO>()

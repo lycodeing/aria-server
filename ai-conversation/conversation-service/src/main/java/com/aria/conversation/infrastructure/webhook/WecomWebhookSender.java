@@ -22,17 +22,28 @@ public class WecomWebhookSender extends AbstractWebhookSender {
         Map<String, String> vars = buildVariables(ctx);
         String body;
         if (config.getMessageTemplate() != null && !config.getMessageTemplate().isBlank()) {
-            body = renderTemplate(config.getMessageTemplate(), vars);
+            String rendered = renderTemplate(config.getMessageTemplate(), vars);
+            if (isRawJson(rendered)) {
+                body = rendered; // 向后兼容：用户手写的平台 JSON
+            } else {
+                body = """
+                        {
+                          "msgtype": "markdown",
+                          "markdown": {
+                            "content": "%s"
+                          }
+                        }
+                        """.formatted(escapeJson(rendered));
+            }
         } else {
             body = """
                     {
                       "msgtype": "markdown",
                       "markdown": {
-                        "content": "## %s"
+                        "content": "%s"
                       }
                     }
-                    """.formatted(WebhookDefaultTemplate.text(ctx.getScope(), vars)
-                            .replace("\\", "\\\\").replace("\n", "\\n").replace("\"", "\\\""));
+                    """.formatted(escapeJson(WebhookDefaultTemplate.text(ctx.getScope(), vars)));
         }
         doPost(config.getUrl(), Map.of(), body);
     }

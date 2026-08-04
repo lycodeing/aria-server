@@ -28,35 +28,53 @@ import java.util.Map;
 @TableName(schema = "cs_conversation", value = "cs_webhook_config", autoResultMap = true)
 public class WebhookConfigEntity {
 
-    /** 主键（BIGSERIAL 自增） */
+    /**
+     * 主键（BIGSERIAL 自增）
+     */
     @TableId(type = IdType.AUTO)
     private Long id;
 
-    /** 配置名称，全局唯一 */
+    /**
+     * 配置名称，全局唯一
+     */
     private String name;
 
-    /** Webhook 类型：FEISHU | DINGTALK | WECOM | CUSTOM */
+    /**
+     * Webhook 类型：FEISHU | DINGTALK | WECOM | CUSTOM
+     */
     private String type;
 
-    /** Webhook 请求地址 */
+    /**
+     * Webhook 请求地址
+     */
     private String url;
 
-    /** 签名密钥（飞书/钉钉需要），明文存储。响应中不序列化，避免泄露 */
+    /**
+     * 签名密钥（飞书/钉钉需要），明文存储。响应中不序列化，避免泄露
+     */
     @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     private String secret;
 
-    /** CUSTOM 类型的自定义请求头，key=header名，value=header值 */
+    /**
+     * CUSTOM 类型的自定义请求头，key=header名，value=header值
+     */
     @TableField(typeHandler = StringMapTypeHandler.class)
     private Map<String, String> customHeaders;
 
-    /** 自定义消息模板，支持 ${变量}，空则用平台默认模板 */
+    /**
+     * 自定义消息模板，支持 ${变量}，空则用平台默认模板
+     */
     private String messageTemplate;
 
-    /** 订阅的事件范围列表（WebhookScope 枚举名），空数组表示不订阅任何事件 */
+    /**
+     * 订阅的事件范围列表（WebhookScope 枚举名），空数组表示不订阅任何事件
+     */
     @TableField(typeHandler = StringListTypeHandler.class)
     private List<String> scopes;
 
-    /** 是否启用：1=启用，0=禁用 */
+    /**
+     * 是否启用：1=启用，0=禁用
+     */
     private Integer isEnabled;
 
     private LocalDateTime createTime;

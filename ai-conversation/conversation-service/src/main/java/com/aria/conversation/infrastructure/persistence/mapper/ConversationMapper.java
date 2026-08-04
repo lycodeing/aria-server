@@ -40,15 +40,18 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
      *
      * @param sessionId  会话唯一标识
      * @param agentId    接入座席 ID
+     * @param agentName  接入座席显示名快照（历史不可变，避免后续改名/离职丢失）
      * @param acceptedAt 接入时间（写入 accepted_at 列，用于等待时长计算）
      * @return 受影响行数（0 表示不存在或已非 WAITING）
      */
     default int activateBySessionId(@Param("sessionId") String sessionId,
                                     @Param("agentId") String agentId,
+                                    @Param("agentName") String agentName,
                                     @Param("acceptedAt") OffsetDateTime acceptedAt) {
         return update(Wrappers.lambdaUpdate(ConversationEntity.class)
                 .set(ConversationEntity::getStatus,     SessionStatus.ACTIVE.getValue())
                 .set(ConversationEntity::getAgentId,    agentId)
+                .set(ConversationEntity::getAgentName,  agentName)
                 .set(ConversationEntity::getAcceptedAt, acceptedAt)
                 .eq(ConversationEntity::getSessionId,   sessionId)
                 .eq(ConversationEntity::getStatus,      SessionStatus.WAITING.getValue())
@@ -61,14 +64,17 @@ public interface ConversationMapper extends BaseMapper<ConversationEntity> {
      *
      * @param sessionId     会话唯一标识
      * @param targetAgentId 目标座席 ID
+     * @param targetAgentName 目标座席显示名快照
      * @return 受影响行数（0 表示不存在或已非 ACTIVE）
      */
     default int transferBySessionId(@Param("sessionId") String sessionId,
-                                    @Param("targetAgentId") String targetAgentId) {
+                                    @Param("targetAgentId") String targetAgentId,
+                                    @Param("targetAgentName") String targetAgentName) {
         return update(Wrappers.lambdaUpdate(ConversationEntity.class)
-                .set(ConversationEntity::getAgentId,  targetAgentId)
-                .eq(ConversationEntity::getSessionId, sessionId)
-                .eq(ConversationEntity::getStatus,    SessionStatus.ACTIVE.getValue())
+                .set(ConversationEntity::getAgentId,   targetAgentId)
+                .set(ConversationEntity::getAgentName, targetAgentName)
+                .eq(ConversationEntity::getSessionId,  sessionId)
+                .eq(ConversationEntity::getStatus,     SessionStatus.ACTIVE.getValue())
         );
     }
 

@@ -4,6 +4,7 @@ import com.aria.common.core.exception.BusinessException;
 import com.aria.conversation.domain.model.WebhookScope;
 import com.aria.conversation.infrastructure.persistence.entity.WebhookConfigEntity;
 import com.aria.conversation.infrastructure.persistence.mapper.WebhookConfigMapper;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -32,7 +33,7 @@ public class WebhookAppService {
     public WebhookConfigEntity createWebhook(WebhookConfigEntity entity) {
         validateScopes(entity.getScopes());
         if (webhookConfigMapper.selectOne(
-                com.baomidou.mybatisplus.core.toolkit.Wrappers.<WebhookConfigEntity>lambdaQuery()
+                Wrappers.<WebhookConfigEntity>lambdaQuery()
                         .eq(WebhookConfigEntity::getName, entity.getName())) != null) {
             throw new BusinessException(CONFLICT, "Webhook 名称已存在: " + entity.getName());
         }

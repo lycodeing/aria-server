@@ -5,6 +5,7 @@ import com.aria.auth.domain.model.user.User;
 import com.aria.auth.domain.model.user.UserId;
 import com.aria.common.core.page.PageResult;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
@@ -16,6 +17,14 @@ public interface IUserRepository {
     User save(User user);
 
     Optional<User> findById(UserId id);
+
+    /**
+     * 批量查询用户（一条 IN 查询），用于消除逐个 findById 的 N+1。
+     *
+     * @param ids 用户 ID 集合，空集合返回空列表
+     * @return 匹配到的用户列表（不保证顺序，找不到的 ID 不在结果中）
+     */
+    List<User> findByIds(Collection<UserId> ids);
 
     Optional<User> findByUsername(String username);
 

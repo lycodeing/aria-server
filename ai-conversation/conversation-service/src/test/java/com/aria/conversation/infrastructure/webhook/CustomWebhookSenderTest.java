@@ -54,4 +54,21 @@ class CustomWebhookSenderTest {
 
         assertThat(body).contains("sess-2").doesNotContain("${");
     }
+
+    @Test
+    @DisplayName("自定义 Markdown 模板包装为 {\"message\":\"...\"} JSON")
+    void buildRequestBody_customMarkdownTemplate_wrapsAsMessageJson() {
+        WebhookConfigEntity config = WebhookConfigEntity.builder()
+                .url("https://example.com")
+                .messageTemplate("### 告警\n会话：${sessionId}")
+                .build();
+        WebhookEventContext ctx = WebhookEventContextFactory.buildSessionEvent(
+                WebhookScope.SESSION_CLOSED, "CLOSED", "sess-3", null, Map.of());
+
+        String body = sender.buildRequestBody(config, ctx);
+
+        assertThatCode(() -> new ObjectMapper().readTree(body)).doesNotThrowAnyException();
+        assertThat(body).contains("sess-3");
+        assertThat(body).contains("### 告警");
+    }
 }
