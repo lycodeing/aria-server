@@ -6,6 +6,7 @@ import com.aria.knowledge.domain.repository.KnowledgeChunkRepository;
 import com.aria.knowledge.infrastructure.config.SearchProperties;
 import com.aria.knowledge.infrastructure.embedding.EmbeddingService;
 import com.aria.knowledge.infrastructure.reranker.RerankService;
+import io.micrometer.core.instrument.MeterRegistry;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
@@ -49,18 +50,22 @@ public class KnowledgeSearchAppService {
     private final SearchProperties         searchProps;
     /** 专用 IO 线程池，避免阻塞 ForkJoinPool.commonPool() */
     private final Executor                 searchExecutor;
+    /** 检索质量指标记录器（命中数/top1 分数分布/未命中计数/来源占比） */
+    private final MeterRegistry            meterRegistry;
 
     public KnowledgeSearchAppService(
             KnowledgeChunkRepository chunkRepository,
             EmbeddingService embeddingService,
             RerankService rerankService,
             SearchProperties searchProps,
-            @Qualifier("searchExecutor") Executor searchExecutor) {
+            @Qualifier("searchExecutor") Executor searchExecutor,
+            MeterRegistry meterRegistry) {
         this.chunkRepository = chunkRepository;
         this.embeddingService = embeddingService;
         this.rerankService    = rerankService;
         this.searchProps      = searchProps;
         this.searchExecutor   = searchExecutor;
+        this.meterRegistry    = meterRegistry;
     }
 
     /**
@@ -93,6 +98,7 @@ public class KnowledgeSearchAppService {
 
         // 两路均无结果时直接返回，不进行无意义的 RRF 计算
         if (vectorHits.isEmpty() && textHits.isEmpty()) {
+            recordSearchMetrics(List.of());
             return List.of();
         }
 
@@ -121,7 +127,38 @@ public class KnowledgeSearchAppService {
 
         log.info("[hybridSearch] kbId={} after_rerank={} topK={}", kbId, reranked.size(), topK);
 
-        return reranked.stream().limit(topK).collect(Collectors.toList());
+        List<ChunkHit> finalHits = reranked.stream().limit(topK).collect(Collectors.toList());
+        recordSearchMetrics(finalHits);
+        return finalHits;
+    }
+
+    /**
+     * 记录 RAG 检索质量指标（Micrometer，供 /actuator/metrics 与 Prometheus 抓取）。
+     *
+     * <ul>
+     *   <li>{@code rag.search.hit_count}（DistributionSummary）：每次检索命中 chunk 数分布</li>
+     *   <li>{@code rag.search.top1_score}（DistributionSummary）：top-1 chunk 分数分布</li>
+     *   <li>{@code rag.search.miss_total}（Counter）：完全未命中（0 结果）次数</li>
+     *   <li>{@code rag.search.source_total}（Counter，tag=source）：各来源命中占比</li>
+     * </ul>
+     *
+     * <p>指标记录失败不影响检索主流程。
+     */
+    private void recordSearchMetrics(List<ChunkHit> hits) {
+        try {
+            int hitCount = hits.size();
+            meterRegistry.summary("rag.search.hit_count").record(hitCount);
+            if (hitCount == 0) {
+                meterRegistry.counter("rag.search.miss_total").increment();
+                return;
+            }
+            ChunkHit top1 = hits.get(0);
+            meterRegistry.summary("rag.search.top1_score").record(top1.getScore());
+            String source = top1.getSource() != null ? top1.getSource().name() : "UNKNOWN";
+            meterRegistry.counter("rag.search.source_total", "source", source).increment();
+        } catch (Exception e) {
+            log.debug("[Search] Micrometer 指标记录失败（非关键）", e);
+        }
     }
 
     /**

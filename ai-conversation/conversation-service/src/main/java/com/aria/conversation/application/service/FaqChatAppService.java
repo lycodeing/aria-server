@@ -12,6 +12,7 @@ import com.aria.conversation.infrastructure.ai.DynamicModelFactory;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeSearchResult;
 import com.aria.conversation.infrastructure.knowledge.KnowledgeServiceClient;
+import com.aria.conversation.infrastructure.observability.RagQualityRecorder;
 import com.aria.conversation.infrastructure.persistence.ConversationPersistRepository;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -67,6 +68,8 @@ public class FaqChatAppService {
     private final CsatService                    csatService;
     /** 对话持久化仓储，用于消息发送前的会话存在性校验 */
     private final ConversationPersistRepository  persistRepository;
+    /** RAG 检索质量记录器，异步落库 miss 日志，供知识覆盖度分析 */
+    private final RagQualityRecorder             ragQualityRecorder;
 
     /**
      * 已接入人工时的消息处理：仅追加历史记录并返回提示，不调用 AI。
@@ -100,6 +103,8 @@ public class FaqChatAppService {
                     log.debug("[FAQ] sessionId={} primaryIntent={} confidence={}",
                             sessionId, multiIntent.primaryIntent().intent(),
                             multiIntent.primaryIntent().confidence());
+                    // P0-B：异步记录 RAG 检索质量快照（写失败不影响主流程）
+                    ragQualityRecorder.logAsync(sessionId, message, hits, null, multiIntent.intentCodes());
                     return Optional.of(new FaqContext(hits, multiIntent));
                 })
                 .subscribeOn(Schedulers.boundedElastic())
@@ -255,6 +260,8 @@ public class FaqChatAppService {
     public String chat(String sessionId, String userMessage) {
         historyRepository.append(sessionId, MessageRole.USER.getValue(), userMessage);
         List<KnowledgeSearchResult.Hit> hits = knowledgeServiceClient.search(userMessage);
+        // P0-B：异步记录 RAG 检索质量快照（非流式路径同样采集，避免统计漏采）
+        ragQualityRecorder.logAsync(sessionId, userMessage, hits, null, null);
         String systemPrompt = SystemPromptBuilder.build(hits);
         String reply = aiClient.chat(toAiPrompt(historyRepository.findAll(sessionId)), systemPrompt);
         historyRepository.append(sessionId, MessageRole.ASSISTANT.getValue(), reply);

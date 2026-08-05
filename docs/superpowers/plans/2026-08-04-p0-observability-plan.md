@@ -32,7 +32,7 @@ ARIA 当前已具备 Micrometer + Brave 全链路追踪，但缺少 AI 系统特
 ### 1.3 设计原则
 
 - **非侵入**：不修改现有 RAG 检索和意图识别的核心逻辑，只在出口处加观测点
-- **异步写入**：`cs_rag_search_log` 的落库通过 `@Async` 执行，不影响主链路 P99
+- **异步写入**：`cs_rag_miss_log` 的落库通过独立的 `observabilityExecutor` 线程池执行，不影响主链路 P99
 - **幂等安全**：纠错反馈复用 `saveIfAbsent` 的 `ON CONFLICT DO NOTHING` 机制
 - **可关闭**：通过 `system_config` 键值开关控制各项指标的写入，不需重启
 
@@ -112,10 +112,15 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class IntentMetricsRecorder {
 
-    private static final String METRIC_HIT     = "intent.tier.hit.total";
-    private static final String METRIC_LATENCY = "intent.tier.latency";
-    private static final String TAG_TIER       = "tier";
-    private static final String TAG_HIT        = "hit";
+    private static final String METRIC_HIT      = "intent.tier.hit.total";
+    private static final String METRIC_LATENCY  = "intent.tier.latency";
+    private static final String METRIC_FEEDBACK = "intent.feedback.total";
+    private static final String METRIC_ACCUM    = "intent.example.accumulate.total";
+    private static final String TAG_TIER        = "tier";
+    private static final String TAG_HIT         = "hit";
+    private static final String TAG_TYPE        = "type";
+    private static final String TAG_INTENT_CODE = "intent_code";
+    private static final String TAG_SOURCE      = "source";
 
     private final MeterRegistry registry;
 
@@ -129,6 +134,23 @@ public class IntentMetricsRecorder {
     public void record(String tier, boolean hit, long elapsedMs) {
         registry.counter(METRIC_HIT, TAG_TIER, tier, TAG_HIT, String.valueOf(hit)).increment();
         registry.timer(METRIC_LATENCY, TAG_TIER, tier).record(elapsedMs, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * 记录坐席反馈提交（P0-C）。type 取 wrong_intent / wrong_answer / good。
+     */
+    public void recordFeedback(String type) {
+        registry.counter(METRIC_FEEDBACK, TAG_TYPE, type).increment();
+    }
+
+    /**
+     * 记录意图样本积累（P0-C manual / Tier3 auto 共用）。
+     *
+     * @param intentCode 意图 code
+     * @param source     manual（坐席纠错）/ auto（LLM 高置信）
+     */
+    public void recordAccumulate(String intentCode, String source) {
+        registry.counter(METRIC_ACCUM, TAG_INTENT_CODE, intentCode, TAG_SOURCE, source).increment();
     }
 }
 ```
@@ -186,13 +208,16 @@ private List<IntentResult> applyTier3(String userMessage,
 
 ### 管理台查询 API
 
-Micrometer 指标仅用于 JVM 内存级实时监控，历史趋势通过落库 + Admin REST API 在管理后台展示。新增以下接口：
+**数据来源澄清：** Micrometer Counter/Timer 是 JVM 内存级指标，进程重启即清零，**无法**作为管理台历史趋势的数据源。因此本方案采用「明细落库 + 实时聚合」：`IntentMetricsRecorder.record()` 在打 Micrometer 指标的同时，**异步写一条分层明细**到 `cs_intent_tier_stat`；Admin API 直接对明细表做 `GROUP BY` 聚合，不引入预聚合表，也不依赖定时任务。
+
+- Micrometer 指标：留给 `/actuator/metrics` 做 JVM 级实时观测（进程内命中率、延迟）
+- 明细表 `cs_intent_tier_stat`：作为管理台历史趋势与命中率报表的唯一数据源
 
 **接口：** `GET /api/v1/admin/stats/intent-classification`
 
 | 参数 | 类型 | 说明 |
 |------|------|------|
-| `period` | String | `today` / `7d` / `30d` |
+| `period` | String（枚举） | `today` / `7d` / `30d`，非法值返回 400 |
 | `domainCode` | String（可选） | 按域过滤 |
 
 **响应示例：**
@@ -215,54 +240,98 @@ Micrometer 指标仅用于 JVM 内存级实时监控，历史趋势通过落库 
 }
 ```
 
-**落库表：** `cs_conversation.cs_intent_classification_daily`（每小时聚合一行，定时任务从 Micrometer 读取写入，或在分类完成时直接写明细后聚合查询）。
+**明细落库表：** `cs_conversation.cs_intent_tier_stat`（一次分类写一行，记录三层各自是否执行/命中/耗时）。
 
 ```sql
-CREATE TABLE IF NOT EXISTS cs_conversation.cs_intent_classification_daily
+CREATE TABLE IF NOT EXISTS cs_conversation.cs_intent_tier_stat
 (
-    id              BIGSERIAL PRIMARY KEY,
-    stat_hour       TIMESTAMPTZ  NOT NULL,   -- 整点截断，如 2026-08-04 09:00:00+08
-    tier1_total     INTEGER      NOT NULL DEFAULT 0,
-    tier1_hit       INTEGER      NOT NULL DEFAULT 0,
-    tier2_total     INTEGER      NOT NULL DEFAULT 0,
-    tier2_hit       INTEGER      NOT NULL DEFAULT 0,
-    tier3_total     INTEGER      NOT NULL DEFAULT 0,
-    tier3_hit       INTEGER      NOT NULL DEFAULT 0,
-    avg_latency_rule_ms       DOUBLE PRECISION,
-    avg_latency_embedding_ms  DOUBLE PRECISION,
-    avg_latency_llm_ms        DOUBLE PRECISION,
-    domain_code     VARCHAR(64),
-    UNIQUE (stat_hour, domain_code)
+    id                   BIGSERIAL PRIMARY KEY,
+    session_id           VARCHAR(64),
+    domain_code          VARCHAR(64),
+    reached_tier         VARCHAR(20)  NOT NULL,          -- 最终到达层 RULE/EMBEDDING/LLM
+    tier1_hit            BOOLEAN      NOT NULL DEFAULT FALSE,
+    tier2_executed       BOOLEAN      NOT NULL DEFAULT FALSE,
+    tier2_hit            BOOLEAN      NOT NULL DEFAULT FALSE,
+    tier3_executed       BOOLEAN      NOT NULL DEFAULT FALSE,
+    tier3_hit            BOOLEAN      NOT NULL DEFAULT FALSE,
+    tier1_latency_ms     INTEGER,
+    tier2_latency_ms     INTEGER,
+    tier3_latency_ms     INTEGER,
+    created_at           TIMESTAMPTZ  NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_intent_stat_hour ON cs_conversation.cs_intent_classification_daily (stat_hour DESC);
+CREATE INDEX idx_intent_tier_stat_time   ON cs_conversation.cs_intent_tier_stat (created_at DESC);
+CREATE INDEX idx_intent_tier_stat_domain ON cs_conversation.cs_intent_tier_stat (domain_code, created_at DESC);
 ```
+
+**明细写入位置：** 在 `MultiHybridIntentService.doClassify()` 末尾（已知各层执行/命中结果与耗时后）调用一次 `intentMetricsRecorder.persistDetail(...)`，异步写入上表。`IntentMetricsRecorder` 因此需要一个 `IntentTierStatMapper` 依赖：
+
+```java
+// IntentMetricsRecorder 追加异步落库方法
+private final IntentTierStatMapper tierStatMapper;
+
+/**
+ * 异步写入单次分类的分层明细，供 Admin API 聚合。
+ * 使用 observabilityExecutor 线程池，写失败不影响主流程。
+ */
+@Async("observabilityExecutor")
+public void persistDetail(IntentTierStatEntity detail) {
+    try {
+        tierStatMapper.insert(detail);
+    } catch (Exception e) {
+        log.warn("[IntentTierStat] 明细写入失败 session={}", detail.getSessionId(), e);
+    }
+}
+```
+
+> Admin API 的 `tier1HitRate = SUM(tier1_hit) / COUNT(*)`，`tier3TriggerRate = SUM(tier3_executed::int) / COUNT(*)`，`avgLatencyMs` 按各 `tierN_latency_ms` 求平均，全部在明细表上一条 SQL 完成。
 
 ### 单测补充
 
 **文件：** `MultiHybridIntentServiceTest.java`（已有，补充以下测试方法）
 
+**关键点：** 改造后 `MultiHybridIntentService` 不再直接持有 `MeterRegistry`，而是持有 `IntentMetricsRecorder`。测试若继续对一个独立的 `meterRegistry` 做断言，会因为与 service 内实际使用的实例不是同一个而恒为 0。两种正确写法二选一：
+
+**写法 A — 用真实 `IntentMetricsRecorder` 包裹 `SimpleMeterRegistry`（推荐，验证真实指标值）：**
+
 ```java
-@Test
-@DisplayName("Tier1 命中时应记录 tier=RULE hit=true，不触发 Tier2/Tier3")
-void shouldRecordTier1HitMetricWhenRuleMatched() {
-    // given: Tier1 返回命中结果
-    when(ruleMatcher.matchAll(anyString()))
-        .thenReturn(List.of(new IntentResult("ORDER_QUERY", IntentType.STANDARD, 1.0)));
+private SimpleMeterRegistry meterRegistry;
+private IntentMetricsRecorder metricsRecorder;
+private MultiHybridIntentService service;
 
-    // when
-    service.classify("我想查订单", "DEFAULT");
-
-    // then: Tier1 hit=true counter 被 increment
-    assertThat(meterRegistry.counter("intent.tier.hit.total",
-            "tier", "RULE", "hit", "true").count()).isEqualTo(1.0);
-    // Tier2/Tier3 完全未被调用
-    verify(embeddingMatcher, never()).match(anyString());
-    verify(llmClassifier, never()).classifyMulti(anyString(), anyList());
+@BeforeEach
+void setUp() {
+    meterRegistry  = new SimpleMeterRegistry();
+    // tierStatMapper 用 mock，避免真实 DB 写入
+    metricsRecorder = new IntentMetricsRecorder(meterRegistry, mock(IntentTierStatMapper.class));
+    service = new MultiHybridIntentService(
+            ruleMatcher, embeddingMatcher, llmClassifier,
+            accumulationService, metricsRecorder /* 其余依赖 */);
 }
 
 @Test
-@DisplayName("Tier1 未命中 + Tier2 命中时，Tier2 指标应记录 hit=true")
+@DisplayName("Tier1 命中时应记录 tier=RULE hit=true，不触发 Tier2/Tier3")
+void shouldRecordTier1HitMetricWhenRuleMatched() {
+    when(ruleMatcher.matchAll(anyString()))
+        .thenReturn(List.of(new IntentResult("ORDER_QUERY", IntentType.STANDARD, 1.0)));
+
+    service.classify("我想查订单", "DEFAULT");
+
+    // 断言的 registry 与 recorder 内部使用的是同一实例
+    assertThat(meterRegistry.counter("intent.tier.hit.total",
+            "tier", "RULE", "hit", "true").count()).isEqualTo(1.0);
+    verify(embeddingMatcher, never()).match(anyString());
+    verify(llmClassifier, never()).classifyMulti(anyString(), anyList());
+}
+```
+
+**写法 B — mock `IntentMetricsRecorder`，只验证交互（更快，不校验指标值）：**
+
+```java
+@Mock private IntentMetricsRecorder metricsRecorder;
+
+@Test
+@DisplayName("Tier1 未命中 + Tier2 命中时，应以 EMBEDDING/hit=true 调用 recorder")
 void shouldRecordTier2HitMetricWhenEmbeddingMatched() {
     when(ruleMatcher.matchAll(anyString())).thenReturn(Collections.emptyList());
     when(embeddingMatcher.match(anyString()))
@@ -270,18 +339,18 @@ void shouldRecordTier2HitMetricWhenEmbeddingMatched() {
 
     service.classify("这个问题太烦人了", "DEFAULT");
 
-    assertThat(meterRegistry.counter("intent.tier.hit.total",
-            "tier", "EMBEDDING", "hit", "true").count()).isEqualTo(1.0);
+    verify(metricsRecorder).record(eq(ClassificationTierConstants.EMBEDDING), eq(true), anyLong());
     verify(llmClassifier, never()).classifyMulti(anyString(), anyList());
 }
 ```
 
 ### 改动范围
 
-- **新增 1 个文件：** `IntentMetricsRecorder.java`（约 40 行，集中所有指标名和 tag key）
-- **修改 1 个文件：** `MultiHybridIntentService.java`（将 `meterRegistry` 替换为 `intentMetricsRecorder`，删除旧 `recordMetrics()` 方法，在 `applyTier1/2/3` 出口各调用一行 `metricsRecorder.record(...)`）
-- **新增 1 张表：** `cs_intent_classification_daily`（Flyway 迁移文件）
-- **新增 1 个测试文件：** `MultiHybridIntentServiceTest.java` 补充约 30 行
+- **新增 4 个文件：** `IntentMetricsRecorder.java`（集中指标名/tag key + 异步落库）、`IntentTierStatEntity.java`、`IntentTierStatMapper.java`、`IntentStatsAppService.java`（Admin API 聚合查询）
+- **修改 1 个文件：** `MultiHybridIntentService.java`（将 `meterRegistry` 替换为 `intentMetricsRecorder`，删除旧 `recordMetrics()` 方法，在 `applyTier1/2/3` 出口各调用一行 `metricsRecorder.record(...)`，`doClassify()` 末尾调用一次 `persistDetail(...)`）
+- **新增 Admin 接口：** `AdminStatsController#getIntentClassificationStats`（对 `cs_intent_tier_stat` 明细表实时聚合）
+- **新增 1 张表：** `cs_intent_tier_stat`（Flyway 迁移文件，含分层命中/耗时明细）
+- **新增 1 个测试文件：** `MultiHybridIntentServiceTest.java` 补充约 30 行（真实 `IntentMetricsRecorder` 注入，`IntentTierStatMapper` 用 mock）
 - 预计工作量：**1 天**
 
 # P0-B：RAG 检索质量记录与 miss_log
@@ -301,9 +370,10 @@ void shouldRecordTier2HitMetricWhenEmbeddingMatched() {
 
 | 服务 | 改动类 | 类型 |
 |------|--------|------|
-| `ai-conversation/conversation-service` | `ChatAppService` | 在 RAG 调用返回后写 miss 日志 |
-| `ai-conversation/conversation-service` | `RagMissLogRepository`（新增） | 持久化 miss 记录 |
-| `ai-conversation/conversation-service` | `RagMissLogEntity`（新增） | DB 实体 |
+| `ai-conversation/conversation-service` | `ChatAppService` + `FaqChatAppService` | 两条 RAG 检索路径返回后写质量日志 |
+| `ai-conversation/conversation-service` | `RagQualityRecorder`（新增） | miss 判定 + 异步落库 |
+| `ai-conversation/conversation-service` | `RagMissLogEntity` / `RagMissLogMapper`（新增） | DB 实体 + Mapper |
+| `ai-conversation/conversation-service` | `AsyncConfig` | 新增 `observabilityExecutor` 线程池 |
 | `ai-knowledge/knowledge-service` | `KnowledgeSearchAppService` | Micrometer histogram 埋点 |
 | DB migration | `V{next}__add_rag_miss_log.sql` | 新增 `cs_rag_miss_log` 表 |
 
@@ -407,35 +477,51 @@ public class RagMissLogEntity {
 
 ---
 
-## 新增：RagMissLogRepository
+## 新增：RagQualityRecorder（质量评估 + 异步落库）
+
+> **分层说明（对应评审 Rec1）：** miss 阈值判断属于业务逻辑，不应放在 Repository（持久化职责单一）。因此拆成两层：
+> - `RagQualityRecorder`（`infrastructure/rag`，`@Component`）：接收原始检索结果，计算 `isMiss` / `top1Score`，构建 entity，异步落库。
+> - `RagMissLogMapper`（MyBatis-Plus `BaseMapper`）：纯持久化，`recorder` 直接注入 mapper，不再继承 `ServiceImpl`。
+>
+> **不再用构造注入 `@Value`（对应评审修复 3）：** MyBatis-Plus 的 `ServiceImpl` 由框架实例化，自定义构造参数不会触发 `@Value` 注入，`missThreshold` 会静默取 `0.0`，导致所有检索都被判成 miss。`RagQualityRecorder` 是普通 `@Component`，用字段注入即可安全生效。
 
 ```java
 // 路径：ai-conversation/conversation-service/src/main/java/com/aria/conversation/
-//        infrastructure/rag/RagMissLogRepository.java
+//        infrastructure/rag/RagQualityRecorder.java
 package com.aria.conversation.infrastructure.rag;
 
-import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.aria.sdk.knowledge.dto.ChunkHitDTO;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
-import org.springframework.stereotype.Repository;
+import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 /**
- * RAG 检索质量日志持久化。
- * 写入操作全部 @Async，不阻塞主会话流程。
+ * RAG 检索质量记录器。
+ * <p>
+ * 负责：miss 判定（业务逻辑）+ 异步落库（不阻塞主会话流程）。
+ * 写入使用独立的 observabilityExecutor 线程池（拒绝策略 DiscardPolicy），
+ * 队列满时丢弃日志而非拖慢 SSE 主线程。
  */
-@Repository
-public class RagMissLogRepository extends ServiceImpl<RagMissLogMapper, RagMissLogEntity> {
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class RagQualityRecorder {
 
-    /** 阈值：从外部注入，便于测试替换 */
-    private final double missThreshold;
-
-    public RagMissLogRepository(
-            @Value("${aria.rag.miss-threshold:" + IntentClassificationConstants.DEFAULT_RAG_MISS_THRESHOLD + "}")
-            double missThreshold) {
-        this.missThreshold = missThreshold;
-    }
+    private final RagMissLogMapper mapper;
 
     /**
-     * 异步记录 RAG 检索结果质量快照。
+     * miss 判定阈值。字段注入，默认取 {@link IntentClassificationConstants#DEFAULT_RAG_MISS_THRESHOLD}。
+     * 可通过 system_config / 配置项 aria.rag.miss-threshold 覆盖。
+     */
+    @Value("${aria.rag.miss-threshold:0.5}")
+    private double missThreshold;
+
+    /**
+     * 异步记录一次 RAG 检索质量快照。
      *
      * @param sessionId   当前会话 ID
      * @param kbId        知识库 ID（可为 null）
@@ -444,30 +530,31 @@ public class RagMissLogRepository extends ServiceImpl<RagMissLogMapper, RagMissL
      * @param domainCode  当前域 code
      * @param intentCodes 本次识别到的意图 code 列表
      */
-    @Async("webhookExecutor")   // 复用已有异步线程池；与 Webhook 无耦合，仅借用池子
-    public void logAsync(String sessionId, String kbId, String query,
-                         List<ChunkHitDTO> hits, String domainCode, List<String> intentCodes) {
+    @Async("observabilityExecutor")
+    public void record(String sessionId, String kbId, String query,
+                       List<ChunkHitDTO> hits, String domainCode, List<String> intentCodes) {
         try {
-            double top1Score = hits.isEmpty() ? -1.0 : hits.get(0).getScore();
-            boolean isMiss = hits.isEmpty() || top1Score < missThreshold;
+            boolean empty = hits == null || hits.isEmpty();
+            Double top1Score = empty ? null : hits.get(0).getScore();
+            boolean isMiss = empty || top1Score < missThreshold;
 
             RagMissLogEntity entity = RagMissLogEntity.builder()
                     .sessionId(sessionId)
                     .kbId(kbId)
                     .queryText(query)
-                    .top1Score(hits.isEmpty() ? null : top1Score)
-                    .hitCount((short) hits.size())
+                    .top1Score(top1Score)
+                    .hitCount((short) (empty ? 0 : hits.size()))
                     .isMiss(isMiss)
-                    .source(hits.isEmpty() ? null : hits.get(0).getSource())
+                    .source(empty ? null : hits.get(0).getSource())
                     .domainCode(domainCode)
                     .intentCodes(intentCodes == null ? new String[0]
                                                      : intentCodes.toArray(String[]::new))
                     .build();
 
-            save(entity);
+            mapper.insert(entity);
         } catch (Exception e) {
             // 日志写失败不影响主流程
-            log.warn("[RagMissLog] 写入失败 session={} query={}", sessionId, query, e);
+            log.warn("[RagQuality] 写入失败 session={} query={}", sessionId, query, e);
         }
     }
 }
@@ -492,23 +579,64 @@ public interface RagMissLogMapper extends BaseMapper<RagMissLogEntity> {
 
 ---
 
-## 改造：ChatAppService — 注入日志调用
+## 新增：observabilityExecutor 线程池
 
-`ChatAppService` 中已有 RAG 检索调用，在检索结果返回后插入一行 `logAsync`：
+P0-A 明细落库（`IntentMetricsRecorder.persistDetail`）、P0-B 检索质量记录（`RagQualityRecorder.logAsync`）、P0-D 成本日志（`LlmCostLogger.logAsync`）都是「可丢失、绝不能阻塞主链路」的观测性写入。它们**不能**复用 `webhookExecutor`：后者的拒绝策略是 `CallerRunsPolicy`，队列满时会退回调用方线程（SSE 主线程 / WebSocket handler）同步执行 DB 写入，直接拉高响应延迟。
+
+为此新增一个专用线程池，拒绝策略用 `DiscardPolicy`——队列满时**直接丢弃**观测记录（偶发丢点日志可接受），保证主流程零阻塞。
 
 ```java
 // 路径：ai-conversation/conversation-service/src/main/java/com/aria/conversation/
-//        application/service/ChatAppService.java
+//        infrastructure/config/AsyncConfig.java
+// 在已有 AsyncConfig 中追加一个 Bean（与 webhookExecutor / intentAccumulateExecutor 并列）
+
+/**
+ * 可观测性写入专用线程池。
+ * <p>
+ * 用于 P0 观测性明细落库（意图分层明细、RAG 检索质量、LLM 成本），
+ * 特性：core 小、队列有界、满时直接丢弃（DiscardPolicy），确保绝不阻塞主链路。
+ */
+@Bean("observabilityExecutor")
+public Executor observabilityExecutor() {
+    ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+    executor.setCorePoolSize(1);
+    executor.setMaxPoolSize(2);
+    executor.setQueueCapacity(500);
+    executor.setThreadNamePrefix("observability-");
+    // 队列满即丢弃，观测数据允许有损，主流程绝不等待
+    executor.setRejectedExecutionHandler(new ThreadPoolExecutor.DiscardPolicy());
+    executor.initialize();
+    return executor;
+}
+```
+
+> **与其它线程池的分工：** `webhookExecutor`（CallerRunsPolicy，通知不可丢）、`intentAccumulateExecutor`（样本积累，保序）、`observabilityExecutor`（观测数据，可丢、不阻塞）职责隔离，互不干扰。
+
+---
+
+## 改造：ChatAppService / FaqChatAppService — 注入质量记录调用
+
+RAG 检索在 conversation-service 有**两条独立路径**：
+
+- `ChatAppService`：DIT 路由 + 工具调用主链路
+- `FaqChatAppService`：纯 FAQ 问答路径（不走工具调用）
+
+两条路径都会调用 `knowledgeClient.search`。**两处都要补埋点**，否则 FAQ 流量的检索质量会从统计中缺失，miss 率被系统性低估。
+
+```java
+// 路径：ai-conversation/conversation-service/src/main/java/com/aria/conversation/
+//        application/service/ChatAppService.java（FaqChatAppService.java 同样处理）
 // 已有依赖注入字段（构造注入）：
-private final RagMissLogRepository ragMissLogRepository;  // ← 新增注入
+private final RagQualityRecorder ragQualityRecorder;  // ← 新增注入
 
 // 在 hybridSearch 调用处（伪代码定位，match 现有代码结构）：
 
 // ---- 现有代码 ----
 List<ChunkHitDTO> hits = knowledgeClient.search(SearchRequest.of(query, kbId, topK));
 
-// ---- 新增：写 miss log（异步，不阻塞 SSE 流程）----
-ragMissLogRepository.logAsync(
+// ---- 新增：记录检索质量（异步，不阻塞 SSE 流程）----
+// isMiss 判定在 Recorder 内完成，阈值由 RagQualityRecorder 统一持有
+ragQualityRecorder.record(
         session.getSessionId(),
         kbId,
         query,
@@ -519,7 +647,7 @@ ragMissLogRepository.logAsync(
 // ---- 继续已有逻辑 ----
 ```
 
-> **定位提示**：在 `ChatAppService` 中搜索 `knowledgeClient.search` 或 `knowledgeSearchClient`，找到调用点后在其后追加上述两行。
+> **定位提示**：分别在 `ChatAppService` 与 `FaqChatAppService` 中搜索 `knowledgeClient.search` 或 `knowledgeSearchClient`，在每个调用点后追加上述记录调用。FAQ 路径若无 `routingResult`（未做 DIT 路由），`domainCode` 传 `null`、`intentCodes` 传空列表即可。
 
 ---
 
@@ -731,6 +859,7 @@ CREATE INDEX idx_session_feedback_pending   ON cs_conversation.cs_session_feedba
 - `feedback_type = WRONG_ANSWER`：回答内容错，`correct_answer` 必填
 - `feedback_type = GOOD`：正向反馈，仅计数，不写样本
 - `accumulated / kb_queued`：幂等写入标记，防止重复积累
+- **`kb_queued` 在 P0 阶段恒为 `FALSE`**：`WRONG_ANSWER` 的 KB 审核队列入队逻辑是 P1 占位（见 `handleWrongAnswer` 的 TODO），P0 只落库不入队。读取本字段做数据分析时需注意这一点，不要误判为"所有回答纠错都未入队处理"。
 
 ---
 
@@ -818,10 +947,10 @@ public class SessionFeedbackController {
 package com.aria.conversation.application.service;
 
 import com.aria.conversation.infrastructure.ai.IntentAccumulationService;
+import com.aria.conversation.infrastructure.ai.IntentMetricsRecorder;
 import com.aria.conversation.infrastructure.feedback.SessionFeedbackRepository;
 import com.aria.conversation.infrastructure.feedback.SessionFeedbackEntity;
 import com.aria.conversation.interfaces.dto.SessionFeedbackRequest;
-import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -833,7 +962,8 @@ public class SessionFeedbackAppService {
 
     private final SessionFeedbackRepository feedbackRepository;
     private final IntentAccumulationService  accumulationService;
-    private final MeterRegistry              meterRegistry;
+    // 指标记录统一走 IntentMetricsRecorder，与 P0-A 风格一致，不直接注入 MeterRegistry
+    private final IntentMetricsRecorder      metricsRecorder;
 
     public void submitFeedback(SessionFeedbackRequest req) {
         // 1. 持久化反馈记录
@@ -847,9 +977,8 @@ public class SessionFeedbackAppService {
                 .build();
         feedbackRepository.save(entity);
 
-        // 2. 指标计数
-        meterRegistry.counter("intent.feedback.total",
-                "type", req.getFeedbackType().name().toLowerCase()).increment();
+        // 2. 指标计数（统一封装在 recorder 内）
+        metricsRecorder.recordFeedback(req.getFeedbackType().name().toLowerCase());
 
         // 3. 按反馈类型分流处理
         switch (req.getFeedbackType()) {
@@ -908,8 +1037,12 @@ public void manualAccumulate(String intentCode, String messageText, Runnable onS
         boolean saved = exampleVectorRepo.saveIfAbsent(intentCode, messageText, embedding, false);
 
         if (saved) {
-            // 更新原型向量（保证 Tier2 立即受益）
-            intentPrototypeStore.rebuild();
+            // 标记原型需要重建，但不在此处立即 rebuild。
+            // rebuild() 会遍历全部域/意图、清空 Caffeine 并重算所有原型向量，
+            // 对单条人工纠错来说代价过高；坐席批量纠错时会触发多次全量重建，
+            // 且每次清缓存反而让 Tier2 在重建窗口内命中率下降。
+            // 改为发布"脏标记"事件，由防抖调度器合并处理（见下方 PrototypeRebuildDebouncer）。
+            prototypeRebuildDebouncer.markDirty();
 
             meterRegistry.counter("intent.example.accumulate.total",
                     "intent_code", intentCode,
@@ -930,6 +1063,46 @@ public void manualAccumulate(String intentCode, String messageText, Runnable onS
 }
 ```
 
+**防抖重建器 `PrototypeRebuildDebouncer`（新增）：**
+
+单条纠错只置脏标记，一个定时任务（如每 5 分钟）检查标记，有脏才触发一次 `rebuild()`，把 N 次纠错合并为一次全量重建：
+
+```java
+// 路径：ai-conversation/conversation-service/src/main/java/com/aria/conversation/
+//        infrastructure/prototype/PrototypeRebuildDebouncer.java
+@Component
+@RequiredArgsConstructor
+public class PrototypeRebuildDebouncer {
+
+    private final IntentPrototypeStore prototypeStore;
+    private final AtomicBoolean dirty = new AtomicBoolean(false);
+
+    /** 标记原型已过期，等待下一个调度窗口重建。O(1)，线程安全。 */
+    public void markDirty() {
+        dirty.set(true);
+    }
+
+    /**
+     * 每 5 分钟检查一次；仅当有脏标记时才 rebuild，随后清标记。
+     * 多条纠错在同一窗口内合并为一次全量重建。
+     */
+    @Scheduled(fixedDelayString = "${aria.intent.prototype-rebuild-interval-ms:300000}")
+    public void rebuildIfDirty() {
+        if (dirty.compareAndSet(true, false)) {
+            try {
+                prototypeStore.rebuild();
+                log.info("[PrototypeRebuild] 防抖窗口内完成一次原型重建");
+            } catch (Exception e) {
+                dirty.set(true);   // 重建失败，保留脏标记等下个窗口重试
+                log.warn("[PrototypeRebuild] 重建失败，将在下个窗口重试", e);
+            }
+        }
+    }
+}
+```
+
+> **多实例注意：** 集群部署时该调度会在每个 Pod 各触发一次 rebuild。因 `rebuild()` 是幂等的（重算结果写同一 Redis HASH），重复执行只是冗余而非错误；若要严格单实例执行，可复用现有 SLA 扫描器的 Redisson 分片锁模式。
+
 **与 `asyncAccumulate` 的差异：**
 
 | 维度 | asyncAccumulate（自动） | manualAccumulate（人工） |
@@ -937,7 +1110,7 @@ public void manualAccumulate(String intentCode, String messageText, Runnable onS
 | 触发来源 | Tier3 LLM 高置信结果 | 坐席纠错反馈 |
 | `autoConfirmed` | `true` | `false` |
 | 置信度门槛 | ≥ 0.95 | 无（人工即高置信） |
-| rebuild 原型 | 否（批量 rebuild 更高效） | 是（即时生效） |
+| rebuild 原型 | 否（不触发） | 置脏标记，防抖窗口内合并重建 |
 | 回调 | 无 | `onSuccess`（更新 feedback 记录） |
 
 ---
@@ -970,6 +1143,23 @@ public class SessionFeedbackRepository extends ServiceImpl<SessionFeedbackMapper
         patch.setKbQueued(true);
         updateById(patch);
     }
+}
+```
+
+---
+
+## 新增：SessionFeedbackMapper
+
+```java
+// 路径：ai-conversation/conversation-service/src/main/java/com/aria/conversation/
+//        infrastructure/feedback/SessionFeedbackMapper.java
+package com.aria.conversation.infrastructure.feedback;
+
+import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Mapper;
+
+@Mapper
+public interface SessionFeedbackMapper extends BaseMapper<SessionFeedbackEntity> {
 }
 ```
 
@@ -1180,6 +1370,11 @@ llmCostLogger.logAsync(sessionId, modelConfig.getModelName(),
         "INTENT_CLASSIFY", response.tokenUsage(), elapsed);
 ```
 
+> **⚠️ 流式响应 TokenUsage 可能为 null**
+> 部分 OpenAI 兼容 endpoint 的流式（streaming）响应默认**不携带** token usage，`response.tokenUsage()` 会返回 `null`，`LlmCostLogger.logAsync` 已对 `null` 做 early-return（静默跳过），因此不会崩溃，但该次调用的 Token 消耗会**丢失**、统计偏低。
+> 解决：在请求体中开启 `stream_options.include_usage = true`。LangChain4j 中通过 `OpenAiStreamingChatModel` 的 `.customHeaders(...)` 或对应 builder 参数开启（不同 provider 支持程度不一，天翼云 CtyunAI / 本地 Ollama 需实测）。若目标 endpoint 完全不支持 streaming usage，可退化为在同步（非流式）意图分类路径统计，或改用响应文本长度估算 Token（精度较低）。
+> `INTENT_CLASSIFY` 走的是同步 `chat()` 调用，usage 通常完整，不受此限制影响；主要影响 `CHAT` 场景。
+
 ---
 
 ## 新增：Admin REST API
@@ -1221,13 +1416,37 @@ GET /api/v1/admin/stats/llm-cost?period=today|7d|30d&modelName=xxx
 // GET /api/v1/admin/stats/llm-cost
 @GetMapping("/stats/llm-cost")
 public Result<LlmCostStatsResponse> getLlmCostStats(
-        @RequestParam(defaultValue = "today") String period,
+        @RequestParam(defaultValue = "TODAY") StatsPeriod period,
         @RequestParam(required = false) String modelName) {
     return Result.ok(statsAppService.queryLlmCost(period, modelName));
 }
 ```
 
-底层 SQL 按 `period` 转换为时间区间，对 `cs_llm_cost_log` 做 `GROUP BY model_name / call_type / DATE(created_at)` 聚合，无需额外缓存（查询量小，可接受实时计算）。
+**`period` 参数用枚举而非裸 String**，非法值由 Spring 自动返回 400，无需手动校验。P0-A / P0-B / P0-D 三个 Admin 接口共用同一枚举：
+
+```java
+// 路径：ai-conversation/conversation-service/src/main/java/com/aria/conversation/
+//        interfaces/dto/StatsPeriod.java
+public enum StatsPeriod {
+    TODAY(1),   // 今日 00:00 至今
+    D7(7),      // 近 7 天（对应查询参数 period=D7）
+    D30(30);    // 近 30 天
+
+    private final int days;
+    StatsPeriod(int days) { this.days = days; }
+
+    /** 返回统计起始时间（含），用于 SQL 的 created_at >= ? 过滤 */
+    public OffsetDateTime startInclusive() {
+        return this == TODAY
+                ? OffsetDateTime.now().truncatedTo(ChronoUnit.DAYS)
+                : OffsetDateTime.now().minusDays(days);
+    }
+}
+```
+
+> Spring 默认按枚举名（不区分大小写需配 `@InitBinder` 或 `WebMvcConfigurer`）绑定；建议查询参数直接用 `TODAY` / `D7` / `D30`。非法值触发 `MethodArgumentTypeMismatchException`，由现有 `GlobalExceptionHandler` 统一转 400。
+
+底层 SQL 按 `period.startInclusive()` 转换为时间区间，对 `cs_llm_cost_log` 做 `GROUP BY model_name / call_type / DATE(created_at)` 聚合，无需额外缓存（查询量小，可接受实时计算）。
 
 ---
 
@@ -1251,7 +1470,7 @@ public Result<LlmCostStatsResponse> getLlmCostStats(
 | P0-A：DIT 三层命中率 Counter | conversation-service | `IntentMetricsRecorder`（新增）+ `MultiHybridIntentService` | 新 Bean + 调用替换 |
 | P0-A：DIT 分层延迟 Timer | conversation-service | `IntentMetricsRecorder` | 封装在新 Bean 内 |
 | P0-A：Admin 命中率查询 API | conversation-service | `AdminStatsController` + `IntentStatsAppService`（新增） | 新接口 |
-| P0-B：RAG 检索 score 记录 | conversation-service | `ChatAppService` + `RagMissLogRepository`（新增） | 新表 + 异步写入 |
+| P0-B：RAG 检索 score 记录 | conversation-service | `ChatAppService` + `FaqChatAppService` + `RagQualityRecorder`（新增） | 新表 + 异步写入 |
 | P0-B：RAG miss_log 表 | conversation-service DB | `V{N}__add_rag_miss_log.sql` | 新建表 |
 | P0-B：Admin miss 查询 API | conversation-service | `AdminStatsController`（复用） | 新接口 |
 | P0-C：坐席反馈接口 | conversation-service | `SessionFeedbackController` + `AppService`（新增） | 新接口 |
@@ -1280,7 +1499,23 @@ ai-knowledge/knowledge-service/src/main/resources/db/migration/
   V{N}__add_rag_miss_log.sql          ← P0-B 新增
 ```
 
-迁移文件版本号 `{N}` 填写当前最大版本号 + 1，执行前通过 Flyway repair 确认 checksum 一致。
+**版本号 `{N}` 的确定步骤（切勿臆测，否则 Flyway 启动即报版本冲突）：**
+
+1. 查当前最大版本号（两个服务的 schema 各查一次）：
+
+```sql
+-- conversation-service（schema cs_conversation）
+SELECT version FROM cs_conversation.flyway_schema_history
+ORDER BY installed_rank DESC LIMIT 1;
+
+-- knowledge-service（schema public）
+SELECT version FROM public.flyway_schema_history
+ORDER BY installed_rank DESC LIMIT 1;
+```
+
+2. 新文件版本号 = 查到的最大版本号 + 1，按各自服务独立编号（conversation 与 knowledge 版本序列互不影响）。
+3. 迁移文件一旦提交、被任何环境执行过，**禁止再修改内容**（Flyway checksum 会校验失败）。如需调整，追加新版本文件。
+4. 若历史 checksum 因手工改动而失配，用 `flyway repair` 修复元数据表，不要删库重来。
 
 ---
 
@@ -1353,53 +1588,63 @@ curl 'http://localhost:8082/api/v1/admin/stats/intent-classification?period=toda
 
 ## P0-B 验证：RAG 检索质量记录
 
-### 触发一次 RAG 检索
+### 触发一次带 RAG 的会话
+
+miss 日志写在 conversation-service（`ChatAppService` / `FaqChatAppService` 检索出口），因此通过正常会话触发，而非直接调 knowledge-service 内部接口：
 
 ```bash
-# 使用内部检索接口（knowledge-service）
-curl -s -X POST http://localhost:8081/internal/knowledge/search \
+# conversation-service（8082）：发送一条会走 RAG 的消息
+curl -s -X POST http://localhost:8082/api/v1/chat/message \
   -H "Content-Type: application/json" \
-  -H "X-Internal-Secret: <secret>" \
-  -d '{"query":"如何申请退款","kbId":"<kb_id>","topK":5}'
+  -H "Authorization: Bearer <visitor_token>" \
+  -d '{"sessionId":"<sid>","content":"如何申请退款"}'
 ```
 
 ### 查询 miss_log
 
 ```sql
--- 验证低相似度查询已被记录
-SELECT query_text, top1_score, result_count, created_at
-FROM knowledge_public.rag_miss_log
+-- 验证检索质量记录已写入（表在 cs_conversation schema，字段见 DDL）
+SELECT query_text, top1_score, hit_count, is_miss, source, created_at
+FROM cs_conversation.cs_rag_miss_log
 ORDER BY created_at DESC
 LIMIT 10;
+
+-- 用一个 KB 没有覆盖的问题触发会话后，确认该行 is_miss = TRUE
+SELECT query_text, top1_score, is_miss
+FROM cs_conversation.cs_rag_miss_log
+WHERE is_miss = TRUE
+ORDER BY created_at DESC
+LIMIT 5;
 ```
 
-### 验证聚合任务（手动触发）
+### KB 覆盖度分析（Admin API）
+
+历史趋势与覆盖度报表通过 conversation-service 的 Admin API 聚合 `cs_rag_miss_log`（无独立聚合任务/视图）：
 
 ```bash
-# 调用调度器 actuator 端点手动触发（若已配置 spring-boot-actuator scheduling）
-# 或直接查询 rag_miss_summary 视图
-curl http://localhost:8081/actuator/scheduledtasks
+# 近 7 天 miss 率趋势 + miss 最多的意图
+curl 'http://localhost:8082/api/v1/admin/stats/rag-quality?period=7d' \
+  -H "Authorization: Bearer <admin_token>"
 ```
 
-```sql
--- 查看近 7 天 miss 最多的 query 聚类
-SELECT query_cluster, miss_count, last_seen
-FROM knowledge_public.rag_miss_summary
-ORDER BY miss_count DESC
-LIMIT 20;
-```
+底层等价于「数据查询示例」节的 SQL（`GROUP BY DATE(created_at)` 求 miss 率、`UNNEST(intent_codes)` 求意图分布）。
 
 ### 指标端点
 
+`rag.search.*` 系列 Micrometer 指标全部由 knowledge-service 的 `KnowledgeSearchAppService.recordSearchMetrics()` 埋点，因此统一在 8081 查询。conversation-service 侧的 `RagQualityRecorder` 只写 DB（miss_log），不打 Micrometer 指标。
+
 ```bash
-# 检索总次数
-curl http://localhost:8081/actuator/metrics/rag.search.total
+# 每次检索命中 chunk 数分布（DistributionSummary）
+curl 'http://localhost:8081/actuator/metrics/rag.search.hit_count'
 
-# 未命中次数（top1_score 低于阈值）
-curl http://localhost:8081/actuator/metrics/rag.search.miss.total
+# top1_score 分布（DistributionSummary）
+curl 'http://localhost:8081/actuator/metrics/rag.search.top1_score'
 
-# 检索延迟（P99）
-curl http://localhost:8081/actuator/metrics/rag.search.latency
+# 完全未命中（0 结果）次数（Counter）
+curl 'http://localhost:8081/actuator/metrics/rag.search.miss_total'
+
+# 各来源命中占比 VECTOR / FULL_TEXT / RERANK（Counter）
+curl 'http://localhost:8081/actuator/metrics/rag.search.source_total?tag=source:VECTOR'
 ```
 
 ---
@@ -1474,9 +1719,10 @@ SessionFeedbackAppServiceTest
   ├── submitFeedback_good_shouldOnlyIncrementCounter()
   └── submitFeedback_wrongAnswer_shouldLogAndNotAccumulate()
 
-RagMissLogRepositoryTest
-  ├── save_shouldPersistMissRecord()
-  └── findRecentClusters_shouldGroupByQueryText()
+RagQualityRecorderTest
+  ├── logAsync_lowScore_shouldMarkIsMiss()
+  ├── logAsync_emptyHits_shouldMarkIsMissWithNullTop1Score()
+  └── logAsync_highScore_shouldNotMarkMiss()
 ```
 
 ---

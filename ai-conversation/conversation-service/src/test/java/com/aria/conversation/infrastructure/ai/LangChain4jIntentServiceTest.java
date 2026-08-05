@@ -27,6 +27,7 @@ class LangChain4jIntentServiceTest {
     @Mock private DynamicModelFactory modelFactory;
     @Mock private DomainRepository domainRepository;
     @Mock private RoutingConfigProvider routingConfigProvider;
+    @Mock private com.aria.conversation.infrastructure.observability.LlmCostLogger llmCostLogger;
 
     private LangChain4jIntentService service;
 
@@ -41,7 +42,7 @@ class LangChain4jIntentServiceTest {
         RoutingConfig config = new RoutingConfig();
         when(routingConfigProvider.getConfig()).thenReturn(config);
         service = new LangChain4jIntentService(
-                modelFactory, domainRepository, new ObjectMapper(), routingConfigProvider);
+                modelFactory, domainRepository, new ObjectMapper(), routingConfigProvider, llmCostLogger);
     }
 
     @Test

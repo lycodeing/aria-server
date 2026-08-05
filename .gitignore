@@ -15,7 +15,14 @@ target/
 *.iml
 *.ipr
 .DS_Store
-
+.zcode
+.codegraph
+.kiro
+.superpowers
+.vscode
+.workbuddy
+.github
+deploy/docker-data
 # 日志
 *.log
 logs/

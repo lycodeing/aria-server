@@ -33,6 +33,7 @@ class FaqChatAppServiceSessionTest {
     @Mock private SessionQueueService           sessionQueueService;
     @Mock private CsatService                   csatService;
     @Mock private ConversationPersistRepository persistRepository;
+    @Mock private com.aria.conversation.infrastructure.observability.RagQualityRecorder ragQualityRecorder;
 
     private FaqChatAppService service;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -42,7 +43,7 @@ class FaqChatAppServiceSessionTest {
         service = new FaqChatAppService(
                 aiClient, historyRepository, knowledgeServiceClient,
                 multiIntentService, sessionQueueService, objectMapper,
-                csatService, persistRepository);
+                csatService, persistRepository, ragQualityRecorder);
     }
 
     @Test

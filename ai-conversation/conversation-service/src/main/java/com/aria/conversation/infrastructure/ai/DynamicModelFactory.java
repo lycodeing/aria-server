@@ -2,6 +2,7 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.common.web.ai.AiModelConfig;
 import com.aria.common.web.ai.AiModelConfigProvider;
+import com.aria.conversation.infrastructure.observability.LlmCostLogger;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import dev.langchain4j.data.message.AiMessage;
@@ -45,10 +46,20 @@ public class DynamicModelFactory {
     private final Cache<String, ChatModel> routerCache = Caffeine.newBuilder()
             .maximumSize(5).expireAfterAccess(30, TimeUnit.MINUTES).build();
 
+    /** P0-D：Token 成本记录器。流式 CHAT 的 tokenUsage 仅在此工厂的完成回调中可得。 */
+    private final LlmCostLogger llmCostLogger;
+
     public DynamicModelFactory(AiModelConfigProvider configProvider,
-                                List<LlmModelBuilder> builders) {
+                                List<LlmModelBuilder> builders,
+                                LlmCostLogger llmCostLogger) {
         this.configProvider = configProvider;
         this.builders = builders;
+        this.llmCostLogger = llmCostLogger;
+    }
+
+    /** 当前活跃对话模型名称，供成本日志标注 model 维度。 */
+    public String currentModelName() {
+        return configProvider.getActive().modelName();
     }
 
     /**
@@ -63,12 +74,20 @@ public class DynamicModelFactory {
         List<dev.langchain4j.data.message.ChatMessage> lc4jMessages =
                 toLangChain4jMessages(messages, systemPrompt);
 
+        String modelName = currentModelName();
+        long callStart = System.currentTimeMillis();
         Sinks.Many<String> sink = Sinks.many().unicast().onBackpressureBuffer();
         getStreamingChatModel().chat(lc4jMessages, new StreamingChatResponseHandler() {
             @Override
             public void onPartialResponse(String token) { sink.tryEmitNext(token); }
             @Override
-            public void onCompleteResponse(ChatResponse response) { sink.tryEmitComplete(); }
+            public void onCompleteResponse(ChatResponse response) {
+                // P0-D：流式 CHAT 的 tokenUsage 仅在此完成回调中可得，异步落库（写失败不影响主流程）
+                llmCostLogger.logAsync(null, modelName, "CHAT",
+                        response == null ? null : response.tokenUsage(),
+                        System.currentTimeMillis() - callStart);
+                sink.tryEmitComplete();
+            }
             @Override
             public void onError(Throwable error) {
                 log.warn("[AI] 流式对话错误", error);
