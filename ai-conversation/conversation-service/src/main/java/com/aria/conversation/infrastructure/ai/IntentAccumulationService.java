@@ -92,28 +92,35 @@ public class IntentAccumulationService {
      */
     @Async("intentAccumulateExecutor")
     public void manualAccumulate(String intentCode, String messageText, Runnable onSuccess) {
+        boolean saved;
         try {
             float[] embedding = embeddingService.encode(messageText);
-            // saveIfAbsent 返回 void 且内部吞异常（ON CONFLICT DO NOTHING），此处无法区分"新写入/已存在"，
-            // 统一按"已处理"对待：发事件触发重建 + 计数 + 回调，语义上幂等安全。
-            exampleVectorRepo.saveIfAbsent(intentCode, messageText, embedding, false);
-
-            // 发布配置变更事件，触发原型重建（防抖交给 prototypeRebuildExecutor）
-            eventPublisher.publishEvent(new IntentConfigChangedEvent(intentCode));
-
-            meterRegistry.counter("intent.example.accumulate.total",
-                    "intent_code", intentCode, "source", "manual").increment();
-            log.info("[ManualAccumulate] 人工样本已积累 intentCode={}", intentCode);
+            // saveIfAbsent 返回 true 表示样本已在库（新写入或 ON CONFLICT 命中已存在，均视为成功）；
+            // false 表示 DB 异常未落库。encode 抛异常则直接进 catch，saved 保持 false。
+            saved = exampleVectorRepo.saveIfAbsent(intentCode, messageText, embedding, false);
         } catch (Exception e) {
             log.warn("[ManualAccumulate] 积累失败 intentCode={}", intentCode, e);
-        } finally {
-            // 无论写入成功与否都执行回调，避免反馈记录卡在未处理状态
-            if (onSuccess != null) {
-                try {
-                    onSuccess.run();
-                } catch (Exception e) {
-                    log.warn("[ManualAccumulate] onSuccess 回调失败 intentCode={}", intentCode, e);
-                }
+            saved = false;
+        }
+
+        if (!saved) {
+            // 未落库：不发重建事件、不计数、不回调，让反馈记录的 accumulated 保持 false，
+            // 交给 idx_session_feedback_pending 索引对应的重试/补偿逻辑后续处理。
+            return;
+        }
+
+        // 发布配置变更事件，触发原型重建（防抖交给 prototypeRebuildExecutor）
+        eventPublisher.publishEvent(new IntentConfigChangedEvent(intentCode));
+        meterRegistry.counter("intent.example.accumulate.total",
+                "intent_code", intentCode, "source", "manual").increment();
+        log.info("[ManualAccumulate] 人工样本已积累 intentCode={}", intentCode);
+
+        // 仅在确认落库后才回标 accumulated=true，保证标记与实际写入一致
+        if (onSuccess != null) {
+            try {
+                onSuccess.run();
+            } catch (Exception e) {
+                log.warn("[ManualAccumulate] onSuccess 回调失败 intentCode={}", intentCode, e);
             }
         }
     }

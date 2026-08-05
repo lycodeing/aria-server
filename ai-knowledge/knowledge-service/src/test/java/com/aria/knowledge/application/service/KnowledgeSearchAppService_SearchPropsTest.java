@@ -57,7 +57,8 @@ class KnowledgeSearchAppService_SearchPropsTest {
         MockitoAnnotations.openMocks(this);
         when(embeddingService.encode(anyString())).thenReturn(DUMMY_VECTOR);
         service = new KnowledgeSearchAppService(
-                chunkRepository, embeddingService, rerankService, props, syncExecutor);
+                chunkRepository, embeddingService, rerankService, props, syncExecutor,
+                new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
     }
 
     // -------------------------------------------------------

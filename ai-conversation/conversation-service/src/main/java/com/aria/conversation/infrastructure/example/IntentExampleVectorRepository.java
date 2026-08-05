@@ -76,8 +76,10 @@ public class IntentExampleVectorRepository {
      * @param messageText   原始用户消息文本
      * @param embedding     消息 embedding 向量
      * @param autoConfirmed 是否为自动积累（非人工确认）
+     * @return true 表示语句正常执行（新写入或 ON CONFLICT 命中已存在，样本均已在库）；
+     *         false 表示发生 DB 异常，样本未落库（调用方据此决定是否重试/标记）
      */
-    public void saveIfAbsent(String intentCode, String messageText,
+    public boolean saveIfAbsent(String intentCode, String messageText,
                               float[] embedding, boolean autoConfirmed) {
         String vecStr = VectorUtils.toStr(embedding);
         String sql = """
@@ -89,8 +91,10 @@ public class IntentExampleVectorRepository {
             jdbcTemplate.update(sql, intentCode, messageText, vecStr, autoConfirmed);
             log.debug("[ExampleRepo] 保存案例 intentCode={} autoConfirmed={}",
                     intentCode, autoConfirmed);
+            return true;
         } catch (Exception e) {
             log.warn("[ExampleRepo] 保存案例失败 intentCode={}", intentCode, e);
+            return false;
         }
     }
 }
