@@ -6,6 +6,7 @@ import com.aria.conversation.domain.model.IntentType;
 import com.aria.conversation.infrastructure.dit.config.DomainConfig;
 import com.aria.conversation.infrastructure.dit.config.IntentConfig;
 import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
+import com.aria.conversation.infrastructure.observability.LlmCostLogger;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.data.message.ChatMessage;
@@ -34,6 +35,8 @@ public class LangChain4jIntentService implements MultiIntentClassifier {
     private final DomainRepository domainRepository;
     private final ObjectMapper objectMapper;
     private final RoutingConfigProvider routingConfigProvider;
+    /** P0-D：记录 Tier3 意图分类的 LLM Token 消耗 */
+    private final LlmCostLogger llmCostLogger;
 
     @Override
     public List<IntentResult> classifyMulti(String userMessage) {
@@ -61,8 +64,14 @@ public class LangChain4jIntentService implements MultiIntentClassifier {
                     SystemMessage.from(systemPrompt),
                     UserMessage.from(userMessage)
             );
-            String response = modelFactory.getChatModel().chat(messages).aiMessage().text();
-            return parseMultiResponse(response);
+            long callStart = System.currentTimeMillis();
+            dev.langchain4j.model.chat.response.ChatResponse chatResponse =
+                    modelFactory.getChatModel().chat(messages);
+            // P0-D：记录意图分类 LLM Token 消耗（sessionId 无上下文，传 null）
+            llmCostLogger.logAsync(null, modelFactory.currentModelName(),
+                    "INTENT_CLASSIFY", chatResponse.tokenUsage(),
+                    System.currentTimeMillis() - callStart);
+            return parseMultiResponse(chatResponse.aiMessage().text());
         } catch (Exception e) {
             log.warn("[Intent] 多意图分类失败（域感知），降级为 UNKNOWN. message={}", userMessage, e);
             return List.of(IntentResult.UNKNOWN);

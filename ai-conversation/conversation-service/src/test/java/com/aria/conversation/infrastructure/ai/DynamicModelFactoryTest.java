@@ -33,6 +33,8 @@ class DynamicModelFactoryTest {
     private ChatModel mockAnthropicModel;
     @Mock
     private StreamingChatModel mockStreamingModel;
+    @Mock
+    private com.aria.conversation.infrastructure.observability.LlmCostLogger llmCostLogger;
 
     private DynamicModelFactory factory;
 
@@ -58,7 +60,7 @@ class DynamicModelFactoryTest {
         when(openAiBuilder.buildChatModel(openAiCfg())).thenReturn(mockChatModel);
         when(openAiBuilder.buildStreamingModel(openAiCfg())).thenReturn(mockStreamingModel);
         when(anthropicBuilder.buildChatModel(anthropicCfg())).thenReturn(mockAnthropicModel);
-        factory = new DynamicModelFactory(configProvider, List.of(openAiBuilder, anthropicBuilder));
+        factory = new DynamicModelFactory(configProvider, List.of(openAiBuilder, anthropicBuilder), llmCostLogger);
     }
 
     @Test

@@ -2,6 +2,8 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.domain.model.*;
 import com.aria.conversation.infrastructure.dit.repository.DomainRepository;
+import com.aria.conversation.infrastructure.observability.IntentMetricsRecorder;
+import com.aria.conversation.infrastructure.observability.IntentTierStatMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -39,9 +41,13 @@ class MultiHybridIntentServiceTest {
         // 默认 domainRepository 返回 empty，loadMergedIntents 用空列表兜底
         lenient().when(domainRepository.findByCode(any())).thenReturn(java.util.Optional.empty());
 
+        // 用真实 IntentMetricsRecorder 包裹 SimpleMeterRegistry + mock mapper，
+        // 避免真实 DB 写入；指标断言时 registry 与 recorder 内部为同一实例
+        IntentMetricsRecorder metricsRecorder =
+                new IntentMetricsRecorder(new SimpleMeterRegistry(), mock(IntentTierStatMapper.class));
         service = new MultiHybridIntentService(
                 ruleMatcher, embeddingMatcher, llmClassifier,
-                routingConfigProvider, new SimpleMeterRegistry(),
+                routingConfigProvider, metricsRecorder,
                 domainRepository, accumulationService);
     }
 

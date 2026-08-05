@@ -2,11 +2,13 @@ package com.aria.conversation.infrastructure.ai;
 
 import com.aria.conversation.domain.model.IntentResult;
 import com.aria.conversation.domain.model.IntentType;
+import com.aria.conversation.domain.event.IntentConfigChangedEvent;
 import com.aria.conversation.infrastructure.embedding.EmbeddingService;
 import com.aria.conversation.infrastructure.example.IntentExampleVectorRepository;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
@@ -31,6 +33,8 @@ public class IntentAccumulationService {
     private final EmbeddingService embeddingService;
     private final IntentExampleVectorRepository exampleVectorRepo;
     private final MeterRegistry meterRegistry;
+    /** 发布意图配置变更事件，触发原型重建（防抖由 prototypeRebuildExecutor 的 DiscardOldestPolicy 保证） */
+    private final ApplicationEventPublisher eventPublisher;
 
     /**
      * 异步积累高置信度意图案例。
@@ -61,10 +65,55 @@ public class IntentAccumulationService {
                 log.debug("[Accumulate] 积累案例 intentCode={} confidence={}",
                         r.intentCode(), String.format("%.3f", r.confidence()));
                 meterRegistry.counter("intent.example.accumulate.total",
-                        "intent_code", r.intentCode()).increment();
+                        "intent_code", r.intentCode(), "source", "auto").increment();
             } catch (Exception e) {
                 // 积累失败不影响主流程，仅记录 warn
                 log.warn("[Accumulate] 积累失败 intentCode={}", r.intentCode(), e);
+            }
+        }
+    }
+
+    /**
+     * 人工确认样本积累入口。由坐席纠错反馈触发，{@code autoConfirmed=false}（人工确认，质量高于自动积累）。
+     *
+     * <p>与 {@link #asyncAccumulate} 的差异：
+     * <ul>
+     *   <li>无置信度门槛（人工确认即视为高置信）；</li>
+     *   <li>不在本方法内直接调用 {@code IntentPrototypeStore.rebuild()}（单条纠错全量重建代价过高、
+     *       且会清空 Caffeine 缓存导致重建期命中率抖动）。改为发布 {@link IntentConfigChangedEvent}，
+     *       由 {@code prototypeRebuildExecutor}（DiscardOldestPolicy）天然防抖，坐席批量提交时合并重建。</li>
+     * </ul>
+     *
+     * <p>必须通过注入的 Bean 调用以使 {@code @Async} 生效。
+     *
+     * @param intentCode  坐席确认的正确意图 code
+     * @param messageText 用户原始消息
+     * @param onSuccess   处理完成后的回调（用于更新反馈记录的 accumulated 标记）；可为 null
+     */
+    @Async("intentAccumulateExecutor")
+    public void manualAccumulate(String intentCode, String messageText, Runnable onSuccess) {
+        try {
+            float[] embedding = embeddingService.encode(messageText);
+            // saveIfAbsent 返回 void 且内部吞异常（ON CONFLICT DO NOTHING），此处无法区分"新写入/已存在"，
+            // 统一按"已处理"对待：发事件触发重建 + 计数 + 回调，语义上幂等安全。
+            exampleVectorRepo.saveIfAbsent(intentCode, messageText, embedding, false);
+
+            // 发布配置变更事件，触发原型重建（防抖交给 prototypeRebuildExecutor）
+            eventPublisher.publishEvent(new IntentConfigChangedEvent(intentCode));
+
+            meterRegistry.counter("intent.example.accumulate.total",
+                    "intent_code", intentCode, "source", "manual").increment();
+            log.info("[ManualAccumulate] 人工样本已积累 intentCode={}", intentCode);
+        } catch (Exception e) {
+            log.warn("[ManualAccumulate] 积累失败 intentCode={}", intentCode, e);
+        } finally {
+            // 无论写入成功与否都执行回调，避免反馈记录卡在未处理状态
+            if (onSuccess != null) {
+                try {
+                    onSuccess.run();
+                } catch (Exception e) {
+                    log.warn("[ManualAccumulate] onSuccess 回调失败 intentCode={}", intentCode, e);
+                }
             }
         }
     }

@@ -65,4 +65,27 @@ public class AsyncConfig {
         executor.initialize();
         return executor;
     }
+
+    /**
+     * 可观测性异步落库线程池（P0 观测性改造：意图分层明细、RAG 检索质量、LLM 成本日志共用）。
+     *
+     * <p>这类写入的定位是「可丢失、绝不能阻塞主链路」，因此：
+     * <ul>
+     *   <li>核心 1 / 最大 2 线程，队列 200：观测写入本身很轻，无需大池；</li>
+     *   <li>拒绝策略 {@code DiscardPolicy}：队列满时直接丢弃，绝不退回调用线程
+     *       （SSE 主线程 / WebSocket handler）同步执行，避免拉高响应延迟。</li>
+     * </ul>
+     * 与业务池（{@code CallerRunsPolicy}，任务不可丢）职责隔离。
+     */
+    @Bean("observabilityExecutor")
+    public Executor observabilityExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(2);
+        executor.setQueueCapacity(200);
+        executor.setThreadNamePrefix("observability-");
+        executor.setRejectedExecutionHandler(new java.util.concurrent.ThreadPoolExecutor.DiscardPolicy());
+        executor.initialize();
+        return executor;
+    }
 }
