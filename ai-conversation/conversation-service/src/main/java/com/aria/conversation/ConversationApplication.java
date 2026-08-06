@@ -27,7 +27,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
     "com.aria.conversation.infrastructure.dit.mapper",
     "com.aria.conversation.infrastructure.canned",
     "com.aria.conversation.infrastructure.csat",
-    "com.aria.conversation.infrastructure.feedback"
+    "com.aria.conversation.infrastructure.feedback",
+    "com.aria.conversation.infrastructure.observability"
 })
 public class ConversationApplication {
 
