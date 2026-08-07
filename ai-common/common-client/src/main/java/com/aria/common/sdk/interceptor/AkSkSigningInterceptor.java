@@ -38,8 +38,6 @@ import java.util.UUID;
  */
 public class AkSkSigningInterceptor implements Interceptor {
 
-    private static final long MAX_SKEW_MS = 5 * 60 * 1000;
-
     private final String accessKey;
     private final String secretKey;
 

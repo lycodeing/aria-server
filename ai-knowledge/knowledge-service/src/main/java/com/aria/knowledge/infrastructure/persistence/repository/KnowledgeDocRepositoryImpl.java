@@ -47,6 +47,16 @@ public class KnowledgeDocRepositoryImpl implements KnowledgeDocRepository {
     }
 
     @Override
+    public List<KnowledgeDoc> findByIds(List<String> docIds) {
+        if (CollectionUtils.isEmpty(docIds)) {
+            return List.of();
+        }
+        return docMapper.selectList(new LambdaQueryWrapper<KnowledgeDocEntity>()
+                .in(KnowledgeDocEntity::getId, docIds))
+            .stream().map(assembler::toDomain).toList();
+    }
+
+    @Override
     public List<KnowledgeDoc> findExpired(LocalDate today) {
         return docMapper.selectList(new LambdaQueryWrapper<KnowledgeDocEntity>()
             .lt(KnowledgeDocEntity::getExpiresAt, today)

@@ -71,4 +71,22 @@ class CustomWebhookSenderTest {
         assertThat(body).contains("sess-3");
         assertThat(body).contains("### 告警");
     }
+
+    @Test
+    @DisplayName("raw JSON 模板：访客昵称含回车/制表符/双引号仍产出合法 JSON（escapeJson 控制字符转义）")
+    void buildRequestBody_rawJsonTemplate_visitorNameWithControlChars_staysValidJson() {
+        WebhookConfigEntity config = WebhookConfigEntity.builder()
+                .url("https://example.com")
+                .messageTemplate("{\"msg\":\"访客 ${visitorName} 结束会话 ${sessionId}\"}")
+                .build();
+        // 访客昵称含回车、制表符、双引号——未转义会破坏 JSON 结构
+        WebhookEventContext ctx = WebhookEventContextFactory.buildSessionEvent(
+                WebhookScope.SESSION_CLOSED, "CLOSED", "sess-4", "张三\r\n\t\"hacker\"", Map.of());
+
+        String body = sender.buildRequestBody(config, ctx);
+
+        // 关键断言：控制字符/引号被转义后整体仍是合法 JSON，不会导致下游平台解析失败
+        assertThatCode(() -> new ObjectMapper().readTree(body)).doesNotThrowAnyException();
+        assertThat(body).contains("sess-4");
+    }
 }

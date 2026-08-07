@@ -361,9 +361,9 @@ public class DocIngestAppService {
         if (docIds.size() > 50) {
             throw new BusinessException(ERROR_BAD_REQUEST, "批量操作最多支持 50 条");
         }
-        List<String> publishedIds = docIds.stream()
-            .map(id -> docRepository.findById(id).orElse(null))
-            .filter(doc -> doc != null && doc.getStatus() == DocStatus.PUBLISHED)
+        // 一次 IN 查询批量取回，消除逐条 findById 的 N 次查询
+        List<String> publishedIds = docRepository.findByIds(docIds).stream()
+            .filter(doc -> doc.getStatus() == DocStatus.PUBLISHED)
             .map(KnowledgeDoc::getId)
             .toList();
         if (!publishedIds.isEmpty()) {
@@ -378,15 +378,6 @@ public class DocIngestAppService {
     // 内部工具
     // -------------------------------------------------------
 
-    /**
-     * 根据文件名解析文件类型，与 {@code MultiFormatParser} 分发逻辑一致。
-     *
-     * <p>匹配优先级：
-     * <ol>
-     *   <li>文件名含简历关键词（简历/resume/cv/求职）→ RESUME（专用解析器，多格式支持）</li>
-     *   <li>文件后缀 → PDF / HTML / DOCX / ZIP / MARKDOWN（委托 {@link FileTypeResolver}）</li>
-     * </ol>
-     */
     /**
      * 上传入口校验（KNOW-3）：拒绝空文件、超限文件、扩展名不在白名单的文件。
      *

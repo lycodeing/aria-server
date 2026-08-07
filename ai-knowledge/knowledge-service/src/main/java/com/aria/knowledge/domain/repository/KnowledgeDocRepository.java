@@ -18,6 +18,14 @@ public interface KnowledgeDocRepository {
 
     Optional<KnowledgeDoc> findById(String docId);
 
+    /**
+     * 批量按 ID 查询文档，一次 IN 查询取回，消除逐条 findById 的 N+1。
+     *
+     * @param docIds 文档 ID 列表
+     * @return 命中的文档列表（不存在的 ID 不在结果中，顺序不保证）
+     */
+    List<KnowledgeDoc> findByIds(List<String> docIds);
+
     List<KnowledgeDoc> findExpired(LocalDate today);
 
     /**

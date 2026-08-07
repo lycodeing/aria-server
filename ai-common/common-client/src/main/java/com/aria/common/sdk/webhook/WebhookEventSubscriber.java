@@ -65,11 +65,23 @@ public class WebhookEventSubscriber {
      * 启动 Webhook 接收服务。
      */
     public WebhookEventSubscriber start() {
+        // 幂等保护：已启动时直接返回，避免重复绑定端口 / 重复初始化
+        if (running) {
+            log.warn("Webhook 订阅服务已在运行，忽略重复 start()");
+            return this;
+        }
         // 实际实现使用 ServerSocket / 嵌入式 HTTP Server
         // 此处提供框架结构，具体 HTTP 实现按运行环境选择
         running = true;
         log.info("Webhook 订阅服务启动，端口={}, 已注册 {} 个事件处理器", port, handlers.size());
         return this;
+    }
+
+    /**
+     * 当前订阅服务是否处于运行状态。
+     */
+    public boolean isRunning() {
+        return running;
     }
 
     /**
