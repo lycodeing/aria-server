@@ -81,7 +81,7 @@ sa-token:
   token-prefix: "Bearer"
   is-read-header: true
   is-read-cookie: false
-  jwt-secret-key: cs-auth-dev-secret-key-change-in-production
+  jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}
 
 # auth-client SDK 配置（拉取 EMBEDDING 模型），共享密钥必须与 auth-service 一致
 aria:
@@ -89,14 +89,14 @@ aria:
     client:
       # base-url 本地开发默认值，生产由 application-prod.yml 覆盖
       base-url: http://localhost:8083
-      # shared-secret 必填，未配置 SDK 启动即失败（fail-fast）
-      shared-secret: aria-internal-lycodeing-2024
+      # shared-secret 必填；本地开发用 dev 默认值，生产必须通过 INTERNAL_SHARED_SECRET 注入
+      shared-secret: ${INTERNAL_SHARED_SECRET:aria-internal-dev-secret-change-me}
       connect-timeout-ms: 3000
       read-timeout-ms: 5000
       max-retries: 2
   # 兼容 knowledge-service 内部其它调用继续读取此密钥
   internal:
-    secret: aria-internal-lycodeing-2024
+    secret: ${ARIA_INTERNAL_SECRET:aria-internal-dev-secret-change-me}
 
 knowledge:
   search:

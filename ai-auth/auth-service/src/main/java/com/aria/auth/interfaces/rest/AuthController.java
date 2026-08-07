@@ -13,6 +13,7 @@ import com.aria.common.web.response.R;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -29,6 +30,13 @@ public class AuthController {
 
     private final AuthApplicationService authService;
     private final MenuApplicationService menuService;
+
+    /**
+     * 是否信任 {@code X-Forwarded-For}/{@code X-Real-IP} 代理头。
+     * 仅当服务确实部署在会强制覆写这些头的可信反向代理之后时才应开启，默认 false。
+     */
+    @org.springframework.beans.factory.annotation.Value("${aria.security.trust-proxy-headers:false}")
+    private boolean trustProxyHeaders;
 
     /**
      * 用户登录，返回 AccessToken。
@@ -90,12 +98,21 @@ public class AuthController {
 
     /**
      * 从请求头或远端地址提取客户端真实 IP。
+     *
+     * <p><b>安全</b>：{@code X-Forwarded-For}/{@code X-Real-IP} 可被客户端任意伪造，
+     * 而登录频控与 IP 封禁以该 IP 为 key——若无条件信任这些头，攻击者每次请求换一个
+     * 伪造 IP 即可绕过限流暴力破解。因此仅在部署于可信反向代理（会强制覆写 XFF）之后、
+     * 通过配置 {@code aria.security.trust-proxy-headers=true} 显式开启时才采信这些头；
+     * 默认关闭，直接使用不可伪造的 {@code getRemoteAddr()}。
      */
     private String extractIp(HttpServletRequest request) {
-        String ip = request.getHeader("X-Forwarded-For");
-        if (ip == null || ip.isBlank()) ip = request.getHeader("X-Real-IP");
-        if (ip == null || ip.isBlank()) ip = request.getRemoteAddr();
-        return ip != null && ip.contains(",") ? ip.split(",")[0].trim() : ip;
+        if (trustProxyHeaders) {
+            String ip = request.getHeader("X-Forwarded-For");
+            if (ip == null || ip.isBlank()) ip = request.getHeader("X-Real-IP");
+            if (ip == null || ip.isBlank()) ip = request.getRemoteAddr();
+            return ip != null && ip.contains(",") ? ip.split(",")[0].trim() : ip;
+        }
+        return request.getRemoteAddr();
     }
 
     private LoginResultVO toLoginResultVO(LoginResult r) {

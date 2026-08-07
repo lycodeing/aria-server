@@ -40,6 +40,7 @@ class AgentChannelWsHandlerTest {
     @Mock WsMessageRouter router;
     @Mock RedissonClient redissonClient;
     @Mock RLock rLock;
+    @Mock com.aria.conversation.application.service.SessionQueueService sessionQueueService;
 
     private AgentChannelWsHandler handler;
     private ObjectMapper objectMapper = new ObjectMapper();
@@ -48,7 +49,8 @@ class AgentChannelWsHandlerTest {
     void setUp() throws Exception {
         lenient().when(podIdentity.get()).thenReturn("pod-A");
         handler = new AgentChannelWsHandler(registry, visitorNotifier, historyRepository,
-                objectMapper, presenceRegistry, podIdentity, router, redissonClient);
+                objectMapper, presenceRegistry, podIdentity, router, redissonClient,
+                sessionQueueService);
         // 设置默认模式为 BROADCAST
         Field f = AgentChannelWsHandler.class.getDeclaredField("multiLoginMode");
         f.setAccessible(true);
@@ -102,7 +104,9 @@ class AgentChannelWsHandlerTest {
     @Test
     @DisplayName("MESSAGE 类型消息：写历史并通过路由层转发给访客")
     void message_type_stores_history_and_notifies_visitor() throws Exception {
-        WebSocketSession session = mock(WebSocketSession.class);
+        WebSocketSession session = sessionWithAgentId("ws-msg", "agent-1");
+        // 归属校验：sess-1 的负责座席为当前 agent-1
+        when(sessionQueueService.getAgentId("sess-1")).thenReturn("agent-1");
         when(historyRepository.appendAgentMessage("sess-1", "你好")).thenReturn(1L);
 
         String json = objectMapper.writeValueAsString(
@@ -116,7 +120,9 @@ class AgentChannelWsHandlerTest {
     @Test
     @DisplayName("TYPING 类型消息：通过路由层转发给访客，不写历史")
     void typing_type_notifies_visitor_without_history() throws Exception {
-        WebSocketSession session = mock(WebSocketSession.class);
+        WebSocketSession session = sessionWithAgentId("ws-typing", "agent-2");
+        // 归属校验：sess-2 的负责座席为当前 agent-2
+        when(sessionQueueService.getAgentId("sess-2")).thenReturn("agent-2");
 
         String json = objectMapper.writeValueAsString(
                 Map.of("type", "TYPING", "sessionId", "sess-2", "timestamp", 1000L));

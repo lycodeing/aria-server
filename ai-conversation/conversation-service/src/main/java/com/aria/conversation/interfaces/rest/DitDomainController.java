@@ -1,5 +1,6 @@
 package com.aria.conversation.interfaces.rest;
 
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.DitManageAppService;
 import com.aria.conversation.infrastructure.dit.domain.DomainDO;
@@ -28,11 +29,13 @@ public class DitDomainController {
     private final DitManageAppService manageService;
 
     @GetMapping
+    @SaCheckPermission("system:dit:view")
     public R<List<DomainDO>> list() {
         return R.ok(manageService.listDomains());
     }
 
     @PostMapping
+    @SaCheckPermission("system:dit:manage")
     public R<DomainDO> create(@RequestBody @Valid DomainRequest req) {
         DomainDO domain = new DomainDO();
         domain.setCode(req.getCode());
@@ -46,6 +49,7 @@ public class DitDomainController {
     }
 
     @PutMapping("/{id}")
+    @SaCheckPermission("system:dit:manage")
     public R<Void> update(@PathVariable Long id, @RequestBody @Valid DomainRequest req) {
         DomainDO domain = new DomainDO();
         domain.setId(id);
@@ -61,6 +65,7 @@ public class DitDomainController {
     }
 
     @DeleteMapping("/{id}")
+    @SaCheckPermission("system:dit:manage")
     public R<Void> delete(@PathVariable Long id) {
         manageService.deleteDomain(id);
         return R.ok();

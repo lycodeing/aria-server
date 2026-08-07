@@ -221,16 +221,21 @@ public class User extends AggregateRoot {
     /**
      * 用户自助修改密码：校验旧密码，校验历史密码不重用。
      *
+     * <p>历史重用校验必须拿<b>新密码明文</b>与每条历史哈希做 {@code matches}——
+     * BCrypt 每次盐随机，直接比对两个哈希串永远不相等（旧实现的缺陷）。
+     *
      * @param oldPlain 旧密码明文
+     * @param newPlain 新密码明文（用于历史重用比对）
      * @param newPwd   新密码对象（已编码）
      * @param hasher   密码哈希器
      */
-    public void changePassword(String oldPlain, Password newPwd, PasswordHasher hasher) {
+    public void changePassword(String oldPlain, String newPlain, Password newPwd, PasswordHasher hasher) {
         if (!this.password.matches(oldPlain, hasher)) {
             throw BusinessException.of("AUTH_PWD_OLD_MISMATCH", "旧密码不正确");
         }
         for (String oldHash : passwordHistory) {
-            if (hasher.matches(newPwd.hash(), oldHash)) {
+            // 用新密码明文对每条历史哈希做 bcrypt 比对，命中即视为重用
+            if (hasher.matches(newPlain, oldHash)) {
                 throw BusinessException.of("AUTH_PWD_HISTORY_DUPLICATE", "不能与最近使用的密码重复");
             }
         }

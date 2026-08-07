@@ -47,13 +47,15 @@ class ChatControllerStreamTest {
 
     @Mock private ChatAppService chatService;
     @Mock private com.aria.conversation.application.service.MessageFeedbackService messageFeedbackService;
+    @Mock private com.aria.conversation.application.service.SessionOwnershipValidator sessionOwnershipValidator;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
     private ChatController controller;
 
     @BeforeEach
     void setUp() {
-        controller = new ChatController(chatService, messageFeedbackService, objectMapper);
+        controller = new ChatController(chatService, messageFeedbackService,
+                sessionOwnershipValidator, objectMapper);
     }
 
     // -------------------------------------------------------

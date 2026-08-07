@@ -5,6 +5,7 @@ import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.CannedResponseAppService;
 import com.aria.conversation.infrastructure.canned.CannedResponseDO;
 import com.aria.conversation.infrastructure.canned.CannedResponseGroupDO;
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.stp.StpUtil;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -30,11 +31,13 @@ public class CannedResponseAdminController {
     // ── 分组接口 ──────────────────────────────────────────
 
     @GetMapping("/canned-response-groups")
+    @SaCheckPermission("system:canned:view")
     public R<List<CannedResponseGroupDO>> listGroups() {
         return R.ok(service.listGroups());
     }
 
     @PostMapping("/canned-response-groups")
+    @SaCheckPermission("system:canned:manage")
     public R<CannedResponseGroupDO> createGroup(@RequestBody @Valid GroupRequest req) {
         Long createdBy = StpUtil.getLoginIdAsLong();
         return R.ok(service.createGroup(req.getName(), req.getParentId(),
@@ -42,6 +45,7 @@ public class CannedResponseAdminController {
     }
 
     @PutMapping("/canned-response-groups/{id}")
+    @SaCheckPermission("system:canned:manage")
     public R<Void> updateGroup(@PathVariable Long id,
                                @RequestBody @Valid GroupRequest req) {
         service.updateGroup(id, req.getName(), req.getParentId(),
@@ -50,6 +54,7 @@ public class CannedResponseAdminController {
     }
 
     @DeleteMapping("/canned-response-groups/{id}")
+    @SaCheckPermission("system:canned:manage")
     public R<Void> deleteGroup(@PathVariable Long id) {
         service.deleteGroup(id);
         return R.ok();
@@ -58,6 +63,7 @@ public class CannedResponseAdminController {
     // ── 公共快捷回复接口 ──────────────────────────────────
 
     @GetMapping("/canned-responses")
+    @SaCheckPermission("system:canned:view")
     public R<List<CannedResponseDO>> listPublic(
             @RequestParam(required = false) Long groupId,
             @RequestParam(defaultValue = "1") int page,
@@ -66,6 +72,7 @@ public class CannedResponseAdminController {
     }
 
     @PostMapping("/canned-responses")
+    @SaCheckPermission("system:canned:manage")
     public R<CannedResponseDO> createPublic(@RequestBody @Valid CannedRequest req) {
         Long createdBy = StpUtil.getLoginIdAsLong();
         return R.ok(service.createPublic(req.getTitle(), req.getContent(),
@@ -74,6 +81,7 @@ public class CannedResponseAdminController {
     }
 
     @PutMapping("/canned-responses/{id}")
+    @SaCheckPermission("system:canned:manage")
     public R<Void> updatePublic(@PathVariable Long id,
                                 @RequestBody @Valid CannedRequest req) {
         service.updatePublic(id, req.getTitle(), req.getContent(),
@@ -82,6 +90,7 @@ public class CannedResponseAdminController {
     }
 
     @DeleteMapping("/canned-responses/{id}")
+    @SaCheckPermission("system:canned:manage")
     public R<Void> deletePublic(@PathVariable Long id) {
         service.deletePublic(id);
         return R.ok();

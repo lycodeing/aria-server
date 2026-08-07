@@ -2,6 +2,7 @@ package com.aria.knowledge.interfaces.rest;
 
 import com.aria.common.web.response.R;
 import com.aria.knowledge.application.service.KnowledgeChunkAppService;
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.constraints.NotBlank;
@@ -22,6 +23,7 @@ public class KnowledgeChunkController {
 
     @Operation(summary = "禁用 Chunk（retrieval_weight=0，不物理删除）")
     @PostMapping("/{chunkId}/disable")
+    @SaCheckPermission("knowledge:doc:review")
     public R<Void> disable(@PathVariable String chunkId) {
         chunkAppService.disable(chunkId);
         return R.ok();
@@ -29,6 +31,7 @@ public class KnowledgeChunkController {
 
     @Operation(summary = "启用 Chunk（retrieval_weight 恢复为 1.0）")
     @PostMapping("/{chunkId}/enable")
+    @SaCheckPermission("knowledge:doc:review")
     public R<Void> enable(@PathVariable String chunkId) {
         chunkAppService.enable(chunkId);
         return R.ok();
@@ -36,6 +39,7 @@ public class KnowledgeChunkController {
 
     @Operation(summary = "编辑 Chunk 内容并重新向量化")
     @PutMapping("/{chunkId}/content")
+    @SaCheckPermission("knowledge:doc:review")
     public R<Void> updateContent(
             @PathVariable String chunkId,
             @RequestBody UpdateContentRequest req) {
@@ -45,6 +49,7 @@ public class KnowledgeChunkController {
 
     @Operation(summary = "手动添加 Q&A Chunk（问答对入库并向量化）")
     @PostMapping("/qa")
+    @SaCheckPermission("knowledge:doc:review")
     public R<Void> addQA(@RequestBody AddQARequest req) {
         chunkAppService.addQA(req.getDocId(), req.getKbId(),
             req.getQuestion(), req.getAnswer());

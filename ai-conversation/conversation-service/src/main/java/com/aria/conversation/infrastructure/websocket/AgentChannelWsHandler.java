@@ -1,5 +1,6 @@
 package com.aria.conversation.infrastructure.websocket;
 
+import com.aria.conversation.application.service.SessionQueueService;
 import com.aria.conversation.domain.MultiLoginMode;
 import com.aria.conversation.infrastructure.repository.ConversationHistoryRepository;
 import com.aria.conversation.infrastructure.websocket.cluster.PodIdentity;
@@ -20,6 +21,7 @@ import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -56,6 +58,7 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
     private final PodIdentity              podIdentity;
     private final WsMessageRouter          router;
     private final RedissonClient           redissonClient;
+    private final SessionQueueService      sessionQueueService;
 
     @Value("${agent.ws.multi-login-mode:BROADCAST}")
     private MultiLoginMode multiLoginMode;
@@ -117,8 +120,10 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
 
     @Override
     protected void handleTextMessage(@NonNull WebSocketSession session, TextMessage message) throws Exception {
-        if (message.getPayloadLength() > MAX_MESSAGE_BYTES) {
-            log.warn("[AgentWS] 消息超过最大长度 wsId={} size={}", session.getId(), message.getPayloadLength());
+        // 按 UTF-8 字节数校验，与 ChatWebSocketHandler 保持一致（getPayloadLength 返回字符数，中文下限制虚高约 3 倍）
+        int byteLen = message.getPayload().getBytes(StandardCharsets.UTF_8).length;
+        if (byteLen > MAX_MESSAGE_BYTES) {
+            log.warn("[AgentWS] 消息超过最大长度 wsId={} size={}", session.getId(), byteLen);
             registry.sendToSession(session, WsErrorMessage.of("消息长度超过限制（最大 64KB）"));
             session.close(CloseStatus.NOT_ACCEPTABLE);
             return;
@@ -130,6 +135,16 @@ public class AgentChannelWsHandler extends TextWebSocketHandler {
 
         if (sessionId == null || sessionId.isBlank()) {
             log.warn("[AgentWS] 消息缺少 sessionId wsId={}", session.getId());
+            return;
+        }
+
+        // 归属校验：仅允许该会话的负责座席发送消息，防止座席跨会话注入/伪造
+        String agentId = (String) session.getAttributes().get(ATTR_AGENT_ID);
+        String ownerAgentId = sessionQueueService.getAgentId(sessionId);
+        if (ownerAgentId == null || !ownerAgentId.equals(agentId)) {
+            log.warn("[AgentWS] 座席无权操作该会话，拒绝 agentId={} owner={} sessionId={}",
+                    agentId, ownerAgentId, sessionId);
+            registry.sendToSession(session, WsErrorMessage.of("无权操作该会话"));
             return;
         }
 

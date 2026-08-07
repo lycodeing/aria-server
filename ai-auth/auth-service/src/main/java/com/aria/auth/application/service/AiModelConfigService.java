@@ -13,6 +13,7 @@ import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -44,6 +45,14 @@ public class AiModelConfigService {
      * 配置变更事件发布器，封装 Redis Pub/Sub 细节
      */
     private final AiConfigEventPublisher eventPublisher;
+
+    /**
+     * API Key 加密存储开关。生产环境应置 true，配合 ADP_SK_ENCRYPT_KEY 环境变量，
+     * 使裸 Key 入库时走 AES-256-GCM 加密（AES: 前缀）而非明文（PLAINTEXT: 前缀）。
+     * 默认 false 以兼容本地开发与历史数据。
+     */
+    @Value("${aria.security.encrypt-api-key:false}")
+    private boolean encryptApiKey;
 
     /**
      * 分页查询（api_key_enc 原样返回，Controller 层负责脱敏）
@@ -307,6 +316,10 @@ public class AiModelConfigService {
         }
         if (apiKeyEnc.startsWith("PLAINTEXT:") || apiKeyEnc.startsWith("AES:")) {
             return apiKeyEnc;
+        }
+        // 裸 Key：开启加密开关时 AES-256-GCM 加密存储，否则回退明文（仅限本地/兼容旧数据）
+        if (encryptApiKey) {
+            return "AES:" + com.aria.common.core.util.EncryptUtils.encrypt(apiKeyEnc);
         }
         return "PLAINTEXT:" + apiKeyEnc;
     }

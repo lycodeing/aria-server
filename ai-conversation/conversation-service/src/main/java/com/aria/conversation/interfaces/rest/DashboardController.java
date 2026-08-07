@@ -1,5 +1,6 @@
 package com.aria.conversation.interfaces.rest;
 
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.DashboardAppService;
 import com.aria.conversation.interfaces.rest.vo.AgentWorkloadItemVO;
@@ -52,12 +53,14 @@ public class DashboardController {
 
     /** 概览指标（analytics 页面顶部 4 张卡片） */
     @GetMapping("/overview")
+    @SaCheckPermission("system:dashboard:view")
     public R<DashboardOverviewVO> getOverview() {
         return R.ok(dashboardAppService.getOverview());
     }
 
     /** 会话趋势（analytics 页面折线图，支持时间范围） */
     @GetMapping("/conversation-trends")
+    @SaCheckPermission("system:dashboard:view")
     public R<List<ConversationTrendItemVO>> getConversationTrends(
             @RequestParam(name = "rangeType", defaultValue = "month") String rangeType,
             @RequestParam(name = "days",      required = false)        Integer days) {
@@ -66,6 +69,7 @@ public class DashboardController {
 
     /** 消息量趋势（analytics 页面柱状图，支持时间范围） */
     @GetMapping("/message-trends")
+    @SaCheckPermission("system:dashboard:view")
     public R<List<ConversationTrendItemVO>> getMessageTrends(
             @RequestParam(name = "rangeType", defaultValue = "month") String rangeType,
             @RequestParam(name = "days",      required = false)        Integer days) {
@@ -74,6 +78,7 @@ public class DashboardController {
 
     /** 效率趋势（analytics 页面折线图，按天聚合三项时效均值） */
     @GetMapping("/efficiency-trends")
+    @SaCheckPermission("system:dashboard:view")
     public R<List<EfficiencyTrendItemVO>> getEfficiencyTrends(
             @RequestParam(name = "rangeType", defaultValue = "month") String rangeType,
             @RequestParam(name = "days",      required = false)        Integer days) {
@@ -82,18 +87,21 @@ public class DashboardController {
 
     /** 会话状态分布（analytics 页面饼图） */
     @GetMapping("/status-distribution")
+    @SaCheckPermission("system:dashboard:view")
     public R<List<StatusDistributionItemVO>> getStatusDistribution() {
         return R.ok(dashboardAppService.getStatusDistribution());
     }
 
     /** 问题标签分布（analytics 页面玫瑰图） */
     @GetMapping("/tag-distribution")
+    @SaCheckPermission("system:dashboard:view")
     public R<List<TagDistributionItemVO>> getTagDistribution() {
         return R.ok(dashboardAppService.getTagDistribution());
     }
 
     /** 最近会话列表（workspace 页面最近动态） */
     @GetMapping("/recent-sessions")
+    @SaCheckPermission("system:dashboard:view")
     public R<List<RecentSessionVO>> getRecentSessions(
             @RequestParam(name = "limit", defaultValue = "10") int limit) {
         return R.ok(dashboardAppService.getRecentSessions(limit));
@@ -101,18 +109,21 @@ public class DashboardController {
 
     /** 座席工作量统计（workspace 页面项目卡片） */
     @GetMapping("/agent-workload")
+    @SaCheckPermission("system:dashboard:view")
     public R<List<AgentWorkloadItemVO>> getAgentWorkload() {
         return R.ok(dashboardAppService.getAgentWorkload());
     }
 
     /** 会话复杂度分布（analytics 页面环形图） */
     @GetMapping("/complexity-distribution")
+    @SaCheckPermission("system:dashboard:view")
     public R<List<ComplexityDistributionItemVO>> getComplexityDistribution() {
         return R.ok(dashboardAppService.getComplexityDistribution());
     }
 
     /** CSAT 趋势（按天聚合，支持时间范围） */
     @GetMapping("/csat-trend")
+    @SaCheckPermission("system:dashboard:view")
     public R<List<CsatTrendItemVO>> getCsatTrend(
             @RequestParam(defaultValue = "month") String rangeType,
             @RequestParam(required = false) Integer days) {
@@ -121,12 +132,14 @@ public class DashboardController {
 
     /** CSAT 1–5 星分布 */
     @GetMapping("/csat-distribution")
+    @SaCheckPermission("system:dashboard:view")
     public R<List<CsatDistributionItemVO>> getCsatDistribution() {
         return R.ok(dashboardAppService.getCsatDistribution());
     }
 
     /** 分坐席 CSAT 均分（分页） */
     @GetMapping("/csat-by-agent")
+    @SaCheckPermission("system:dashboard:view")
     public R<List<CsatByAgentItemVO>> getCsatByAgent(
             @RequestParam(defaultValue = "1")  int page,
             @RequestParam(defaultValue = "20") int size) {
@@ -143,6 +156,7 @@ public class DashboardController {
      * @param days      仅 rangeType=custom 时生效，往前推 N 天（默认 7）
      */
     @GetMapping("/csat-overview")
+    @SaCheckPermission("system:dashboard:view")
     public R<CsatOverviewVO> getCsatOverview(
             @RequestParam(defaultValue = "month") String rangeType,
             @RequestParam(required = false)        Integer days) {

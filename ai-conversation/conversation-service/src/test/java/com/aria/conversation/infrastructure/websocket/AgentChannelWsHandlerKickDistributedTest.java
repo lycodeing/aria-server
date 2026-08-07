@@ -35,6 +35,7 @@ class AgentChannelWsHandlerKickDistributedTest {
     @Mock WsMessageRouter router;
     @Mock RedissonClient redissonClient;
     @Mock RLock rLock;
+    @Mock com.aria.conversation.application.service.SessionQueueService sessionQueueService;
 
     private AgentChannelWsHandler handler;
 
@@ -42,7 +43,8 @@ class AgentChannelWsHandlerKickDistributedTest {
     void setUp() throws Exception {
         lenient().when(podIdentity.get()).thenReturn("pod-A");
         handler = new AgentChannelWsHandler(registry, visitorNotifier, historyRepository,
-                new ObjectMapper(), presenceRegistry, podIdentity, router, redissonClient);
+                new ObjectMapper(), presenceRegistry, podIdentity, router, redissonClient,
+                sessionQueueService);
         Field f = AgentChannelWsHandler.class.getDeclaredField("multiLoginMode");
         f.setAccessible(true);
         f.set(handler, MultiLoginMode.KICK);

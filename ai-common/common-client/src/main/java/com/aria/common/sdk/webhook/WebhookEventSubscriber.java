@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -87,9 +88,19 @@ public class WebhookEventSubscriber {
      * @return 签名是否有效
      */
     public boolean verifySignature(String signature, String body) {
-        if (secret == null || secret.isBlank()) return true; // 未配置 secret 则跳过验证
+        // fail-close：未配置 secret 时拒绝一切回调，避免未签名请求被无条件接受
+        if (secret == null || secret.isBlank()) {
+            log.warn("[Webhook] 未配置 secret，拒绝签名校验（fail-close）");
+            return false;
+        }
+        if (signature == null) {
+            return false;
+        }
         String computed = AkSkSigningInterceptor.hmacSha256(secret, body);
-        return computed.equals(signature);
+        // 恒定时间比较，防时序侧信道
+        return MessageDigest.isEqual(
+                computed.getBytes(StandardCharsets.UTF_8),
+                signature.getBytes(StandardCharsets.UTF_8));
     }
 
     /**

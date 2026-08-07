@@ -163,6 +163,20 @@ public class ConversationPersistRepository {
     }
 
     /**
+     * 按 sessionId 查询会话绑定的 visitorId（X-Anonymous-Id），用于访客侧归属校验。
+     *
+     * @param sessionId 会话唯一标识
+     * @return 该会话的 visitorId；会话不存在或未记录 visitorId 时返回 empty
+     */
+    public Optional<String> findVisitorIdBySessionId(String sessionId) {
+        ConversationEntity entity = conversationMapper.selectBySessionId(sessionId);
+        if (entity == null || !StringUtils.hasText(entity.getVisitorId())) {
+            return Optional.empty();
+        }
+        return Optional.of(entity.getVisitorId());
+    }
+
+    /**
      * 检查指定 sessionId 是否存在且未关闭（用于消息发送前的会话存在性校验）。
      *
      * @param sessionId 会话唯一标识

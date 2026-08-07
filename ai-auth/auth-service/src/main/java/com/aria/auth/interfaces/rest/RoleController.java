@@ -1,6 +1,7 @@
 package com.aria.auth.interfaces.rest;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.aria.auth.application.query.RolePageQuery;
 import com.aria.auth.application.service.MenuApplicationService;
 import com.aria.auth.application.service.RoleApplicationService;
@@ -48,18 +49,21 @@ public class RoleController {
     }
 
     @PostMapping
+    @SaCheckPermission("system:role:create")
     public R<RoleVO> create(@RequestBody @Valid CreateRoleRequest req) {
         Role role = roleAppService.create(req.getRoleKey(), req.getRoleName(), req.getIsSystem());
         return R.ok(RoleAssembler.toVO(role));
     }
 
     @PutMapping("/{id}")
+    @SaCheckPermission("system:role:update")
     public R<RoleVO> update(@PathVariable Long id, @RequestBody @Valid UpdateRoleRequest req) {
         Role role = roleAppService.update(id, req.getRoleName(), req.getStatus());
         return R.ok(RoleAssembler.toVO(role));
     }
 
     @DeleteMapping("/{id}")
+    @SaCheckPermission("system:role:delete")
     public R<Void> delete(@PathVariable Long id) {
         roleAppService.delete(id);
         return R.ok();
@@ -85,6 +89,7 @@ public class RoleController {
      * 给角色分配接口权限（全量替换）
      */
     @PutMapping("/{id}/permissions")
+    @SaCheckPermission("system:role:assign-perm")
     public R<AssignPermissionsVO> assignPermissions(
             @PathVariable Long id,
             @RequestBody @Valid AssignPermissionsRequest req) {
@@ -104,6 +109,7 @@ public class RoleController {
      * 给角色分配菜单（批量替换）
      */
     @PutMapping("/{id}/menus")
+    @SaCheckPermission("system:role:assign-menu")
     public R<Void> assignMenus(@PathVariable Long id,
                                @RequestBody @Valid AssignMenusRequest req) {
         menuService.assignMenusToRole(id, req.getMenuIds());
@@ -123,6 +129,7 @@ public class RoleController {
      * 设置角色数据权限范围
      */
     @PutMapping("/{id}/data-scope")
+    @SaCheckPermission("system:role:data-scope")
     public R<Void> setDataScope(@PathVariable Long id,
                                 @RequestBody @Valid DataScopeRequest req) {
         roleAppService.setDataScope(id, req.getScopeType());

@@ -9,20 +9,21 @@ spring:
     url: jdbc:postgresql://ai-cs-postgres:5432/aria_cs
 
 # Sa-Token JWT 密钥与 auth-service 保持一致
+# 【安全】生产密钥不落库，必须由环境变量注入；未配置则启动失败（fail-fast），禁止硬编码兜底
 sa-token:
-  jwt-secret-key: cs-auth-lycodeing-secret-key-2024
+  jwt-secret-key: ${JWT_SECRET_KEY}
 
 aria:
   auth:
     client:
       base-url: http://ai-cs-auth:8083
-      shared-secret: aria-internal-lycodeing-2024
+      shared-secret: ${ARIA_INTERNAL_SECRET}
   internal:
-    secret: aria-internal-lycodeing-2024
+    secret: ${ARIA_INTERNAL_SECRET}
 
 knowledge:
   client:
-    sharedSecret: aria-internal-lycodeing-2024
+    sharedSecret: ${ARIA_INTERNAL_SECRET}
   service:
     base-url: http://ai-cs-knowledge:8081
 
