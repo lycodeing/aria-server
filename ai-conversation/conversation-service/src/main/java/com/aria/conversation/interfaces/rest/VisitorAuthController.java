@@ -62,11 +62,24 @@ public class VisitorAuthController {
      * <p>验证成功后 token 有效期 2 小时；若请求体中传入 sessionId，
      * 同时建立 session → phone 索引，供 {@link #state} 接口在刷新后回查。
      *
+     * <p>归属校验（防会话劫持）：仅当传入 sessionId 时，须校验该会话归属当前调用者
+     * （anonymousId 与会话 DB visitorId 匹配），否则攻击者可拿他人 sessionId 用自己手机号
+     * 完成验证并写入 session→phone 绑定，将他人匿名会话翻转为"已认证"并准接管。
+     *
      * @return {@code { token: "..." }}
      */
     @PostMapping("/sms/verify")
-    public R<Map<String, String>> verify(@RequestBody @Valid VerifyCodeRequest req) {
-        String token = visitorAuthService.verifyCode(req.getPhone(), req.getCode(), req.getSessionId());
+    public R<Map<String, String>> verify(
+            @RequestBody @Valid VerifyCodeRequest req,
+            @RequestHeader(value = HEADER_ANONYMOUS_ID, required = false) String anonymousId) {
+        String sessionId = req.getSessionId();
+        // 传入 sessionId 时校验归属：非归属者拒绝绑定，防会话劫持。
+        // 未传 sessionId（纯 token 场景）不涉及会话绑定，无需校验。
+        if (sessionId != null && !sessionId.isBlank()
+                && !sessionOwnershipValidator.isAnonymousOwner(sessionId, anonymousId)) {
+            return R.fail(403, "无权绑定该会话");
+        }
+        String token = visitorAuthService.verifyCode(req.getPhone(), req.getCode(), sessionId);
         return R.ok(Map.of("token", token));
     }
 
