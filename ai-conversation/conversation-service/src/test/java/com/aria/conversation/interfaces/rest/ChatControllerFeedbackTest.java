@@ -20,8 +20,15 @@ class ChatControllerFeedbackTest {
 
     @Mock ChatAppService chatService;
     @Mock MessageFeedbackService feedbackService;
+    @Mock com.aria.conversation.application.service.SessionOwnershipValidator sessionOwnershipValidator;
     @Mock ObjectMapper objectMapper;
     @InjectMocks ChatController controller;
+
+    @org.junit.jupiter.api.BeforeEach
+    void stubOwnership() {
+        // 归属校验默认放行，聚焦反馈委托逻辑
+        lenient().when(sessionOwnershipValidator.isOwner(anyString(), any(), any())).thenReturn(true);
+    }
 
     @Test
     void submitFeedback_upVote_delegatesToService() {
@@ -31,7 +38,7 @@ class ChatControllerFeedbackTest {
         req.setFeedback("up");
         when(feedbackService.submit("sess_a", 10L, "up", null)).thenReturn("up");
 
-        R<Map<String, Object>> r = controller.submitFeedback(req);
+        R<Map<String, Object>> r = controller.submitFeedback(req, null, null);
 
         assertThat(r.code()).isEqualTo(200);
         assertThat(r.data()).containsEntry("feedback", "up");
@@ -46,7 +53,7 @@ class ChatControllerFeedbackTest {
         req.setFeedback(null);
         when(feedbackService.submit("sess_a", 10L, null, null)).thenReturn(null);
 
-        R<Map<String, Object>> r = controller.submitFeedback(req);
+        R<Map<String, Object>> r = controller.submitFeedback(req, null, null);
 
         assertThat(r.code()).isEqualTo(200);
         assertThat(r.data()).containsEntry("feedback", null);
@@ -59,7 +66,7 @@ class ChatControllerFeedbackTest {
         req.setFeedback("down");
         when(feedbackService.submit("sess_a", null, "down", null)).thenReturn("down");
 
-        controller.submitFeedback(req);
+        controller.submitFeedback(req, null, null);
 
         verify(feedbackService).submit("sess_a", null, "down", null);
     }

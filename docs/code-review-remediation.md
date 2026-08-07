@@ -234,3 +234,18 @@
 - **#5 AkSkSigningInterceptor 签名含 query 是破坏性变更**：任何验签方须在同一位置纳入 query。经确认当前生产走 SHARED_SECRET 模式、服务端无 Ak/Sk 验签实现，改动不破坏现网；若未来启用 Ak/Sk 验签，需 lockstep 同步签名串格式。
 
 **验证**：全工程 `mvn compile` 通过；conversation 352 测试全绿，common 全绿。
+
+### 评审轮次 2 — 2026-08-07 — IDOR 完全闭环（收敛确认后补漏）
+
+第二轮评审确认前一轮两处修复（消息发送归属校验、RetryInterceptor 429/5xx 区分）正确无回归，但指出 IDOR 主题仍有同源遗漏：`/transfer`、`/stream/cancel`、`/messages/feedback` 三个访客可达、按 sessionId 执行写/动作的接口仍缺归属校验。本轮补齐：
+
+- `ChatController.transfer`：注入 `X-Visitor-Token`/`X-Anonymous-Id`，`isOwner` 校验失败返回 403。堵住"枚举他人 sessionId 强推其会话入人工队列 + 攻击者可控 userName/reason/tag 骚扰坐席"。
+- `ChatController.cancelStream`：query 参数 sessionId + 归属校验，堵住"中断他人 AI 生成"的逐会话 DoS。
+- `ChatController.submitFeedback`：请求体 sessionId + 归属校验，堵住"污染他人消息反馈统计"。
+- 至此 `ChatController` 全部按 sessionId 操作的访客接口（history/clearHistory/state/stream/chat/transfer/cancel/feedback）归属校验口径统一，SYS-1c **完全闭环**。
+
+**负向测试补充**：`ChatControllerStreamTest` 新增 `isOwner=false` 时 streamChat 返回 error+done 帧的用例；`ChatControllerFeedbackTest` 补 `SessionOwnershipValidator` mock。
+
+**验证**：全工程编译通过；conversation 353 测试全绿。
+
+⚠️ **前端联调约定**：`/stream`、`POST /`、`/transfer`、`/stream/cancel`、`/messages/feedback` 现均强制归属校验，前端所有访客写请求必须携带 `X-Anonymous-Id`（匿名）或 `X-Visitor-Token`（已短信认证）头，否则被 403 拒绝。上线前须确认 chat-widget 已在这些请求附带对应头。
