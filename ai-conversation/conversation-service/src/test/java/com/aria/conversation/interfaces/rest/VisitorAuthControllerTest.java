@@ -107,6 +107,24 @@ class VisitorAuthControllerTest {
         verify(visitorAuthService, never()).verifyCode(anyString(), anyString(), anyString());
     }
 
+    @Test
+    void verify_noSessionId_skipsOwnershipGuardAndIssuesToken() {
+        // 纯 token 场景：不传 sessionId，不涉及会话绑定，跳过归属守卫直接签发 token
+        VisitorAuthController.VerifyCodeRequest req = new VisitorAuthController.VerifyCodeRequest();
+        req.setPhone("13812345678");
+        req.setCode("123456");
+        // sessionId 保持 null
+        when(visitorAuthService.verifyCode("13812345678", "123456", null))
+                .thenReturn("tk_pure");
+
+        R<Map<String, String>> r = controller.verify(req, null);
+
+        assertThat(r.data()).containsEntry("token", "tk_pure");
+        verify(visitorAuthService).verifyCode("13812345678", "123456", null);
+        // 未传 sessionId 时不应触发归属校验
+        verify(sessionOwnershipValidator, never()).isAnonymousOwner(anyString(), any());
+    }
+
     // ------------------ send ------------------
 
     @Test
