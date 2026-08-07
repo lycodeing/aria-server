@@ -1,5 +1,6 @@
 package com.aria.auth.application.service;
 
+import cn.dev33.satoken.stp.StpUtil;
 import com.aria.auth.application.query.UserPageQuery;
 import com.aria.auth.domain.model.user.*;
 import com.aria.auth.domain.repository.IUserRepository;
@@ -189,6 +190,8 @@ public class UserApplicationService {
         user.disable();
         userRepo.save(user);
         domainEventPublisher.publish(user);
+        // 主动踢出该用户所有在线会话，使禁用即时生效（否则旧 token 在过期前仍可用）
+        StpUtil.kickout(id);
     }
 
     /**
@@ -236,7 +239,7 @@ public class UserApplicationService {
         User user = loadUser(id);
         passwordPolicy.check(newPassword);
         Password newPwd = Password.encode(newPassword, passwordHasher);
-        user.changePassword(oldPassword, newPwd, passwordHasher);
+        user.changePassword(oldPassword, newPassword, newPwd, passwordHasher);
         userRepo.save(user);
         domainEventPublisher.publish(user);
     }
@@ -272,6 +275,9 @@ public class UserApplicationService {
         user.assignRoles(roleIds == null ? Set.of() : roleIds);
         userRepo.save(user);
         domainEventPublisher.publish(user);
+        // 主动踢出该用户所有在线会话，强制其重新登录加载新角色/权限，
+        // 避免旧 token session 中的权限快照在过期前仍然生效（撤权窗口期）。
+        StpUtil.kickout(id);
     }
 
     // -------------------------------------------------------

@@ -8,6 +8,7 @@ spring:
   datasource:
     url: jdbc:postgresql://ai-cs-postgres:5432/aria_cs
 
+# 生产密钥统一由环境变量注入，无默认值：未配置时 InternalSecretVerifier 阻止启动（fail-fast）
 aria:
   internal:
-    secret: aria-internal-lycodeing-2024
+    secret: ${ARIA_INTERNAL_SECRET}

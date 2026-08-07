@@ -140,6 +140,11 @@ public class AuthApplicationService {
         Long userId = StpUtil.getLoginIdAsLong();
         User user = userRepo.findById(UserId.of(userId))
                 .orElseThrow(() -> BusinessException.of(CommonErrorCode.UNAUTHORIZED));
+        // 账号状态校验：禁用/锁定用户不允许通过 refresh 续期，避免管理员禁用后仍能无限刷新
+        if (!user.canLogin()) {
+            StpUtil.logout();
+            throw BusinessException.of(CommonErrorCode.UNAUTHORIZED);
+        }
         List<String> roleKeys = userRepo.findRoleKeysByUserId(userId);
         List<String> permissionKeys = userRepo.findPermissionKeysByUserId(userId);
 

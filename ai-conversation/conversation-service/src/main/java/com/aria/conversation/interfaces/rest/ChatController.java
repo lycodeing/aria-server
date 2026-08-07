@@ -5,6 +5,7 @@ import com.aria.conversation.application.exception.ServiceOfflineException;
 import com.aria.conversation.application.service.ChatAppService;
 import com.aria.conversation.application.service.ChatEvent;
 import com.aria.conversation.application.service.MessageFeedbackService;
+import com.aria.conversation.application.service.SessionOwnershipValidator;
 import com.aria.conversation.domain.SessionQueueItem;
 import com.aria.conversation.domain.ConversationMessage;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -59,8 +60,15 @@ public class ChatController {
 
     private final ChatAppService chatService;
     private final MessageFeedbackService messageFeedbackService;
+    /** 访客会话归属校验器，防 IDOR 越权访问他人会话 */
+    private final SessionOwnershipValidator sessionOwnershipValidator;
     /** Jackson ObjectMapper 用于将 ChatEvent 的 error/token 等 payload 序列化为 JSON 信封 */
     private final ObjectMapper objectMapper;
+
+    /** 访客 token 请求头名（短信认证下发的 token） */
+    private static final String HEADER_VISITOR_TOKEN = "X-Visitor-Token";
+    /** 匿名标识请求头名（前端 localStorage 生成的 anonymousId） */
+    private static final String HEADER_ANONYMOUS_ID = "X-Anonymous-Id";
 
     /**
      * SSE 流式对话接口（访客公开，允许任意跨域）。
@@ -118,9 +126,14 @@ public class ChatController {
     @GetMapping("/history")
     public R<List<ConversationMessage>> history(
             @RequestParam String sessionId,
-            @RequestParam(required = false, defaultValue = "0") long sinceSeq) {
+            @RequestParam(required = false, defaultValue = "0") long sinceSeq,
+            @RequestHeader(value = HEADER_VISITOR_TOKEN, required = false) String visitorToken,
+            @RequestHeader(value = HEADER_ANONYMOUS_ID, required = false) String anonymousId) {
         if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {
             return R.fail(400, "非法的 sessionId 格式");
+        }
+        if (!sessionOwnershipValidator.isOwner(sessionId, visitorToken, anonymousId)) {
+            return R.fail(403, "无权访问该会话");
         }
         if (sinceSeq > 0L) {
             return R.ok(chatService.getHistorySince(sessionId, sinceSeq));
@@ -132,9 +145,15 @@ public class ChatController {
      * 清除对话历史。
      */
     @DeleteMapping("/history")
-    public R<Map<String, String>> clearHistory(@RequestParam String sessionId) {
+    public R<Map<String, String>> clearHistory(
+            @RequestParam String sessionId,
+            @RequestHeader(value = HEADER_VISITOR_TOKEN, required = false) String visitorToken,
+            @RequestHeader(value = HEADER_ANONYMOUS_ID, required = false) String anonymousId) {
         if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {
             return R.fail(400, "非法的 sessionId 格式");
+        }
+        if (!sessionOwnershipValidator.isOwner(sessionId, visitorToken, anonymousId)) {
+            return R.fail(403, "无权访问该会话");
         }
         chatService.clearHistory(sessionId);
         return R.ok(Map.of("message", "会话历史已清除", "sessionId", sessionId));
@@ -196,9 +215,15 @@ public class ChatController {
      * @return 当前会话状态字符串（AI_CHAT / WAITING / ACTIVE / CLOSED）
      */
     @GetMapping("/state")
-    public R<Map<String, String>> sessionState(@RequestParam String sessionId) {
+    public R<Map<String, String>> sessionState(
+            @RequestParam String sessionId,
+            @RequestHeader(value = HEADER_VISITOR_TOKEN, required = false) String visitorToken,
+            @RequestHeader(value = HEADER_ANONYMOUS_ID, required = false) String anonymousId) {
         if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {
             return R.fail(400, "非法的 sessionId 格式");
+        }
+        if (!sessionOwnershipValidator.isOwner(sessionId, visitorToken, anonymousId)) {
+            return R.fail(403, "无权访问该会话");
         }
         String status = chatService.getSessionStatus(sessionId).getValue();
         return R.ok(Map.of("sessionId", sessionId, "status", status));

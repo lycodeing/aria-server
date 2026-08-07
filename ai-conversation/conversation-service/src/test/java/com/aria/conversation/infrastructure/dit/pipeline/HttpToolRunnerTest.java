@@ -18,6 +18,8 @@ class HttpToolRunnerTest {
     void setUp() {
         runner = new HttpToolRunner(new ObjectMapper(),
                 org.springframework.web.reactive.function.client.WebClient.builder(),
+                new SsrfGuard(""),
+                new SsrfGuard(),
                 java.util.List.of(new BearerAuthStrategy(), new ApiKeyAuthStrategy(), new NoAuthStrategy()));
     }
 

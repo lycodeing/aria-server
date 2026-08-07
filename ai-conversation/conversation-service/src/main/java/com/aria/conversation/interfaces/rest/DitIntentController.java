@@ -1,5 +1,6 @@
 package com.aria.conversation.interfaces.rest;
 
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.DitManageAppService;
 import com.aria.conversation.infrastructure.dit.domain.IntentDO;
@@ -31,11 +32,13 @@ public class DitIntentController {
     // ---- 意图 ----
 
     @GetMapping("/intents")
+    @SaCheckPermission("system:dit:view")
     public R<List<IntentDO>> listIntents(@RequestParam Long domainId) {
         return R.ok(manageService.listIntents(domainId));
     }
 
     @PostMapping("/intents")
+    @SaCheckPermission("system:dit:manage")
     public R<IntentDO> createIntent(@RequestBody @Valid IntentRequest req) {
         IntentDO intent = new IntentDO();
         intent.setDomainId(req.getDomainId());
@@ -54,6 +57,7 @@ public class DitIntentController {
     }
 
     @PutMapping("/intents/{id}")
+    @SaCheckPermission("system:dit:manage")
     public R<Void> updateIntent(@PathVariable Long id, @RequestBody @Valid IntentRequest req) {
         IntentDO intent = new IntentDO();
         intent.setId(id);
@@ -72,6 +76,7 @@ public class DitIntentController {
     }
 
     @DeleteMapping("/intents/{id}")
+    @SaCheckPermission("system:dit:manage")
     public R<Void> deleteIntent(@PathVariable Long id) {
         manageService.deleteIntent(id);
         return R.ok();
@@ -80,11 +85,13 @@ public class DitIntentController {
     // ---- 槽位 ----
 
     @GetMapping("/slots")
+    @SaCheckPermission("system:dit:view")
     public R<List<IntentSlotDO>> listSlots(@RequestParam Long intentId) {
         return R.ok(manageService.listSlots(intentId));
     }
 
     @PostMapping("/slots")
+    @SaCheckPermission("system:dit:manage")
     public R<IntentSlotDO> createSlot(@RequestBody @Valid SlotRequest req) {
         IntentSlotDO slot = new IntentSlotDO();
         slot.setIntentId(req.getIntentId());
@@ -102,6 +109,7 @@ public class DitIntentController {
     }
 
     @PutMapping("/slots/{id}")
+    @SaCheckPermission("system:dit:manage")
     public R<Void> updateSlot(@PathVariable Long id, @RequestBody @Valid SlotRequest req) {
         IntentSlotDO slot = new IntentSlotDO();
         slot.setId(id);
@@ -120,6 +128,7 @@ public class DitIntentController {
     }
 
     @DeleteMapping("/slots/{id}")
+    @SaCheckPermission("system:dit:manage")
     public R<Void> deleteSlot(@PathVariable Long id) {
         manageService.deleteSlot(id);
         return R.ok();
@@ -128,11 +137,13 @@ public class DitIntentController {
     // ---- 意图-工具绑定 ----
 
     @GetMapping("/bindings")
+    @SaCheckPermission("system:dit:view")
     public R<List<IntentToolDO>> listBindings(@RequestParam Long intentId) {
         return R.ok(manageService.listBindings(intentId));
     }
 
     @PostMapping("/bindings")
+    @SaCheckPermission("system:dit:manage")
     public R<IntentToolDO> createBinding(@RequestBody @Valid BindingRequest req) {
         IntentToolDO binding = new IntentToolDO();
         binding.setIntentId(req.getIntentId());
@@ -144,6 +155,7 @@ public class DitIntentController {
     }
 
     @DeleteMapping("/bindings/{id}")
+    @SaCheckPermission("system:dit:manage")
     public R<Void> deleteBinding(@PathVariable Long id) {
         manageService.deleteBinding(id);
         return R.ok();

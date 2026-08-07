@@ -1,5 +1,6 @@
 package com.aria.conversation.interfaces.rest;
 
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.DitManageAppService;
 import com.aria.conversation.infrastructure.dit.config.ToolConfig;
@@ -33,22 +34,26 @@ public class DitToolController {
     private final HttpToolRunner httpToolRunner;
 
     @GetMapping
+    @SaCheckPermission("system:dit:view")
     public R<List<ToolDO>> list() {
         return R.ok(manageService.listTools());
     }
 
     @PostMapping
+    @SaCheckPermission("system:dit:manage")
     public R<ToolDO> create(@RequestBody @Valid ToolRequest req) {
         return R.ok(manageService.createTool(toToolDO(null, req)));
     }
 
     @PutMapping("/{id}")
+    @SaCheckPermission("system:dit:manage")
     public R<Void> update(@PathVariable Long id, @RequestBody @Valid ToolRequest req) {
         manageService.updateTool(toToolDO(id, req));
         return R.ok();
     }
 
     @DeleteMapping("/{id}")
+    @SaCheckPermission("system:dit:manage")
     public R<Void> delete(@PathVariable Long id) {
         manageService.deleteTool(id);
         return R.ok();
@@ -58,6 +63,7 @@ public class DitToolController {
      * 预览调用工具：使用指定参数实际执行一次 HTTP 工具调用，返回原始响应和 JSONPath 提取结果。
      */
     @PostMapping("/{id}/test")
+    @SaCheckPermission("system:dit:manage")
     public R<TestResult> test(@PathVariable Long id,
                               @RequestBody TestRequest req) {
         ToolDO t = manageService.getToolById(id);

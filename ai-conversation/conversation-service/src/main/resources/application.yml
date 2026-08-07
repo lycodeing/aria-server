@@ -103,20 +103,20 @@ aria:
     client:
       # base-url 本地开发默认值，生产由 application-prod.yml 覆盖
       base-url: http://localhost:8083
-      # shared-secret 必填，未配置 SDK 启动即失败（fail-fast）
-      shared-secret: aria-internal-lycodeing-2024
+      # shared-secret 必填，生产由环境变量注入；此默认值仅供本地开发
+      shared-secret: ${ARIA_INTERNAL_SECRET:aria-internal-dev-secret-change-me}
       connect-timeout-ms: 3000
       read-timeout-ms: 5000
       max-retries: 2
   # 兼容 conversation-service 内部其它调用（如 KnowledgeClient）继续读取此密钥
-  # 【安全】生产环境值由 application-prod.yml 覆盖
+  # 【安全】生产由环境变量 ARIA_INTERNAL_SECRET 注入；此默认值仅供本地开发
   internal:
-    secret: aria-internal-lycodeing-2024
+    secret: ${ARIA_INTERNAL_SECRET:aria-internal-dev-secret-change-me}
 
 # -------- 知识库检索配置（RAG） --------
 knowledge:
   client:
-    sharedSecret: aria-internal-lycodeing-2024
+    sharedSecret: ${ARIA_INTERNAL_SECRET:aria-internal-dev-secret-change-me}
   service:
     # knowledge-service 地址，生产通过 application-prod.yml 覆盖
     base-url: http://localhost:8081
@@ -176,7 +176,7 @@ sa-token:
   token-prefix: "Bearer"
   is-read-header: true
   is-read-cookie: false
-  jwt-secret-key: cs-auth-dev-secret-key-change-in-production
+  jwt-secret-key: ${JWT_SECRET_KEY:cs-auth-dev-secret-key-change-in-production}
 
 # -------- 座席端 WebSocket 配置 --------
 agent:

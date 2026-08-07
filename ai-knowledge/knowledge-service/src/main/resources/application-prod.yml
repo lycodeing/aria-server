@@ -9,22 +9,23 @@ spring:
     url: jdbc:postgresql://ai-cs-postgres:5432/aria_knowledge
 
 # Sa-Token JWT 密钥与 auth-service 保持一致
+# 生产密钥一律由环境变量注入，未配置则启动失败（fail-fast），禁止在仓库内硬编码明文
 sa-token:
-  jwt-secret-key: cs-auth-lycodeing-secret-key-2024
+  jwt-secret-key: ${JWT_SECRET_KEY}
 
 aria:
   auth:
     client:
       base-url: http://ai-cs-auth:8083
-      shared-secret: aria-internal-lycodeing-2024
+      shared-secret: ${INTERNAL_SHARED_SECRET}
   internal:
-    secret: aria-internal-lycodeing-2024
+    secret: ${ARIA_INTERNAL_SECRET}
 
-# MinIO 使用容器名访问，secret-key 使用生产密码
+# MinIO 使用容器名访问，凭证由环境变量注入
 minio:
   endpoint: http://ai-cs-minio:9000
-  access-key: minioadmin
-  secret-key: Lycodeing@2024
+  access-key: ${MINIO_ACCESS_KEY}
+  secret-key: ${MINIO_SECRET_KEY}
   bucket: ai-knowledge
 
 knowledge:

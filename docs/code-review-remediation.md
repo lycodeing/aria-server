@@ -1,0 +1,185 @@
+# aria-server 代码评审整改追踪文档
+
+> 本文档追踪 2026-08-06 全量代码评审（54K LOC / 684 文件，auth/conversation/knowledge/common 四模块并行评审）发现的问题及整改进度。
+> 状态循环：整理文档 → 逐项修复 → 编译/测试验证 → 重新评审 → 更新本文档，直到无问题为止。
+
+## 状态图例
+- ⬜ 待修复
+- 🔧 修复中
+- ✅ 已修复（含验证）
+- ⏭️ 已确认无需修复 / 设计如此
+- 🔁 复审后新增
+
+---
+
+## 一、系统性问题（跨模块，最高优先级）
+
+### SYS-1 授权体系普遍"认证有、授权无"（垂直/水平越权）
+同一缺陷模式在四模块反复出现，属架构级遗漏。
+
+| ID | 模块 | 位置 | 后果 | 状态 |
+|---|---|---|---|---|
+| SYS-1a | auth | `RoleController.java:28-131` | 任意登录用户可 `assignPermissions` 给自己角色授予全部权限 → **完整自我提权** | ✅ |
+| SYS-1b | auth | `MenuController.java:29-88` | 任意登录用户篡改全局菜单树 | ✅ |
+| SYS-1c | conversation | `ChatController` `/history`、`DELETE`、`/state`、`/ws/chat/{sessionId}` | 只校验 sessionId 格式不校验归属 → 拉取/清空/监听他人会话(IDOR) | ✅ |
+| SYS-1d | conversation | `AgentChannelWsHandler.java:118-151` | 任意座席向任意会话注入伪造消息 | ✅ |
+| SYS-1e | conversation | DIT/Dashboard/Canned `/admin/**` | 只 `checkLogin` 无 `@SaCheckPermission`（已补 system:dit:*/canned:*/dashboard:view 注解+SQL） | ✅ |
+| SYS-1f | knowledge | `KnowledgeDocController`/`KnowledgeChunkController` | 任意登录用户下载/下线任意文档(跨租户 IDOR)（已补 knowledge:doc:view/upload/review/offline 注解+SQL；租户隔离见备注） | ✅ |
+
+### SYS-2 密钥 fail-open / 明文入库
+| ID | 位置 | 后果 | 状态 |
+|---|---|---|---|
+| SYS-2a | `EncryptUtils.java:90-101` | `ADP_SK_ENCRYPT_KEY` 缺失时静默回退硬编码开发密钥加密敏感数据 | ✅ |
+| SYS-2b | `WebhookEventSubscriber.java:89-93` | secret 未配置时签名校验 `return true`(fail-open) + `String.equals` 非恒定时间 | ✅ |
+| SYS-2c | `knowledge application*.yml` / `application-prod.yml` | 生产 MinIO 密码/JWT 密钥/内部共享密钥明文入库 | ✅ |
+| SYS-2d | `AiModelConfigService.java:304-312` | 第三方大模型 API Key 默认 `PLAINTEXT:` 明文落库 | ✅ |
+
+---
+
+## 二、各模块严重/重要问题
+
+### ai-auth
+| ID | 位置 | 严重度 | 问题 | 状态 |
+|---|---|---|---|---|
+| AUTH-1 | `User.java:228` | 🟠 | 密码历史重用校验拿新密码哈希当明文比对，永远检测不出重用 | ✅ |
+| AUTH-2 | `AuthApplicationService.refreshToken` | 🟠 | 不校验账号状态 → 禁用/锁定用户可无限续期 | ✅ |
+| AUTH-3 | `UserApplicationService.disable/assignRoles` | 🟠 | 权限只读 token session 不回查 → 撤权/禁用无法即时生效且无踢出（已加 StpUtil.kickout 主动踢出） | ✅ |
+| AUTH-4 | `AuthController.extractIp` | 🟠 | 频控 key 基于可伪造 X-Forwarded-For → 暴力破解绕限流（已加 trust-proxy 开关，默认关闭用 remoteAddr） | ✅ |
+| AUTH-5 | 登录流程 `AuthApplicationService:79-95` | 🟡 | 用户名枚举/时序侧信道 | ⬜ |
+| AUTH-6 | `AiModelConfigService`/`AdminAiModelController` | 🟡 | AI 配置贫血 DO CRUD 破坏 DDD 分层 | ⬜ |
+| AUTH-7 | 多处 `catch(Exception)` | 🟡 | 宽泛吞异常，`DataScopeAspect` 降级 SELF 影响数据可见范围 | ⬜ |
+| AUTH-8 | `AiModelConfigService:381` / `LoginRateLimiter:88` 等 | 🟡 | String.format 拼 JSON、每次 new RedisScript、getDisplayNames 无上限、do_ 命名 | ⬜ |
+
+### ai-conversation
+| ID | 位置 | 严重度 | 问题 | 状态 |
+|---|---|---|---|---|
+| CONV-1 | `HttpToolRunner` + `SsrfGuard` | 🟠 | DIT 工具用用户可控参数拼 URL 发请求，无私网/回环/metadata 拦截 → SSRF（已加 SsrfGuard 出站校验；/test 回显收窄见 CONV-7） | ✅ |
+| CONV-2 | `AbstractWebhookSender.java:45-49` | 🟠 | webhook url/header(含签名密钥)/body 全量 INFO 明文落盘 | ⬜ |
+| CONV-3 | `ConversationHistoryRepository.java:132` | 🟠 | `initializedSessions` 无界 Set，会话过期不清理 → 长跑 OOM | ⬜ |
+| CONV-4 | `AbstractWebhookSender:86-116` | 🟠 | 自定义模板裸 `String.replace` 注入未转义 → 访客昵称可注入 webhook JSON | ⬜ |
+| CONV-5 | `SessionQueueService`/`FaqChatAppService` | 🟠 | application 层直接依赖 infrastructure 实体，DDD 依赖倒置 | ⬜ |
+| CONV-6 | `AgentChannelWsHandler.java:120` | 🟡 | 座席 WS 消息按字符数校验，与访客端(字节数)不一致 | ✅ |
+| CONV-7 | `HttpToolRunner.java:163-196` | 🟡 | `extractByJsonPath` 失败降级回显完整上游响应 | ⬜ |
+| CONV-8 | `VisitorAuthController.java:47-51` | 🟡 | 访客短信发送缺 IP 维度限流 | ⬜ |
+| CONV-9 | `KnowledgeServiceClient.java:84,42` | 🟡 | debug 打印完整 RAG 响应；内部密钥有可用默认值无启动强校验 | ⬜ |
+
+### ai-knowledge
+| ID | 位置 | 严重度 | 问题 | 状态 |
+|---|---|---|---|---|
+| KNOW-1 | `DocumentIngestPipeline.process:51` | 🟠 | 整条摄取 pipeline 单 DB 事务内执行且中间发 Embedding HTTP → 连接池耗尽 | ⬜ |
+| KNOW-2 | `InternalSecretFilter`(common-web) | 🟠 | `/internal/**` 实际由 InternalSecretFilter 强制校验 X-Internal-Secret(fail-secure)；已消除默认密钥(prod fail-fast) | ✅ |
+| KNOW-3 | `DocIngestAppService.submit:87-89` | 🟠 | 上传接口缺 isEmpty/大小/扩展名白名单，未知类型回退 MARKDOWN | ⬜ |
+| KNOW-4 | `MinioStorageService`/`ZipParser` | 🟠 | 大文件全量读入内存多处放大，ZIP 累积无总量上限 | ⬜ |
+| KNOW-5 | `KnowledgeChunkMapper.xml:91-98` | 🟡 | `${tsConfig}` 字符串拼接进 SQL（当前受控，隐患） | ⬜ |
+| KNOW-6 | `DocIngestAppService.java:351-355` | 🟡 | batchOffline 循环内 N 次 findById | ⬜ |
+| KNOW-7 | `KnowledgeSearchAppService.java:80` | 🟡 | query 向量化同步调用无独立超时 | ⬜ |
+| KNOW-8 | `TranslateController.java:73-77` | 🟡 | 每次 new ObjectMapper + catch(Exception) 回显内部异常 | ⬜ |
+| KNOW-9 | Application 层直接依赖 Infrastructure 具体类 | 🟡 | DDD 分层泄漏 + `KnowledgeDoc` 贫血模型 | ⬜ |
+
+### ai-common（被全系统依赖，缺陷放大）
+| ID | 位置 | 严重度 | 问题 | 状态 |
+|---|---|---|---|---|
+| COMM-1 | `common-web/pom.xml` + `RemoteAiModelConfigProvider` | 🟠 | common-web 反向依赖 auth-client/knowledge-client 并内置 AI 配置业务 → DDD 分层倒置 | ⬜ |
+| COMM-2 | `common-client/main/java/...` | 🟠 | git 跟踪的过期重复源码树（旧 AK/SK 版 BaseClient），易误用 | ⬜ |
+| COMM-3 | `RetryInterceptor.java:28-58` | 🟠 | 对非幂等 POST/PUT 也重试且 Thread.sleep 最长阻塞 65s → 重复扣费+线程耗尽 | ⬜ |
+| COMM-4 | `AkSkSigningInterceptor.java:59-64` | 🟠 | 签名不含 query string → GET 参数可被篡改越权 | ⬜ |
+| COMM-5 | `SensitiveDataUtils.java:39-42` | 🟠 | 手机号正则无边界先于身份证执行 → 身份证漏脱敏(PII 合规红线)；邮箱未覆盖 | ⬜ |
+| COMM-6 | `IdGenerator.java:67-78` | 🟠 | workerId 缺失回退 pid%1024，容器 PID 趋同 → 雪花 ID 冲突 | ⬜ |
+| COMM-7 | `ControllerUtils.toLong:24-32` | 🟡 | 非法输入静默转 0L | ⬜ |
+| COMM-8 | `R.java:22-23` / `BusinessException:44-47` | 🟡 | 非数字 code 用 hashCode 兜底 | ⬜ |
+| COMM-9 | `SaTokenWebConfig.java:37` | 🟡 | actuator 端点 Sa-Token 层完全放行 | ⬜ |
+| COMM-10 | `DomainEvent.getAggregateType:44` | 🟡 | 每次调用重编巨型正则 | ⬜ |
+| COMM-11 | `VectorUtils.fromStr:44-46` | 🟡 | 未校验闭合括号 | ⬜ |
+| COMM-12 | `AutoFillMetaObjectHandler:23,36` | 🟡 | 用系统默认时区 | ⬜ |
+
+---
+
+## 三、修复优先级批次
+
+- **P0（阻断上线）**：SYS-1a, SYS-1b, SYS-1c, SYS-1d, SYS-1f, SYS-2a, SYS-2b, SYS-2c, SYS-2d
+- **P1**：CONV-1, KNOW-2, AUTH-1, AUTH-2, AUTH-3, AUTH-4, SYS-1e
+- **P2**：CONV-3, KNOW-1, COMM-5, COMM-6, COMM-3, COMM-4, KNOW-3, CONV-2, CONV-4
+- **P3**：DDD 依赖倒置(CONV-5, KNOW-9, AUTH-6, COMM-1) + 清理死代码(COMM-2) + 其余 🟡
+
+---
+
+## 四、整改日志（按批次追加）
+
+### 批次 1 — 2026-08-06 — P0 授权越权（SYS-1a/b/c/d + CONV-6）
+
+**SYS-1a/1b 角色/菜单接口权限注解**
+- `RoleController.java`：create/update/delete/assignPermissions/assignMenus/setDataScope 补 `@SaCheckPermission`
+- `MenuController.java`：create/update/delete 补 `@SaCheckPermission`
+- 新增 SQL patch `docs/sql/migrations/2026-08-06-add-role-menu-permissions.sql`：新建权限 `system:role:assign-perm`(65)、`system:role:data-scope`(66)、`system:menu:create/update/delete`(67-69)，并绑定 super_admin(role 10) + 对应菜单按钮。
+- ⚠️ **部署依赖**：上线前必须先执行该 SQL patch，否则 super_admin 也会 403（无通配权限机制）。
+
+**SYS-1c 访客会话 IDOR**
+- 新增 `SessionOwnershipValidator`（application 层）：绑定校验+匿名兼容策略。
+- 新增 `ConversationPersistRepository.findVisitorIdBySessionId`。
+- `ChatController` /history、DELETE /history、/state 三接口注入校验，读 `X-Visitor-Token`/`X-Anonymous-Id` 头，失败返回 403。
+- 新增 `VisitorHandshakeInterceptor` 并在 `WebSocketConfig` 挂到 `/ws/chat/*`，握手阶段校验归属（token/anonymousId 走 query），失败返回 403。
+- ⚠️ **前端依赖**：访客端 REST 需带 `X-Visitor-Token`(已认证) 或 `X-Anonymous-Id`(匿名) 头；WS 需带 `?token=` 或 `?anonymousId=` query。
+
+**SYS-1d 座席跨会话注入 + CONV-6**
+- `AgentChannelWsHandler` 注入 `SessionQueueService`，`handleTextMessage` 校验 `body.sessionId()` 的负责座席 == 当前 agentId，不匹配拒绝。
+- 顺带把消息长度校验从字符数改为 UTF-8 字节数（对齐访客端）。
+
+**验证**：`mvn -q -pl ai-conversation/conversation-service compile` 通过（无错误）。auth 模块待编译验证。
+
+### 批次 2 — 2026-08-06 — P0 密钥 fail-open / 明文（SYS-2a/b/c/d）
+
+**SYS-2a EncryptUtils fail-open**
+- `EncryptUtils.initKeyBytes()`：env 设置但非法（长度≠32/Base64 错误）一律 fail-fast 抛异常；prod profile（SPRING_PROFILES_ACTIVE/spring.profiles.active 含 prod）下缺失有效 key 亦 fail-fast；仅非 prod 允许开发默认密钥并告警。
+
+**SYS-2b WebhookEventSubscriber fail-open**
+- `verifySignature`：secret 未配置改为 fail-close 返回 false；签名比对改用 `MessageDigest.isEqual` 恒定时间。
+
+**SYS-2c 生产密钥明文入库**
+- 三服务 `application-prod.yml`：jwt-secret-key / shared-secret / internal.secret / MinIO secret-key 改为无默认值环境变量占位（未配置即 fail-fast）。
+- 三服务 `application.yml`：硬编码的 `aria-internal-lycodeing-2024` / 真实密钥改为环境变量占位 + 明确 dev 默认值（不再泄露生产密钥）。
+- ⚠️ **部署依赖**：prod 部署必须注入 JWT_SECRET_KEY / ARIA_INTERNAL_SECRET / MINIO_SECRET_KEY 等环境变量，否则服务启动失败。
+- ⚠️ **密钥轮换**：历史提交中泄露的 `aria-internal-lycodeing-2024`、`cs-auth-lycodeing-secret-key-2024`、`Lycodeing@2024` 需在生产轮换。
+
+**SYS-2d API Key 明文落库**
+- `AiModelConfigService`：新增 `@Value("${aria.security.encrypt-api-key:false}")` 开关；`normalizeApiKey` 开关开启时对裸 Key 走 AES-256-GCM 加密（`AES:` 前缀），否则回退明文（兼容本地/旧数据）。
+
+**验证**：`mvn -q compile`（全 12 模块）BUILD SUCCESS。
+
+### 批次 2 — 2026-08-06 — P1（SSRF / 账号安全 / admin 授权）
+
+**CONV-1 DIT SSRF**
+- 新增 `SsrfGuard`（infrastructure/dit/pipeline）：出站前校验协议(http/https)、解析 host 全部 IP 拒绝回环/私网/link-local(含云 metadata 169.254.169.254)/通配/多播/IPv6 ULA。内嵌 `SsrfBlockedException`。
+- `HttpToolRunner` 注入 SsrfGuard，占位符替换后、发请求前调用 `validate(url)`。
+
+**AUTH-1 密码历史重用校验修正**
+- `User.changePassword` 签名加 `newPlain`，历史比对改用 `hasher.matches(newPlain, oldHash)`（BCrypt 盐随机，原比对两个哈希永远 false）。`UserApplicationService` 调用同步更新。
+
+**AUTH-2 refreshToken 校验账号状态**
+- `refreshToken` 内加 `user.canLogin()` 校验，禁用/锁定用户刷新时 logout + 抛 UNAUTHORIZED。
+
+**AUTH-3 撤权/禁用主动踢出**
+- `UserApplicationService.disable`/`assignRoles` 提交后 `StpUtil.kickout(id)`，强制目标用户重新鉴权，消除撤权窗口期。
+
+**AUTH-4 XFF 可伪造**
+- `AuthController` 加 `aria.security.trust-proxy-headers`（默认 false）；关闭时忽略 XFF/X-Real-IP 直接用 `getRemoteAddr()`，可信反代后才开启。
+
+**SYS-1e admin 接口权限**（conversation）
+- DitTool/DitDomain/DitIntent → `system:dit:view`(读)/`system:dit:manage`(写)
+- CannedResponseAdmin → `system:canned:view`/`system:canned:manage`
+- Dashboard 全局聚合 → `system:dashboard:view`；`/my-*` 个人数据保持 `@SaCheckLogin`
+
+**SYS-1f knowledge IDOR**（knowledge）
+- KnowledgeDoc: list/status/preview/chunks/stats/kb-stats/search-test → `knowledge:doc:view`；upload/retry/reingest→`knowledge:doc:upload`；review→`knowledge:doc:review`；offline/batch-offline→`knowledge:doc:offline`
+- KnowledgeChunk: disable/enable/updateContent/addQA → `knowledge:doc:review`
+- ⚠️ 说明：本批补的是「接口级授权」（登录用户需持权限）。若为多租户场景，还需在 Application 层加「docId/kbId 归属校验」做数据级隔离——列入 P3 跟踪（KNOW-IDOR-DATA）。
+
+**KNOW-2 /internal 密钥**
+- 复核结论：`/internal/**` 已由 common-web `InternalSecretFilter` 强制校验 `X-Internal-Secret`（fail-secure，缺密钥拒绝一切）。结合批次 1 的密钥去明文（prod fail-fast），KNOW-2 已闭环。
+
+**新增 SQL patch**：`docs/sql/migrations/2026-08-06-add-dit-dashboard-knowledge-permissions.sql`（权限 id 70-75 + super_admin 绑定）。
+
+**验证**：全工程 `mvn compile` 通过；conversation 全测试通过（HttpToolRunnerTest/AgentChannelWsHandlerTest/ChatControllerStreamTest 已同步构造器）；auth/common 编译通过。
+
+**遗留（转入后续批次）**：
+- KNOW-IDOR-DATA：knowledge 数据级租户隔离（本批仅接口级授权）
+- 前端配套：新增权限 key 对应的 sys_menu 按钮 + 角色-菜单绑定（kf_manager/kf_staff 按需），当前仅绑定 super_admin

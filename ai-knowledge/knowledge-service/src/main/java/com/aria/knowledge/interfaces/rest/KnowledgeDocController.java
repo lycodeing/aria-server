@@ -12,6 +12,7 @@ import com.aria.knowledge.domain.model.KnowledgeDoc;
 import com.aria.knowledge.interfaces.rest.vo.DocListVO;
 import com.aria.knowledge.interfaces.rest.vo.DocStatusVO;
 import com.aria.knowledge.interfaces.rest.vo.DocUploadVO;
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -52,6 +53,7 @@ public class KnowledgeDocController {
 
     @Operation(summary = "分页查询文档列表")
     @GetMapping
+    @SaCheckPermission("knowledge:doc:view")
     public R<PageResult<DocListVO>> list(DocPageQuery query) {
         // keyword/kbId/status/page/size 全部由 Spring MVC 自动绑定
         // status 枚举值非法时抛 BindException，由 GlobalExceptionHandler 统一返回 400
@@ -64,6 +66,7 @@ public class KnowledgeDocController {
 
     @Operation(summary = "查询文档摄取进度")
     @GetMapping("/{docId}/status")
+    @SaCheckPermission("knowledge:doc:view")
     public R<DocStatusVO> status(@PathVariable("docId") String docId) {
         return R.ok(ingestAppService.getStatus(docId));
     }
@@ -73,6 +76,7 @@ public class KnowledgeDocController {
     @Operation(summary = "上传文档（异步处理，立即返回 202 + docId）")
     @ApiResponse(responseCode = "200", description = "文档已接收，后台处理中")
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @SaCheckPermission("knowledge:doc:upload")
     public R<DocUploadVO> upload(
             @RequestPart("file") MultipartFile file,
             @RequestParam(name = "kbId") String kbId) {
@@ -83,6 +87,7 @@ public class KnowledgeDocController {
 
     @Operation(summary = "审核文档（通过 → PUBLISHED，退回 → DRAFT）")
     @PutMapping("/{docId}/review")
+    @SaCheckPermission("knowledge:doc:review")
     public R<Void> review(@PathVariable("docId") String docId,
                           @RequestBody @Valid ReviewRequest req) {
         ingestAppService.review(docId, req.isApproved(), req.getRejectReason());
@@ -91,6 +96,7 @@ public class KnowledgeDocController {
 
     @Operation(summary = "下线文档（物理删除所有 chunk，不可恢复）")
     @DeleteMapping("/{docId}")
+    @SaCheckPermission("knowledge:doc:offline")
     public R<Void> offline(@PathVariable("docId") String docId) {
         ingestAppService.offline(docId);
         return R.ok();
@@ -98,6 +104,7 @@ public class KnowledgeDocController {
 
     @Operation(summary = "失败文档重试（FAILED → DRAFT → 重新摄取）")
     @PostMapping("/{docId}/retry")
+    @SaCheckPermission("knowledge:doc:upload")
     public R<Void> retry(@PathVariable("docId") String docId) {
         ingestAppService.retry(docId);
         return R.ok();
@@ -105,6 +112,7 @@ public class KnowledgeDocController {
 
     @Operation(summary = "已发布文档重新摄取（不改状态，幂等重跑 pipeline）")
     @PostMapping("/{docId}/reingest")
+    @SaCheckPermission("knowledge:doc:upload")
     public R<Void> reingest(@PathVariable("docId") String docId) {
         ingestAppService.reingest(docId);
         return R.ok();
@@ -112,6 +120,7 @@ public class KnowledgeDocController {
 
     @Operation(summary = "批量下线文档（最多 50 条，非 PUBLISHED 状态自动跳过）")
     @PostMapping("/batch-offline")
+    @SaCheckPermission("knowledge:doc:offline")
     public R<Void> batchOffline(@RequestBody @Valid BatchOfflineRequest req) {
         ingestAppService.batchOffline(req.getDocIds());
         return R.ok();
@@ -121,6 +130,7 @@ public class KnowledgeDocController {
 
     @Operation(summary = "预览文档原文（PDF/HTML/Markdown 直接输出字节流，前端用 iframe 渲染）")
     @GetMapping("/{docId}/preview")
+    @SaCheckPermission("knowledge:doc:view")
     public void preview(@PathVariable("docId") String docId,
                         HttpServletResponse response) throws IOException {
         KnowledgeDocQueryAppService.DocPreviewResult result = queryAppService.getPreview(docId);
@@ -136,6 +146,7 @@ public class KnowledgeDocController {
 
     @Operation(summary = "查询文档的所有 chunk 解析详情（页码、章节、类型、内容）")
     @GetMapping("/{docId}/chunks")
+    @SaCheckPermission("knowledge:doc:view")
     public R<List<ChunkVO>> chunks(@PathVariable("docId") String docId) {
         List<KnowledgeChunk> chunks = queryAppService.getChunks(docId);
         List<ChunkVO> vos = chunks.stream().map(c -> {
@@ -156,6 +167,7 @@ public class KnowledgeDocController {
 
     @Operation(summary = "查询文档 chunk 统计（总数、各类型数量、总 token）")
     @GetMapping("/{docId}/stats")
+    @SaCheckPermission("knowledge:doc:view")
     public R<DocStatsVO> stats(@PathVariable("docId") String docId) {
         var stats = queryAppService.getDocStats(docId);
         DocStatsVO vo = new DocStatsVO();
@@ -169,6 +181,7 @@ public class KnowledgeDocController {
 
     @Operation(summary = "查询指定知识库的 chunk/token 汇总统计")
     @GetMapping("/kb-stats")
+    @SaCheckPermission("knowledge:doc:view")
     public R<KbStatsVO> kbStats(@RequestParam("kbId") String kbId) {
         DocPageQuery docQuery = new DocPageQuery();
         docQuery.setKbId(kbId);
@@ -187,6 +200,7 @@ public class KnowledgeDocController {
 
     @Operation(summary = "检索测试（管理后台，返回命中 chunk 列表+分数+来源+文档元数据）")
     @PostMapping("/search-test")
+    @SaCheckPermission("knowledge:doc:view")
     public R<List<SearchHitVO>> searchTest(@RequestBody @Valid SearchTestRequest req) {
         var hits = searchAppService.managementSearch(req.getQuery(), req.getKbId(), req.getTopK());
         List<String> docIds = hits.stream()

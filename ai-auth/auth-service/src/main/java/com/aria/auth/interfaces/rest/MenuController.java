@@ -1,6 +1,7 @@
 package com.aria.auth.interfaces.rest;
 
 import cn.dev33.satoken.annotation.SaCheckLogin;
+import cn.dev33.satoken.annotation.SaCheckPermission;
 import cn.dev33.satoken.stp.StpUtil;
 import com.aria.auth.application.command.CreateMenuCommand;
 import com.aria.auth.application.command.UpdateMenuCommand;
@@ -59,6 +60,7 @@ public class MenuController {
      * @return 创建后的菜单 VO
      */
     @PostMapping
+    @SaCheckPermission("system:menu:create")
     public R<MenuAdminVO> create(@RequestBody CreateMenuCommand cmd) {
         return R.ok(menuService.create(cmd));
     }
@@ -71,6 +73,7 @@ public class MenuController {
      * @return 更新后的菜单 VO
      */
     @PutMapping("/{id}")
+    @SaCheckPermission("system:menu:update")
     public R<MenuAdminVO> update(@PathVariable Long id,
                                  @RequestBody UpdateMenuCommand cmd) {
         return R.ok(menuService.update(id, cmd));
@@ -82,6 +85,7 @@ public class MenuController {
      * @param id 菜单 ID
      */
     @DeleteMapping("/{id}")
+    @SaCheckPermission("system:menu:delete")
     public R<Void> delete(@PathVariable Long id) {
         menuService.delete(id);
         return R.ok();

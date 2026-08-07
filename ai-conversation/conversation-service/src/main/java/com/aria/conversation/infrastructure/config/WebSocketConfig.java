@@ -3,6 +3,7 @@ package com.aria.conversation.infrastructure.config;
 import com.aria.conversation.infrastructure.websocket.AgentChannelWsHandler;
 import com.aria.conversation.infrastructure.websocket.AgentHandshakeInterceptor;
 import com.aria.conversation.infrastructure.websocket.ChatWebSocketHandler;
+import com.aria.conversation.infrastructure.websocket.VisitorHandshakeInterceptor;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
@@ -37,6 +38,7 @@ public class WebSocketConfig implements WebSocketConfigurer {
     private final ChatWebSocketHandler chatWebSocketHandler;
     private final AgentChannelWsHandler agentChannelWsHandler;
     private final AgentHandshakeInterceptor agentHandshakeInterceptor;
+    private final VisitorHandshakeInterceptor visitorHandshakeInterceptor;
 
     /**
      * 访客端 WS 允许的跨域来源（访客页面可内嵌至任意站点，通常设为 *）。
@@ -59,8 +61,9 @@ public class WebSocketConfig implements WebSocketConfigurer {
         // 座席端使用独立来源白名单，与访客端解耦
         String[] agentOrigins = agentOriginsConfig.split(",\\s*");
 
-        // 访客端：开放策略（访客页面可内嵌至任意站点），不要求 token
+        // 访客端：跨域开放（访客页面可内嵌至任意站点），但握手阶段校验会话归属，防 IDOR
         registry.addHandler(chatWebSocketHandler, "/ws/chat/*")
+                .addInterceptors(visitorHandshakeInterceptor)
                 .setAllowedOrigins(allowedOrigins);
 
         // 座席端：独立来源白名单 + 握手拦截器，token 缺失时握手阶段返回 HTTP 401

@@ -42,6 +42,7 @@ public class HttpToolRunner {
 
     private final ObjectMapper objectMapper;
     private final WebClient.Builder webClientBuilder;
+    private final SsrfGuard ssrfGuard;
     /** baseUrl → WebClient 缓存，最多缓存 128 个 baseUrl，10 分钟未访问自动驱逐 */
     private final Cache<String, WebClient> clientCache = Caffeine.newBuilder()
             .maximumSize(128)
@@ -51,9 +52,11 @@ public class HttpToolRunner {
 
     public HttpToolRunner(ObjectMapper objectMapper,
                           WebClient.Builder webClientBuilder,
+                          SsrfGuard ssrfGuard,
                           List<HttpAuthStrategy> authStrategies) {
         this.objectMapper = objectMapper;
         this.webClientBuilder = webClientBuilder;
+        this.ssrfGuard = ssrfGuard;
         this.authStrategyMap = authStrategies.stream()
                 .collect(Collectors.toMap(HttpAuthStrategy::authType, s -> s));
     }
@@ -77,6 +80,9 @@ public class HttpToolRunner {
 
             // 替换 URL 占位符
             String url = replacePlaceholders(tool.urlTemplate(), params);
+
+            // SSRF 防护：URL 含用户可控槽位，出站前校验协议 + 拒绝私网/回环/link-local/metadata
+            ssrfGuard.validate(url);
 
             // 构建 WebClient
             String baseUrl = extractBaseUrl(url);
