@@ -1,10 +1,12 @@
 package com.aria.knowledge.infrastructure.mq;
 
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.core.annotation.OrderUtils;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -35,33 +37,82 @@ import java.util.List;
  */
 @Slf4j
 @Component
-@RequiredArgsConstructor
 public class DocumentIngestPipeline {
 
-    /** Spring 按 @Order 自动排序注入，保证 Handler 执行顺序 */
-    private final List<IngestHandler> handlers;
+    /**
+     * 事务边界阈值：{@code @Order} 值 &ge; 此值的 Handler 才是写 DB 步骤（PersistHandler=8、
+     * StatusUpdateHandler=9），只有它们需要包进数据库事务；阈值之前的步骤（下载/解析/切片/
+     * 向量化）为纯计算或外部 IO，不得持有 DB 连接。
+     *
+     * <p>KNOW-1 修复：原实现用方法级 {@code @Transactional} 包裹整条链，导致 EmbedHandler
+     * 发起的 BGE-M3 HTTP 调用（可能数秒）期间 DB 连接被占用不释放，高并发时连接池耗尽。
+     */
+    private static final int TX_ORDER_THRESHOLD = 8;
+
+    /** 不需要事务的前段 Handler（下载/解析/切片/向量化），按 @Order 排序 */
+    private final List<IngestHandler> prePersistHandlers = new ArrayList<>();
+    /** 需要事务的写库段 Handler（Persist/StatusUpdate），按 @Order 排序 */
+    private final List<IngestHandler> persistHandlers = new ArrayList<>();
+
+    private final TransactionTemplate transactionTemplate;
+
+    /**
+     * 按 {@code @Order} 值把注入的 Handler 划分为「事务外前段」与「事务内写库段」。
+     * Spring 已按 @Order 升序注入 {@code handlers}，此处仅按阈值分桶。
+     *
+     * @param handlers  Spring 按 @Order 自动排序注入的全部 Handler
+     * @param txManager 平台事务管理器，用于构建仅包裹写库段的 TransactionTemplate
+     */
+    public DocumentIngestPipeline(List<IngestHandler> handlers,
+                                  PlatformTransactionManager txManager) {
+        this.transactionTemplate = new TransactionTemplate(txManager);
+        for (IngestHandler handler : handlers) {
+            Integer order = OrderUtils.getOrder(handler.getClass());
+            int orderValue = order != null ? order : Integer.MAX_VALUE;
+            if (orderValue >= TX_ORDER_THRESHOLD) {
+                persistHandlers.add(handler);
+            } else {
+                prePersistHandlers.add(handler);
+            }
+        }
+    }
 
     /**
      * 执行完整摄取管道。
-     * 事务保证：任意 Handler 抛出异常时全部回滚。
-     * 任意 Handler 调用 {@link IngestContext#abort()} 时，后续 Handler 被跳过但事务正常提交。
+     *
+     * <p>事务边界：前段（下载/解析/切片/质量过滤/构建/向量化）在<b>事务外</b>执行，不占用
+     * DB 连接；写库段（Persist/StatusUpdate）在<b>单个事务</b>内执行，任一步骤抛异常则整体
+     * 回滚，由 Spring AMQP 触发 MQ 重试。前段任一 Handler {@link IngestContext#abort()}
+     * 时跳过写库段（幂等跳过/质量过滤空结果场景）。
      *
      * @param event 文档摄取事件（来自 RabbitMQ knowledge.doc.ingest.queue）
      */
-    @Transactional(rollbackFor = Exception.class)
     public void process(DocIngestEvent event) {
         log.info("[Pipeline] 开始摄取 docId={} fileType={}", event.getDocId(), event.getFileType());
 
         IngestContext ctx = IngestContext.builder().event(event).build();
 
-        for (IngestHandler handler : handlers) {
+        // 前段：事务外执行，避免长耗时向量化 HTTP 调用占用 DB 连接
+        for (IngestHandler handler : prePersistHandlers) {
             handler.handle(ctx);
             if (ctx.isAborted()) {
-                log.info("[Pipeline] 责任链在 [{}] 处中断，docId={}",
+                log.info("[Pipeline] 责任链在 [{}] 处中断，跳过写库，docId={}",
                     handler.getClass().getSimpleName(), event.getDocId());
-                break;
+                return;
             }
         }
+
+        // 写库段：单个事务内执行，保证 chunk 写入与状态更新原子性
+        transactionTemplate.executeWithoutResult(status -> {
+            for (IngestHandler handler : persistHandlers) {
+                handler.handle(ctx);
+                if (ctx.isAborted()) {
+                    log.info("[Pipeline] 写库段在 [{}] 处中断，docId={}",
+                        handler.getClass().getSimpleName(), event.getDocId());
+                    break;
+                }
+            }
+        });
 
         log.info("[Pipeline] 摄取结束 docId={}", event.getDocId());
     }

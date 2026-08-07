@@ -54,21 +54,21 @@
 | ID | 位置 | 严重度 | 问题 | 状态 |
 |---|---|---|---|---|
 | CONV-1 | `HttpToolRunner` + `SsrfGuard` | 🟠 | DIT 工具用用户可控参数拼 URL 发请求，无私网/回环/metadata 拦截 → SSRF（已加 SsrfGuard 出站校验；/test 回显收窄见 CONV-7） | ✅ |
-| CONV-2 | `AbstractWebhookSender.java:45-49` | 🟠 | webhook url/header(含签名密钥)/body 全量 INFO 明文落盘 | ⬜ |
-| CONV-3 | `ConversationHistoryRepository.java:132` | 🟠 | `initializedSessions` 无界 Set，会话过期不清理 → 长跑 OOM | ⬜ |
-| CONV-4 | `AbstractWebhookSender:86-116` | 🟠 | 自定义模板裸 `String.replace` 注入未转义 → 访客昵称可注入 webhook JSON | ⬜ |
+| CONV-2 | `AbstractWebhookSender.java:45-49` | 🟠 | webhook url/header(含签名密钥)/body 全量 INFO 明文落盘 | ✅ |
+| CONV-3 | `ConversationHistoryRepository.java:132` | 🟠 | `initializedSessions` 无界 Set，会话过期不清理 → 长跑 OOM | ✅ |
+| CONV-4 | `AbstractWebhookSender:86-116` | 🟠 | 自定义模板裸 `String.replace` 注入未转义 → 访客昵称可注入 webhook JSON | ✅ |
 | CONV-5 | `SessionQueueService`/`FaqChatAppService` | 🟠 | application 层直接依赖 infrastructure 实体，DDD 依赖倒置 | ⬜ |
 | CONV-6 | `AgentChannelWsHandler.java:120` | 🟡 | 座席 WS 消息按字符数校验，与访客端(字节数)不一致 | ✅ |
-| CONV-7 | `HttpToolRunner.java:163-196` | 🟡 | `extractByJsonPath` 失败降级回显完整上游响应 | ⬜ |
+| CONV-7 | `HttpToolRunner.java:163-196` | 🟡 | `extractByJsonPath` 失败降级回显完整上游响应 | ✅ |
 | CONV-8 | `VisitorAuthController.java:47-51` | 🟡 | 访客短信发送缺 IP 维度限流 | ⬜ |
 | CONV-9 | `KnowledgeServiceClient.java:84,42` | 🟡 | debug 打印完整 RAG 响应；内部密钥有可用默认值无启动强校验 | ⬜ |
 
 ### ai-knowledge
 | ID | 位置 | 严重度 | 问题 | 状态 |
 |---|---|---|---|---|
-| KNOW-1 | `DocumentIngestPipeline.process:51` | 🟠 | 整条摄取 pipeline 单 DB 事务内执行且中间发 Embedding HTTP → 连接池耗尽 | ⬜ |
+| KNOW-1 | `DocumentIngestPipeline.process:51` | 🟠 | 整条摄取 pipeline 单 DB 事务内执行且中间发 Embedding HTTP → 连接池耗尽 | ✅ |
 | KNOW-2 | `InternalSecretFilter`(common-web) | 🟠 | `/internal/**` 实际由 InternalSecretFilter 强制校验 X-Internal-Secret(fail-secure)；已消除默认密钥(prod fail-fast) | ✅ |
-| KNOW-3 | `DocIngestAppService.submit:87-89` | 🟠 | 上传接口缺 isEmpty/大小/扩展名白名单，未知类型回退 MARKDOWN | ⬜ |
+| KNOW-3 | `DocIngestAppService.submit:87-89` | 🟠 | 上传接口缺 isEmpty/大小/扩展名白名单，未知类型回退 MARKDOWN | ✅ |
 | KNOW-4 | `MinioStorageService`/`ZipParser` | 🟠 | 大文件全量读入内存多处放大，ZIP 累积无总量上限 | ⬜ |
 | KNOW-5 | `KnowledgeChunkMapper.xml:91-98` | 🟡 | `${tsConfig}` 字符串拼接进 SQL（当前受控，隐患） | ⬜ |
 | KNOW-6 | `DocIngestAppService.java:351-355` | 🟡 | batchOffline 循环内 N 次 findById | ⬜ |
@@ -81,10 +81,10 @@
 |---|---|---|---|---|
 | COMM-1 | `common-web/pom.xml` + `RemoteAiModelConfigProvider` | 🟠 | common-web 反向依赖 auth-client/knowledge-client 并内置 AI 配置业务 → DDD 分层倒置 | ⬜ |
 | COMM-2 | `common-client/main/java/...` | 🟠 | git 跟踪的过期重复源码树（旧 AK/SK 版 BaseClient），易误用 | ⬜ |
-| COMM-3 | `RetryInterceptor.java:28-58` | 🟠 | 对非幂等 POST/PUT 也重试且 Thread.sleep 最长阻塞 65s → 重复扣费+线程耗尽 | ⬜ |
-| COMM-4 | `AkSkSigningInterceptor.java:59-64` | 🟠 | 签名不含 query string → GET 参数可被篡改越权 | ⬜ |
-| COMM-5 | `SensitiveDataUtils.java:39-42` | 🟠 | 手机号正则无边界先于身份证执行 → 身份证漏脱敏(PII 合规红线)；邮箱未覆盖 | ⬜ |
-| COMM-6 | `IdGenerator.java:67-78` | 🟠 | workerId 缺失回退 pid%1024，容器 PID 趋同 → 雪花 ID 冲突 | ⬜ |
+| COMM-3 | `RetryInterceptor.java:28-58` | 🟠 | 对非幂等 POST/PUT 也重试且 Thread.sleep 最长阻塞 65s → 重复扣费+线程耗尽 | ✅ |
+| COMM-4 | `AkSkSigningInterceptor.java:59-64` | 🟠 | 签名不含 query string → GET 参数可被篡改越权 | ✅ |
+| COMM-5 | `SensitiveDataUtils.java:39-42` | 🟠 | 手机号正则无边界先于身份证执行 → 身份证漏脱敏(PII 合规红线)；邮箱未覆盖 | ✅ |
+| COMM-6 | `IdGenerator.java:67-78` | 🟠 | workerId 缺失回退 pid%1024，容器 PID 趋同 → 雪花 ID 冲突 | ✅ |
 | COMM-7 | `ControllerUtils.toLong:24-32` | 🟡 | 非法输入静默转 0L | ⬜ |
 | COMM-8 | `R.java:22-23` / `BusinessException:44-47` | 🟡 | 非数字 code 用 hashCode 兜底 | ⬜ |
 | COMM-9 | `SaTokenWebConfig.java:37` | 🟡 | actuator 端点 Sa-Token 层完全放行 | ⬜ |
@@ -183,3 +183,21 @@
 **遗留（转入后续批次）**：
 - KNOW-IDOR-DATA：knowledge 数据级租户隔离（本批仅接口级授权）
 - 前端配套：新增权限 key 对应的 sys_menu 按钮 + 角色-菜单绑定（kf_manager/kf_staff 按需），当前仅绑定 super_admin
+
+### 批次 3 — 2026-08-07 — P2 健壮性/资源/PII（CONV-2/3/4/7 + KNOW-1/3 + COMM-3/4/5/6）
+
+**COMM 通用库**
+- `SensitiveDataUtils`：手机号加负向环视边界、调整脱敏顺序（身份证/银行卡先于手机号）、补充邮箱脱敏，修复身份证漏脱敏（PII 合规）。
+- `IdGenerator`：workerId 增加系统属性回退 + PID 兜底告警；时钟回拨超 5s 阈值抛异常，取代无限忙等。
+- `RetryInterceptor`：仅对幂等方法（GET/HEAD/OPTIONS/PUT/DELETE）重试，429/503 尊重 Retry-After，退避封顶 + 抖动，避免非幂等 POST 重复扣费与线程长阻塞。
+- `AkSkSigningInterceptor`：签名串纳入 encodedQuery，防 GET 参数篡改越权（服务端当前无验签实现，改动不破坏现网）。
+
+**ai-conversation**
+- `AbstractWebhookSender`：请求/响应日志降级为 debug 并对 headers 脱敏（CONV-2）；新增 `renderJsonTemplate`，raw JSON 模板分支对变量值先 JSON 转义再注入，修复访客昵称 JSON 注入（CONV-4）；4 个 sender（Custom/Feishu/Dingtalk/Wecom）改为基于原始模板判断 + 转义渲染。
+- `ConversationHistoryRepository`：`initializedSessions` 由无界 Set 改为 Caffeine（maxSize=100k + 24h 过期），修复长跑内存泄漏（CONV-3）。
+
+**ai-knowledge**
+- `DocumentIngestPipeline`：去掉整链方法级 `@Transactional`，改用 `TransactionTemplate` 仅包裹写库段（@Order≥8 的 Persist/StatusUpdate），前段解析/向量化 HTTP 不再占用 DB 连接，修复连接池耗尽（KNOW-1）。
+- `DocIngestAppService.submit`：新增上传入口校验（空文件/大小上限 50MB/扩展名白名单），未知类型拒绝而非静默回退 MARKDOWN（KNOW-3）。
+
+**验证**：全工程 `mvn -q compile` 通过；conversation 352 测试全绿，common 44 测试全绿。

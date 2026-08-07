@@ -42,11 +42,19 @@ public abstract class AbstractWebhookSender implements WebhookSender {
         builder.header("Content-Type", "application/json");
         headers.forEach(builder::header);
 
-        log.info("[Webhook] 发送请求 url={} headers={} body={}", url, headers, body);
+        // 安全：不打印 url query（可能含 access_token）、header 值（可能含签名密钥）、body（含会话/访客信息）。
+        // 仅在 debug 级打印脱敏后的元信息，避免凭证与 PII 明文落盘。
+        if (log.isDebugEnabled()) {
+            log.debug("[Webhook] 发送请求 host={} headerKeys={} bodyLen={}",
+                    URI.create(url).getHost(), headers.keySet(), body != null ? body.length() : 0);
+        }
         try {
             HttpResponse<String> resp = HTTP_CLIENT.send(builder.build(),
                     HttpResponse.BodyHandlers.ofString());
-            log.info("[Webhook] 收到响应 status={} body={}", resp.statusCode(), resp.body());
+            if (log.isDebugEnabled()) {
+                log.debug("[Webhook] 收到响应 status={} bodyLen={}",
+                        resp.statusCode(), resp.body() != null ? resp.body().length() : 0);
+            }
             if (resp.statusCode() < 200 || resp.statusCode() >= 300) {
                 throw new RuntimeException("Webhook HTTP " + resp.statusCode()
                         + ": " + resp.body());
@@ -91,6 +99,27 @@ public abstract class AbstractWebhookSender implements WebhookSender {
         }
         // 数据库中存储的模板可能含字面 \n（反斜杠+n），转为真换行符以便后续 escapeJson 正确处理
         result = result.replace("\\n", "\n").replace("\\t", "\t");
+        return result;
+    }
+
+    /**
+     * 渲染 <b>原始 JSON</b> 模板（模板本身即平台 JSON 结构）。
+     *
+     * <p>与 {@link #renderTemplate} 的区别：变量值在注入前先做 {@link #escapeJson} 转义，
+     * 防止访客昵称等用户可控值中的 {@code "}、{@code \}、换行破坏/篡改 JSON 结构（JSON 注入）。
+     * 模板骨架中的字面 {@code \n}/{@code \t} 不做真换行转换，避免破坏已是合法 JSON 的模板。
+     *
+     * @param template  原始 JSON 模板（含 ${var} 占位符）
+     * @param variables 变量表
+     * @return 变量已 JSON 转义并注入后的 JSON 字符串
+     */
+    protected String renderJsonTemplate(String template,
+                                        Map<String, String> variables) {
+        String result = template;
+        for (Map.Entry<String, String> entry : variables.entrySet()) {
+            String safe = entry.getValue() == null ? "" : escapeJson(entry.getValue());
+            result = result.replace("${" + entry.getKey() + "}", safe);
+        }
         return result;
     }
 

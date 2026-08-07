@@ -49,13 +49,13 @@ public class FeishuWebhookSender extends AbstractWebhookSender {
         Map<String, String> vars = buildVariables(ctx);
 
         if (config.getMessageTemplate() != null && !config.getMessageTemplate().isBlank()) {
-            String rendered = renderTemplate(config.getMessageTemplate(), vars);
-            // 向后兼容：若模板本身是平台 JSON 则原样发送
-            if (isRawJson(rendered)) {
-                return rendered;
+            String template = config.getMessageTemplate();
+            // 向后兼容：若模板本身是平台 JSON 则原样发送（变量值经 JSON 转义防注入）
+            if (isRawJson(template)) {
+                return renderJsonTemplate(template, vars);
             }
             // 否则视为 Markdown 内容，包装为飞书交互式卡片 JSON 2.0（支持完整 Markdown 语法）
-            return wrapFeishuCard(rendered, ctx.getScope());
+            return wrapFeishuCard(renderTemplate(template, vars), ctx.getScope());
         }
         // 默认模板：WebhookDefaultTemplate 按 scope 提供 Markdown，包装为飞书卡片
         return wrapFeishuCard(WebhookDefaultTemplate.text(ctx.getScope(), vars), ctx.getScope());

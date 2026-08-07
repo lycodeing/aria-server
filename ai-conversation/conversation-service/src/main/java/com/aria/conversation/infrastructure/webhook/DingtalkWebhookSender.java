@@ -29,10 +29,12 @@ public class DingtalkWebhookSender extends AbstractWebhookSender {
         Map<String, String> vars = buildVariables(ctx);
         String body;
         if (config.getMessageTemplate() != null && !config.getMessageTemplate().isBlank()) {
-            String rendered = renderTemplate(config.getMessageTemplate(), vars);
-            if (isRawJson(rendered)) {
-                body = rendered; // 向后兼容：用户手写的平台 JSON
+            String template = config.getMessageTemplate();
+            if (isRawJson(template)) {
+                // 向后兼容：用户手写的平台 JSON；变量值经 JSON 转义注入，防 JSON 注入
+                body = renderJsonTemplate(template, vars);
             } else {
+                String rendered = renderTemplate(template, vars);
                 body = """
                         {
                           "msgtype": "markdown",
