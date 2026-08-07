@@ -217,6 +217,29 @@ class ChatControllerStreamTest {
                 .verifyComplete();
     }
 
+    @Test
+    @DisplayName("归属校验失败：返回 error 事件（无权访问）+ done 终止帧，不调用应用层")
+    void ownershipDenied_shortCircuitsWithForbiddenEnvelope() {
+        // 覆盖 IDOR 防护：非会话归属访客发消息时被拒
+        when(sessionOwnershipValidator.isOwner(anyString(), any(), any())).thenReturn(false);
+
+        Flux<ServerSentEvent<String>> stream =
+                controller.streamChat(request("s6", "查天气"), null, "other-anon-id");
+
+        StepVerifier.create(stream)
+                .assertNext(sse -> {
+                    assertThat(sse.event()).isEqualTo(ChatEvent.EventType.ERROR);
+                    try {
+                        ErrorPayload p = objectMapper.readValue(sse.data(), ErrorPayload.class);
+                        assertThat(p.message()).contains("无权访问");
+                    } catch (Exception e) {
+                        throw new AssertionError("error payload 解析失败", e);
+                    }
+                })
+                .assertNext(this::assertDoneFrame)
+                .verifyComplete();
+    }
+
     // -------------------------------------------------------
     // helpers
     // -------------------------------------------------------

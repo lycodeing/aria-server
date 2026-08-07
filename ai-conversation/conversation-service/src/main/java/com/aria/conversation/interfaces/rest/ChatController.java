@@ -195,7 +195,14 @@ public class ChatController {
      */
     @CrossOrigin(origins = "*")
     @PostMapping("/messages/feedback")
-    public R<Map<String, Object>> submitFeedback(@RequestBody @Valid FeedbackRequest req) {
+    public R<Map<String, Object>> submitFeedback(
+            @RequestBody @Valid FeedbackRequest req,
+            @RequestHeader(value = HEADER_VISITOR_TOKEN, required = false) String visitorToken,
+            @RequestHeader(value = HEADER_ANONYMOUS_ID, required = false) String anonymousId) {
+        // 归属校验：防 IDOR——枚举他人 sessionId 污染其消息反馈统计
+        if (!sessionOwnershipValidator.isOwner(req.getSessionId(), visitorToken, anonymousId)) {
+            return R.fail(403, "无权访问该会话");
+        }
         String finalValue = messageFeedbackService.submit(
                 req.getSessionId(), req.getSeq(), req.getFeedback(), null);
         // 使用 HashMap 而非 Map.of 以允许 null feedback 值（取消反馈场景）
@@ -208,7 +215,14 @@ public class ChatController {
      * 用户请求转人工。
      */
     @PostMapping("/transfer")
-    public R<SessionQueueItem> transfer(@RequestBody @Valid TransferRequest req) {
+    public R<SessionQueueItem> transfer(
+            @RequestBody @Valid TransferRequest req,
+            @RequestHeader(value = HEADER_VISITOR_TOKEN, required = false) String visitorToken,
+            @RequestHeader(value = HEADER_ANONYMOUS_ID, required = false) String anonymousId) {
+        // 归属校验：防 IDOR——枚举他人 sessionId 即可把其会话强推入人工队列并污染坐席
+        if (!sessionOwnershipValidator.isOwner(req.getSessionId(), visitorToken, anonymousId)) {
+            return R.fail(403, "无权访问该会话");
+        }
         String reason = req.getTransferReason() != null ? req.getTransferReason() : DEFAULT_TRANSFER_REASON;
         String tag = req.getTag() != null ? req.getTag() : DEFAULT_TAG;
         try {
@@ -261,9 +275,16 @@ public class ChatController {
      */
     @CrossOrigin(origins = "*")
     @PostMapping("/stream/cancel")
-    public R<Void> cancelStream(@RequestParam String sessionId) {
+    public R<Void> cancelStream(
+            @RequestParam String sessionId,
+            @RequestHeader(value = HEADER_VISITOR_TOKEN, required = false) String visitorToken,
+            @RequestHeader(value = HEADER_ANONYMOUS_ID, required = false) String anonymousId) {
         if (!SESSION_ID_PATTERN.matcher(sessionId).matches()) {
             return R.fail(400, "非法的 sessionId 格式");
+        }
+        // 归属校验：防 IDOR——枚举他人 sessionId 即可中断其正在进行的 AI 生成（逐会话骚扰）
+        if (!sessionOwnershipValidator.isOwner(sessionId, visitorToken, anonymousId)) {
+            return R.fail(403, "无权访问该会话");
         }
         chatService.cancel(sessionId);
         log.info("[Chat] 用户取消 Agent 生成 sessionId={}", sessionId);
