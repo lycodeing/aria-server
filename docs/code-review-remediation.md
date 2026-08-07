@@ -336,3 +336,18 @@
 **技术债专项（独立分支处理，非本轮范围）**：DDD 依赖倒置 CONV-5 / KNOW-9 / COMM-1 / AUTH-6；健壮性/性能 AUTH-7/8、CONV-9、KNOW-5~8、COMM-7~12。均无越权/数据损坏路径，多有现有缓解。
 
 **最终状态**：本轮从缺陷梳理 → P0/P1/P2 修复 → 6 轮评审迭代闭环，共 8 次提交。访客侧 IDOR 主题全路径（sessionId/csatId × REST+WS）闭环，授权/密钥/SSRF/认证/资源/PII 缺陷全部修复。全工程编译通过，各模块单测全绿。
+
+### 批次 6 — 2026-08-07 — OCR (Open Code Review) delegate 模式补充评审
+
+引入阿里 Open Code Review (`ocr`, v1.8.10) 以 **delegate 模式**（无需 API key，由本 agent 依 OCR 规则集执行）对本分支 50 个改动源文件做一遍**正交维度**评审——OCR 规则聚焦「拼写/命名、死代码、逻辑错误、严重性能、线程安全」，与前 7 轮的安全/IDOR 视角互补。
+
+**发现并修复 5 项（均为 🟡 建议级，无阻断）**：
+- **[逻辑/功能] `AbstractWebhookSender.escapeJson`**：原实现只转义 `\`、`\n`、`"`，遗漏 `\r`/`\t`/`\b`/`\f` 及其它控制字符（U+0000–U+001F）。含回车/制表符的访客昵称经 `renderJsonTemplate` 注入平台 JSON 后会产生**非法 JSON**，导致飞书/钉钉/企微解析失败、webhook 静默丢消息。改为逐字符转义，控制字符走 `\uXXXX`。补 CustomWebhookSenderTest 控制字符用例。
+- **[死代码] `AkSkSigningInterceptor.MAX_SKEW_MS`**：声明后全仓无引用（时钟偏移校验在服务端），删除。
+- **[死代码] `WebhookEventSubscriber.running`**：write-only 字段，改为在 `start()` 做幂等保护（已启动则跳过重复启动）真正读取该字段，消除死字段并提供实际价值。
+- **[可读性] `DocIngestAppService`**：`validateUpload` 上方遗留了描述 `resolveFileType` 的孤儿 javadoc（移动方法后残留），移回 `resolveFileType`。
+- **[性能] `DocIngestAppService.batchOffline`**：循环内 N 次 `findById`（最多 50 次单查），新增 `KnowledgeDocRepository.findByIds` 一次性 IN 查询批量取回后内存过滤 PUBLISHED，消除 N+1。
+
+**验证**：全工程 `mvn test` BUILD SUCCESS，全部测试通过（含新增 escapeJson 控制字符用例）。
+
+**OCR 评审结论**：无阻断项、无必须修项，5 项建议级已全部主动修复。OCR 从死代码/性能/健壮性维度提供了与安全评审互补的覆盖，未发现新的安全越权或数据损坏路径。

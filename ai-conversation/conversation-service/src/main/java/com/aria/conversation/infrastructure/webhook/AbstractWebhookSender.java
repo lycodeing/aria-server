@@ -123,9 +123,40 @@ public abstract class AbstractWebhookSender implements WebhookSender {
         return result;
     }
 
-    /** JSON 字符串转义：反斜杠、换行、双引号 */
+    /**
+     * JSON 字符串转义。
+     *
+     * <p>转义反斜杠、双引号，以及全部控制字符（U+0000–U+001F）：常见的 \n/\r/\t/\b/\f
+     * 用短转义序列，其余控制字符用 {@code \\u00XX}。用户可控值（如访客昵称）经
+     * {@link #renderJsonTemplate} 注入平台 JSON 前必须走此方法——否则昵称中的回车/制表符
+     * 等控制字符会产生非法 JSON，导致飞书/钉钉/企微侧解析失败、webhook 静默丢消息。
+     */
     protected static String escapeJson(String text) {
-        return text.replace("\\", "\\\\").replace("\n", "\\n").replace("\"", "\\\"");
+        if (text == null || text.isEmpty()) {
+            return text;
+        }
+        StringBuilder sb = new StringBuilder(text.length() + 16);
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            switch (c) {
+                case '\\' -> sb.append("\\\\");
+                case '"'  -> sb.append("\\\"");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                case '\b' -> sb.append("\\b");
+                case '\f' -> sb.append("\\f");
+                default -> {
+                    if (c < 0x20) {
+                        // 其余控制字符按 JSON 规范用 6 位短转义序列（反斜杠+u+4位十六进制）
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        return sb.toString();
     }
 
     /**
