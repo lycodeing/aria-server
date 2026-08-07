@@ -30,6 +30,8 @@ class VisitorAuthServiceTest {
         ReflectionTestUtils.setField(service, "codeTtlMinutes", 5L);
         ReflectionTestUtils.setField(service, "rateLimitSeconds", 60L);
         ReflectionTestUtils.setField(service, "maxAttempts", 5);
+        ReflectionTestUtils.setField(service, "ipRateWindowSeconds", 3600L);
+        ReflectionTestUtils.setField(service, "ipRateMax", 20);
     }
 
     // ------------------ verifyCode(phone, code) ------------------
@@ -138,7 +140,7 @@ class VisitorAuthServiceTest {
     @Test
     void sendCode_rateLimited_throws() {
         when(codeRepository.tryAcquireRateLimit(eq("13899999999"), anyLong())).thenReturn(false);
-        assertThatThrownBy(() -> service.sendCode("13899999999"))
+        assertThatThrownBy(() -> service.sendCode("13899999999", null))
                 .isInstanceOf(BusinessException.class)
                 .hasMessageContaining("发送过于频繁");
     }
@@ -148,11 +150,25 @@ class VisitorAuthServiceTest {
         String phone = "13800000009";
         when(codeRepository.tryAcquireRateLimit(eq(phone), anyLong())).thenReturn(true);
 
-        service.sendCode(phone);
+        service.sendCode(phone, null);
 
         ArgumentCaptor<String> codeCap = ArgumentCaptor.forClass(String.class);
         verify(codeRepository).saveCode(eq(phone), codeCap.capture(), eq(5L));
         assertThat(codeCap.getValue()).matches("^\\d{6}$");
         verify(codeRepository).resetAttempts(phone);
+    }
+
+    @Test
+    void sendCode_ipOverLimit_throwsAndSkipsSend() {
+        // CONV-8：同一 IP 窗口内累计发送超过上限时拒绝，且不再进入手机号频控与发码
+        String clientIp = "1.2.3.4";
+        when(codeRepository.incrementIpSendCount(eq(clientIp), anyLong())).thenReturn(21L);
+
+        assertThatThrownBy(() -> service.sendCode("13800000010", clientIp))
+                .isInstanceOf(BusinessException.class)
+                .hasMessageContaining("发送过于频繁");
+
+        verify(codeRepository, never()).tryAcquireRateLimit(anyString(), anyLong());
+        verify(codeRepository, never()).saveCode(anyString(), anyString(), anyLong());
     }
 }

@@ -131,9 +131,13 @@ class VisitorAuthControllerTest {
     void send_delegatesToService() {
         VisitorAuthController.SendCodeRequest req = new VisitorAuthController.SendCodeRequest();
         req.setPhone("13812345678");
+        org.springframework.mock.web.MockHttpServletRequest request =
+                new org.springframework.mock.web.MockHttpServletRequest();
+        request.setRemoteAddr("1.2.3.4");
 
-        controller.send(req);
+        controller.send(req, request);
 
-        verify(visitorAuthService).sendCode("13812345678");
+        // 服务层按 (phone, clientIp) 限流；此处校验 IP 已透传
+        verify(visitorAuthService).sendCode("13812345678", "1.2.3.4");
     }
 }

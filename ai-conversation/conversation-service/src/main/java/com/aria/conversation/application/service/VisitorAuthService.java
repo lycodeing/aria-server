@@ -53,6 +53,14 @@ public class VisitorAuthService {
     @Value("${visitor.auth.max-attempts:5}")
     private int maxAttempts;
 
+    /** 单 IP 发送计数窗口（秒），默认 1 小时 */
+    @Value("${visitor.auth.ip-rate-window-seconds:3600}")
+    private long ipRateWindowSeconds;
+
+    /** 单 IP 窗口内最大发送次数，默认 20，超出视为滥用（短信放大器/预算消耗） */
+    @Value("${visitor.auth.ip-rate-max:20}")
+    private int ipRateMax;
+
     public VisitorAuthService(VisitorCodeRepository codeRepository) {
         this.codeRepository = codeRepository;
     }
@@ -63,7 +71,17 @@ public class VisitorAuthService {
      * @param phone 11 位手机号
      * @throws BusinessException 429 发送过于频繁
      */
-    public void sendCode(String phone) {
+    public void sendCode(String phone, String clientIp) {
+        // IP 维度限流：防单 IP 轮换手机号把本服务当短信发送放大器（SMS pumping / 预算消耗）。
+        // 手机号维度限流只能阻止对单一号码轰炸，无法覆盖跨号码批量发送，故补 IP 维度上限。
+        if (clientIp != null && !clientIp.isBlank()) {
+            long ipCount = codeRepository.incrementIpSendCount(clientIp, ipRateWindowSeconds);
+            if (ipCount > ipRateMax) {
+                log.warn("[VisitorAuth] IP 发送超限 ip={} count={} max={}", clientIp, ipCount, ipRateMax);
+                throw new BusinessException(429, "发送过于频繁，请稍后再试");
+            }
+        }
+
         // 已锁定时拒绝发送：防止通过“重发”无条件清零错误计数从而绕过 10 分钟锁定
         if (codeRepository.getAttempts(phone) >= maxAttempts) {
             throw new BusinessException(423, "验证码已锁定，请 10 分钟后重新获取");

@@ -45,7 +45,7 @@
 | AUTH-2 | `AuthApplicationService.refreshToken` | 🟠 | 不校验账号状态 → 禁用/锁定用户可无限续期 | ✅ |
 | AUTH-3 | `UserApplicationService.disable/assignRoles` | 🟠 | 权限只读 token session 不回查 → 撤权/禁用无法即时生效且无踢出（已加 StpUtil.kickout 主动踢出） | ✅ |
 | AUTH-4 | `AuthController.extractIp` | 🟠 | 频控 key 基于可伪造 X-Forwarded-For → 暴力破解绕限流（已加 trust-proxy 开关，默认关闭用 remoteAddr） | ✅ |
-| AUTH-5 | 登录流程 `AuthApplicationService:79-95` | 🟡 | 用户名枚举/时序侧信道 | ⬜ |
+| AUTH-5 | 登录流程 `AuthApplicationService:79-95` | 🟡 | 用户名枚举/时序侧信道 | ✅ |
 | AUTH-6 | `AiModelConfigService`/`AdminAiModelController` | 🟡 | AI 配置贫血 DO CRUD 破坏 DDD 分层 | ⬜ |
 | AUTH-7 | 多处 `catch(Exception)` | 🟡 | 宽泛吞异常，`DataScopeAspect` 降级 SELF 影响数据可见范围 | ⬜ |
 | AUTH-8 | `AiModelConfigService:381` / `LoginRateLimiter:88` 等 | 🟡 | String.format 拼 JSON、每次 new RedisScript、getDisplayNames 无上限、do_ 命名 | ⬜ |
@@ -60,7 +60,7 @@
 | CONV-5 | `SessionQueueService`/`FaqChatAppService` | 🟠 | application 层直接依赖 infrastructure 实体，DDD 依赖倒置 | ⬜ |
 | CONV-6 | `AgentChannelWsHandler.java:120` | 🟡 | 座席 WS 消息按字符数校验，与访客端(字节数)不一致 | ✅ |
 | CONV-7 | `HttpToolRunner.java:163-196` | 🟡 | `extractByJsonPath` 失败降级回显完整上游响应 | ✅ |
-| CONV-8 | `VisitorAuthController.java:47-51` | 🟡 | 访客短信发送缺 IP 维度限流 | ⬜ |
+| CONV-8 | `VisitorAuthController.java:47-51` | 🟡 | 访客短信发送缺 IP 维度限流 | ✅ |
 | CONV-9 | `KnowledgeServiceClient.java:84,42` | 🟡 | debug 打印完整 RAG 响应；内部密钥有可用默认值无启动强校验 | ⬜ |
 
 ### ai-knowledge
@@ -302,3 +302,25 @@
 - 🟡 其余（AUTH-5/6/7/8、CONV-8/9、KNOW-5~9、COMM-7~12）：健壮性/性能/分层优化项，无安全越权或数据损坏风险，建议随日常迭代逐步消化。
 
 **收敛判定**：本轮安全整改（P0 授权越权 + 密钥 + P1 SSRF/认证 + P2 健壮性/资源/PII + IDOR 五轮闭环）已达「无 🔴 阻断项、无 🟠 安全遗漏」的收敛标准。全工程编译通过，conversation 357 测试全绿，common 44 测试全绿。
+
+### 批次 5 — 2026-08-07 — 评审循环收敛（第 1~6 轮）+ fast-follow 收口
+
+经过 6 轮迭代代码评审，逐轮修复评审发现的同源/残留问题，最终判定收敛。
+
+**评审轮次 1**：补 `ChatController.streamChat/chat` 消息发送路径归属校验（IDOR 首次遗漏）；`RetryInterceptor` 区分 429（所有方法可重试，无副作用）与 5xx（仅幂等方法）。
+
+**评审轮次 2**：补 `ChatController` 的 `/transfer`、`/stream/cancel`、`/messages/feedback` 三个同源写接口归属校验 + streamChat 归属失败负向用例。
+
+**评审轮次 3**：补 `CsatController.rate/skip`（csatId 自增可枚举，反查 sessionId 后校验归属）、`pending`（isAnonymousOwner）、`VisitorAuthController.state`（isAnonymousOwner）归属校验。新增 `CsatService.findSessionIdByCsatId`、`SessionOwnershipValidator.isAnonymousOwner`。
+
+**评审轮次 4**：收口 `VisitorAuthController.verify` 的 session→phone 绑定归属校验（防会话劫持绑定），确认访客侧 IDOR 主题（sessionId/csatId 全路径 REST+WS）完全闭环。
+
+**评审轮次 5**：修复 KNOW-4——`ZipParser` 新增累计解压总量上限（`MAX_TOTAL_BYTES=256MB`），堵住「1000 成员 × 100MB 单成员上限」的累积 OOM 缺口，与既有条目数/单成员/嵌套深度三道防线正交。补 verify 纯 token 场景单测。
+
+**评审轮次 6（fast-follow 收口）**：
+- CONV-8：`VisitorAuthService.sendCode` 新增 IP 维度限流（默认 20 次/小时，`visitor.auth.ip-rate-*` 可配），防单 IP 轮换手机号把服务当短信发送放大器（SMS pumping）。`VisitorCodeRepository.incrementIpSendCount` + Controller 传 `HttpRequestUtils.getClientIp`。
+- AUTH-5：`AuthApplicationService.login` 的 DISABLED/LOCKED 差异化文案统一为通用「账号不可用，请联系管理员」，真实原因记日志，消除账号枚举侧信道。
+
+**验证**：全工程 `mvn -q compile` 通过；conversation 359 测试全绿、knowledge 27 测试全绿、common 44 测试全绿。
+
+**最终收敛结论**：访客侧 IDOR 主题（可枚举 ID 越权读/写）已全路径闭环；P0/P1/P2 安全与稳定性缺陷全部修复。剩余 ⬜ 项为 DDD 分层依赖倒置（CONV-5/KNOW-9/COMM-1/AUTH-6）等纯架构技术债，及 AUTH-7/8、KNOW-5~8、COMM-7~12 健壮性/性能优化项——均无越权或数据损坏路径，且多有现有缓解（actuator 仅暴露 health、tsConfig 为服务端配置非用户输入等），列为独立技术债专项跟踪，不阻断上线。

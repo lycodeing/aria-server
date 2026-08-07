@@ -8,7 +8,6 @@ import com.aria.auth.application.result.TokenRefreshResult;
 import com.aria.auth.domain.model.user.PasswordHasher;
 import com.aria.auth.domain.model.user.User;
 import com.aria.auth.domain.model.user.UserId;
-import com.aria.auth.domain.model.user.UserStatus;
 import com.aria.auth.domain.repository.IUserRepository;
 import com.aria.auth.infrastructure.auth.SsoCookieWriter;
 import com.aria.auth.infrastructure.security.ratelimit.LoginRateLimiter;
@@ -80,11 +79,12 @@ public class AuthApplicationService {
                 .orElseThrow(this::invalidCredential);
 
         // 3. 校验状态
+        // AUTH-5：DISABLED/LOCKED 统一返回通用文案，不区分状态，避免泄露账号是否存在/被禁用/被锁定
+        // （差异化文案可被用于账号枚举）。真实原因记入日志供运维排查。
         if (!user.canLogin()) {
-            if (user.getStatus() == UserStatus.DISABLED) {
-                throw BusinessException.of("AUTH_ACCOUNT_DISABLED", "账号已被禁用");
-            }
-            throw BusinessException.of("AUTH_ACCOUNT_LOCKED", "账号已锁定，请稍后再试");
+            log.info("登录被拒：账号状态不可登录 username={} status={}",
+                    cmd.getUsername(), user.getStatus());
+            throw BusinessException.of("AUTH_ACCOUNT_UNAVAILABLE", "账号不可用，请联系管理员");
         }
 
         // 4. 校验密码：失败时使用 REQUIRES_NEW 独立事务记录失败计数，确保审计不丢失
