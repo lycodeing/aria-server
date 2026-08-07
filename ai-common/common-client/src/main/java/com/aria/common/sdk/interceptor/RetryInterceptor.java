@@ -13,8 +13,14 @@ import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * 指数退避重试拦截器。
- * <p>仅对<b>幂等</b>方法（GET/HEAD/OPTIONS/PUT/DELETE）的 HTTP 429（限流）和 5xx（服务端错误）
- * 自动重试，最多 maxRetries 次；POST/PATCH 等非幂等方法不重试，避免重复下单/重复扣费。
+ * <p>重试策略按状态码区分幂等性要求：
+ * <ul>
+ *   <li><b>HTTP 429（限流）</b>：对<b>所有</b>方法重试。429 表示服务端<b>未处理</b>该请求
+ *       （无副作用），POST/PATCH 等写操作重试是安全且必要的——LLM/Embedding 等 POST 调用
+ *       遇限流应退避重试而非直接失败，否则削弱链路可用性。</li>
+ *   <li><b>HTTP 5xx（服务端错误）</b>：仅对<b>幂等</b>方法（GET/HEAD/OPTIONS/PUT/DELETE）重试。
+ *       5xx 下请求可能已被部分处理，重试非幂等 POST/PATCH 有重复下单/重复扣费风险。</li>
+ * </ul>
  * <p>退避间隔：指数退避 + 随机抖动，单次上限 {@value #MAX_DELAY_MS}ms；
  * 若响应带 {@code Retry-After} 头则优先尊重（同样受上限约束）。
  */
@@ -42,13 +48,8 @@ public class RetryInterceptor implements Interceptor {
         Request request = chain.request();
         Response response = chain.proceed(request);
 
-        // 非幂等方法（POST/PATCH 等）不重试，避免副作用被重复执行
-        if (!IDEMPOTENT_METHODS.contains(request.method().toUpperCase())) {
-            return response;
-        }
-
         int attempt = 0;
-        while (shouldRetry(response.code()) && attempt < maxRetries) {
+        while (shouldRetry(request, response.code()) && attempt < maxRetries) {
             long delayMs = resolveDelay(response, attempt);
             log.warn("请求失败 HTTP {}，{}ms 后重试 ({}/{})，method={} url={}",
                     response.code(), delayMs, attempt + 1, maxRetries,
@@ -66,8 +67,21 @@ public class RetryInterceptor implements Interceptor {
         return response;
     }
 
-    private boolean shouldRetry(int statusCode) {
-        return statusCode == 429 || statusCode >= 500;
+    /**
+     * 判断是否应重试。
+     * <ul>
+     *   <li>429：对所有方法重试（服务端未处理请求，无副作用）；</li>
+     *   <li>5xx：仅对幂等方法重试（非幂等 POST/PATCH 可能已被部分处理，重试有副作用风险）。</li>
+     * </ul>
+     */
+    private boolean shouldRetry(Request request, int statusCode) {
+        if (statusCode == 429) {
+            return true;
+        }
+        if (statusCode >= 500) {
+            return IDEMPOTENT_METHODS.contains(request.method().toUpperCase());
+        }
+        return false;
     }
 
     /**
