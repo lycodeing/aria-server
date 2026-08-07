@@ -29,6 +29,7 @@ public class VisitorCodeRepository {
 
     private static final String KEY_CODE         = "visitor:sms:";
     private static final String KEY_RATE         = "visitor:sms:rate:";
+    private static final String KEY_IP_RATE      = "visitor:sms:iprate:";
     private static final String KEY_ATTEMPTS     = "visitor:sms:attempts:";
     private static final String KEY_TOKEN        = "visitor:token:";
     private static final String KEY_SESSION_AUTH = "visitor:session:auth:";
@@ -69,6 +70,20 @@ public class VisitorCodeRepository {
      */
     public boolean tryAcquireRateLimit(String phone, long rateLimitSeconds) {
         return counter.firstAccess(KEY_RATE + phone, Duration.ofSeconds(rateLimitSeconds));
+    }
+
+    /**
+     * 按 IP 维度累加发送计数并返回窗口内累计值。
+     *
+     * <p>防御「单 IP 轮换手机号，把本服务当短信发送放大器」的滥用（SMS pumping / 预算消耗）：
+     * 手机号维度限流只能阻止对单一号码的轰炸，无法阻止跨号码的批量发送，故补 IP 维度上限。
+     *
+     * @param clientIp     客户端 IP
+     * @param windowSeconds 计数窗口长度（秒）
+     * @return 窗口内该 IP 的累计发送次数（含本次）
+     */
+    public long incrementIpSendCount(String clientIp, long windowSeconds) {
+        return counter.increment(KEY_IP_RATE + clientIp, Duration.ofSeconds(windowSeconds));
     }
 
     // ----------------------------------------------------------------

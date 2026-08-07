@@ -51,8 +51,11 @@ public class VisitorAuthController {
      * <p>60s 内同一手机号只能发送 1 次；验证码有效期 5 分钟。
      */
     @PostMapping("/sms/send")
-    public R<Void> send(@RequestBody @Valid SendCodeRequest req) {
-        visitorAuthService.sendCode(req.getPhone());
+    public R<Void> send(@RequestBody @Valid SendCodeRequest req,
+                        jakarta.servlet.http.HttpServletRequest request) {
+        // CONV-8：传入客户端 IP，服务层按 IP 维度限流，防单 IP 轮换手机号滥用短信发送
+        String clientIp = com.aria.common.web.util.HttpRequestUtils.getClientIp(request);
+        visitorAuthService.sendCode(req.getPhone(), clientIp);
         return R.ok();
     }
 
