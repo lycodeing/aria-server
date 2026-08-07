@@ -6,6 +6,8 @@ import com.aria.common.web.redis.RedisLockHelper;
 import com.aria.conversation.domain.ConversationMessage;
 import com.aria.conversation.infrastructure.mq.ConversationMessagePublisher;
 import com.aria.conversation.infrastructure.persistence.mapper.ConversationMessageMapper;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;
@@ -17,7 +19,6 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 对话历史 Repository。
@@ -128,8 +129,14 @@ public class ConversationHistoryRepository {
      * <p>优化目标：热路径（Redis key 已存在）跳过 DB 查询，只有冷路径（首次或 TTL 过期）才查 DB。
      * <p>Redis TTL 过期检测：若 Lua INCR 返回 1 且本地标记为已初始化，说明 Redis key 已过期重建，
      * 此时清除标记并用 DB max 重新修正基准值，防止 seq 从 1 重新开始与 DB 已有记录冲突。
+     *
+     * <p>用有界 Caffeine 缓存（24h 过期，与 Redis seq key TTL 对齐 + 最大 10 万条上限）替代
+     * 无界 Set，防止会话过期后本地标记永不清理导致的堆内存单调增长（OOM）。
      */
-    private final Set<String> initializedSessions = ConcurrentHashMap.newKeySet();
+    private final Cache<String, Boolean> initializedSessions = Caffeine.newBuilder()
+            .maximumSize(100_000)
+            .expireAfterWrite(Duration.ofHours(TTL_HOURS))
+            .build();
 
     /**
      * 生成 session 内的下一个单调递增 seq（Redis Lua 原子 INCR + DB 兜底）。
@@ -142,7 +149,7 @@ public class ConversationHistoryRepository {
      */
     public long nextSeq(String sessionId) {
         String key = SEQ_KEY_PREFIX + sessionId;
-        boolean alreadyInitialized = initializedSessions.contains(sessionId);
+        boolean alreadyInitialized = initializedSessions.getIfPresent(sessionId) != null;
 
         // 冷路径：首次访问，查 DB 获取基准值
         long seq = coldPathInitSeq(key, sessionId, alreadyInitialized);
@@ -166,7 +173,7 @@ public class ConversationHistoryRepository {
     private long coldPathInitSeq(String key, String sessionId, boolean alreadyInitialized) {
         long dbMaxBaseline = alreadyInitialized ? 0L : messageMapper.selectMaxSeq(sessionId);  // 冷路径：查 DB 作为初始基准，热路径跳过
         if (!alreadyInitialized) {
-            initializedSessions.add(sessionId);
+            initializedSessions.put(sessionId, Boolean.TRUE);
         }
 
         Long seq = lockHelper.executeLua(
@@ -338,7 +345,7 @@ public class ConversationHistoryRepository {
     public void delete(String sessionId) {
         cache.delete(KEY_PREFIX + sessionId);
         // 同步清理本地初始化标记，下次 nextSeq 时重新从 DB 获取基准值
-        initializedSessions.remove(sessionId);
+        initializedSessions.invalidate(sessionId);
     }
 
     // -------------------------------------------------------

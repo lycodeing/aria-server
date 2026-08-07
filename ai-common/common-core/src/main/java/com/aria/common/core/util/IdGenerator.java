@@ -22,6 +22,9 @@ public final class IdGenerator {
     private static final long WORKER_ID_SHIFT   = SEQUENCE_BITS;
     private static final long TIMESTAMP_SHIFT   = SEQUENCE_BITS + WORKER_ID_BITS;
 
+    /** 可容忍的最大时钟回拨（毫秒）；超过则抛异常而非无限忙等 */
+    private static final long MAX_BACKWARD_MS = 5000L;
+
     private static final long WORKER_ID = initWorkerId();
 
     /** 普通 long 字段，由 synchronized 保证线程安全，无需 AtomicLong */
@@ -51,7 +54,13 @@ public final class IdGenerator {
                 sequence = 0L;
             }
         } else {
-            // 时钟回拨：忙等到追上，保证 ID 单调递增
+            // 时钟回拨：小幅回拨（≤ MAX_BACKWARD_MS）容忍，忙等到追上；
+            // 超过阈值直接抛异常，避免无限忙等挂死整个 ID 生成（进而阻塞所有写入）。
+            long offset = lastTimestamp - timestamp;
+            if (offset > MAX_BACKWARD_MS) {
+                throw new IllegalStateException(
+                        "时钟回拨过大，拒绝生成 ID：回拨 " + offset + "ms（阈值 " + MAX_BACKWARD_MS + "ms）");
+            }
             while (timestamp <= lastTimestamp) {
                 timestamp = System.currentTimeMillis();
             }
@@ -65,14 +74,25 @@ public final class IdGenerator {
     }
 
     private static long initWorkerId() {
-        String env = System.getenv("WORKER_ID");
-        if (env != null) {
-            try {
-                long id = Long.parseLong(env);
-                if (id >= 0 && id <= MAX_WORKER_ID) return id;
-            } catch (NumberFormatException ignored) {}
+        // 优先环境变量 WORKER_ID，其次系统属性 worker.id，显式配置才可保证多实例不冲突
+        String configured = System.getenv("WORKER_ID");
+        if (configured == null || configured.isBlank()) {
+            configured = System.getProperty("worker.id");
         }
-        // 默认用 PID 取模
+        if (configured != null && !configured.isBlank()) {
+            try {
+                long id = Long.parseLong(configured.trim());
+                if (id >= 0 && id <= MAX_WORKER_ID) return id;
+                System.err.println("[IdGenerator] WORKER_ID 超出范围 [0," + MAX_WORKER_ID
+                        + "]，回退 PID 取模，多实例存在 ID 冲突风险: " + configured);
+            } catch (NumberFormatException e) {
+                System.err.println("[IdGenerator] WORKER_ID 非法，回退 PID 取模，多实例存在 ID 冲突风险: " + configured);
+            }
+        } else {
+            // 未显式配置：PID 取模仅为单机兜底，多实例/容器化部署 PID 高度趋同，
+            // 存在 workerId 碰撞进而 ID 重复的风险，务必在部署时通过 WORKER_ID 显式分配。
+            System.err.println("[IdGenerator] 未配置 WORKER_ID，回退 PID 取模；多实例部署请务必显式设置 WORKER_ID 以避免 ID 冲突");
+        }
         long pid = ProcessHandle.current().pid();
         return pid % (MAX_WORKER_ID + 1);
     }

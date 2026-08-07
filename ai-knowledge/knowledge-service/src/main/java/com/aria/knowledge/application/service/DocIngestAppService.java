@@ -59,6 +59,17 @@ public class DocIngestAppService {
     /** 上传响应初始状态 */
     private static final String UPLOAD_STATUS_PENDING   = "PENDING";
 
+    /**
+     * 允许上传的文件扩展名白名单（小写，含点）。未命中的扩展名一律拒绝，
+     * 避免未知类型被静默回退为 MARKDOWN 后进入异步管道浪费存储与 MQ 资源。
+     */
+    private static final java.util.Set<String> ALLOWED_EXTENSIONS = java.util.Set.of(
+        ".pdf", ".html", ".htm", ".docx", ".zip", ".md", ".txt");
+
+    /** 单文件大小上限（字节），默认 50MB，与 spring.servlet.multipart.max-file-size 对齐 */
+    @org.springframework.beans.factory.annotation.Value("${knowledge.upload.max-file-bytes:52428800}")
+    private long maxFileBytes;
+
     private final KnowledgeDocRepository   docRepository;
     private final KnowledgeChunkRepository chunkRepository;
     private final DocIngestPublisher       publisher;
@@ -85,6 +96,8 @@ public class DocIngestAppService {
      */
     @Transactional(rollbackFor = Exception.class)
     public DocUploadVO submit(MultipartFile file, String kbId) {
+        // KNOW-3：上传入口校验——空文件、大小上限、扩展名白名单，拒绝未知类型
+        validateUpload(file);
         String docId    = String.valueOf(IdGenerator.nextId());
         String fileType = resolveFileType(file.getOriginalFilename());
     
@@ -374,6 +387,35 @@ public class DocIngestAppService {
      *   <li>文件后缀 → PDF / HTML / DOCX / ZIP / MARKDOWN（委托 {@link FileTypeResolver}）</li>
      * </ol>
      */
+    /**
+     * 上传入口校验（KNOW-3）：拒绝空文件、超限文件、扩展名不在白名单的文件。
+     *
+     * <p>扩展名白名单基于文件名后缀（大小写不敏感），未知类型直接拒绝，
+     * 不再静默回退为 MARKDOWN 进入异步管道，避免浪费存储与 MQ 资源、以及解析垃圾内容。
+     *
+     * @param file 上传的文件
+     * @throws BusinessException 400 校验不通过
+     */
+    private void validateUpload(MultipartFile file) {
+        if (file == null || file.isEmpty()) {
+            throw new BusinessException(ERROR_BAD_REQUEST, "上传文件不能为空");
+        }
+        if (file.getSize() > maxFileBytes) {
+            throw new BusinessException(ERROR_BAD_REQUEST,
+                "文件大小超过上限：" + (maxFileBytes / 1024 / 1024) + "MB");
+        }
+        String fileName = file.getOriginalFilename();
+        if (fileName == null || fileName.isBlank()) {
+            throw new BusinessException(ERROR_BAD_REQUEST, "文件名不能为空");
+        }
+        String lower = fileName.toLowerCase();
+        boolean allowed = ALLOWED_EXTENSIONS.stream().anyMatch(lower::endsWith);
+        if (!allowed) {
+            throw new BusinessException(ERROR_BAD_REQUEST,
+                "不支持的文件类型，仅允许：" + ALLOWED_EXTENSIONS);
+        }
+    }
+
     private String resolveFileType(String fileName) {
         if (fileName == null) {
             return FILE_TYPE_MARKDOWN;

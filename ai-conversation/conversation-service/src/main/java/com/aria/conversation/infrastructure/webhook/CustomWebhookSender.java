@@ -33,11 +33,12 @@ public class CustomWebhookSender extends AbstractWebhookSender {
     String buildRequestBody(WebhookConfigEntity config, WebhookEventContext ctx) {
         Map<String, String> vars = buildVariables(ctx);
         if (config.getMessageTemplate() != null && !config.getMessageTemplate().isBlank()) {
-            String rendered = renderTemplate(config.getMessageTemplate(), vars);
-            if (isRawJson(rendered)) {
-                return rendered; // 向后兼容：用户手写的原始 JSON 请求体
+            String template = config.getMessageTemplate();
+            if (isRawJson(template)) {
+                // 向后兼容：用户手写的原始 JSON 请求体；变量值需 JSON 转义防注入
+                return renderJsonTemplate(template, vars);
             }
-            return "{\"message\":\"" + escapeJson(rendered) + "\"}";
+            return "{\"message\":\"" + escapeJson(renderTemplate(template, vars)) + "\"}";
         }
         return "{\"message\":\"" + escapeJson(WebhookDefaultTemplate.text(ctx.getScope(), vars)) + "\"}";
     }

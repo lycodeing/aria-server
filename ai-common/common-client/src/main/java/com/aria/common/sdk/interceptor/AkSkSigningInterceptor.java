@@ -58,10 +58,12 @@ public class AkSkSigningInterceptor implements Interceptor {
         String method = original.method().toUpperCase();
         HttpUrl url = original.url();
         String path = url.encodedPath();
+        // 将 query 纳入签名，防止 GET 查询参数（如 ?userId=1→2）被中间人篡改而签名仍有效
+        String query = url.encodedQuery() != null ? url.encodedQuery() : "";
         String bodyHash = sha256Hex(okhttpBody(original));
 
         String stringToSign = String.join("\n",
-                accessKey, String.valueOf(timestamp), nonce, method, path, bodyHash);
+                accessKey, String.valueOf(timestamp), nonce, method, path, query, bodyHash);
 
         // HMAC-SHA256 签名
         String signature = hmacSha256(secretKey, stringToSign);
