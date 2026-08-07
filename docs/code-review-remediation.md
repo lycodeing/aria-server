@@ -80,7 +80,7 @@
 | ID | 位置 | 严重度 | 问题 | 状态 |
 |---|---|---|---|---|
 | COMM-1 | `common-web/pom.xml` + `RemoteAiModelConfigProvider` | 🟠 | common-web 反向依赖 auth-client/knowledge-client 并内置 AI 配置业务 → DDD 分层倒置 | ⬜ |
-| COMM-2 | `common-client/main/java/...` | 🟠 | git 跟踪的过期重复源码树（旧 AK/SK 版 BaseClient），易误用 | ⬜ |
+| COMM-2 | `common-client/main/java/...` | 🟠 | git 跟踪的过期重复源码树（旧 AK/SK 版 BaseClient），易误用 | ✅ |
 | COMM-3 | `RetryInterceptor.java:28-58` | 🟠 | 对非幂等 POST/PUT 也重试且 Thread.sleep 最长阻塞 65s → 重复扣费+线程耗尽 | ✅ |
 | COMM-4 | `AkSkSigningInterceptor.java:59-64` | 🟠 | 签名不含 query string → GET 参数可被篡改越权 | ✅ |
 | COMM-5 | `SensitiveDataUtils.java:39-42` | 🟠 | 手机号正则无边界先于身份证执行 → 身份证漏脱敏(PII 合规红线)；邮箱未覆盖 | ✅ |
@@ -201,3 +201,16 @@
 - `DocIngestAppService.submit`：新增上传入口校验（空文件/大小上限 50MB/扩展名白名单），未知类型拒绝而非静默回退 MARKDOWN（KNOW-3）。
 
 **验证**：全工程 `mvn -q compile` 通过；conversation 352 测试全绿，common 44 测试全绿。
+
+### 批次 4 — 2026-08-07 — P3 死代码清理 + DDD 暂缓说明
+
+**COMM-2 死代码清理（已修复）**
+- 删除 `ai-common/common-client/main/java/**` 整棵重复源码树（旧 AK/SK 版 BaseClient/RetryInterceptor/WebhookEventSubscriber 等 9 文件）。该目录不在 Maven 构建路径（pom 用默认 `src/main/java`），属 git 误跟踪的过期副本，易被误改误用。真实活代码在 `src/main/java`，本轮 SYS-2b（WebhookEventSubscriber fail-close）修的即活代码那份，已确认保留。
+- 验证：全工程 `mvn -q compile` 通过。
+
+**DDD 依赖倒置（CONV-5 / KNOW-9 / AUTH-6 / COMM-1）— 本轮暂缓**
+- 结论：不纳入本安全整改轮次。理由：①这四项评审定位为「分层泄漏 / 贫血模型」，属架构演进项，非功能或安全缺陷，不阻断上线；②整改需反转 application↔infrastructure 依赖方向、引入端口接口并迁移实体，跨多文件大重构，回归风险高；③在以安全修复为主的批次里夹带高风险重构，违背「小步可回滚」原则。
+- 建议：作为独立技术债专项另起分支处理，配套补充分层单测后再动。已在本文档保留 ⬜ 状态持续跟踪。
+
+**其余 🟡（COMM-7 等）**
+- COMM-7（ControllerUtils.toLong 非法输入返回 0L）：现有 Javadoc 明确其为「避免 500 的容错降级」设计，`getCurrentUserId` 侧已有 null 分支兜底。贸然改为抛异常可能破坏 dashboard/stats 的降级路径，暂维持现状并保留跟踪，留待 DDD 专项一并评估。
