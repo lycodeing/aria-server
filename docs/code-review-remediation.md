@@ -214,3 +214,23 @@
 
 **其余 🟡（COMM-7 等）**
 - COMM-7（ControllerUtils.toLong 非法输入返回 0L）：现有 Javadoc 明确其为「避免 500 的容错降级」设计，`getCurrentUserId` 侧已有 null 分支兜底。贸然改为抛异常可能破坏 dashboard/stats 的降级路径，暂维持现状并保留跟踪，留待 DDD 专项一并评估。
+
+### 评审轮次 1 — 2026-08-07 — 复审发现修复（消息写路径 IDOR + POST 429 重试）
+
+代码评审子代理对 P1/P2/P3 三批提交做全量复审，**无 🔴 阻断项**，核心修复（授权/密钥/SSRF/密码/webhook/事务）全部确认正确。发现 2 个 🟠 一致性/遗漏问题，已修复：
+
+**🟠#1 消息发送路径 IDOR 遗漏（已修复）— 补齐 SYS-1c 闭环**
+- 问题：P0-2 只给 `/history`、`DELETE /history`、`/state` 三个读接口加了归属校验，但访客发消息的 `POST /stream`、`POST /`（chat）仍只做 sessionId 格式校验。攻击者枚举他人 sessionId 后仍可向其会话注入消息并接收 AI 回复——比读历史更敏感的写越权。
+- 修复：`ChatController.streamChat` / `chat` 同样注入 `X-Visitor-Token`/`X-Anonymous-Id` 头 + `sessionOwnershipValidator.isOwner` 校验，失败返回 error 帧 / 403。会话由前端先经 `/session/init` 建立（DB 已记 visitorId），此处对已存在会话强制校验。
+- 测试：`ChatControllerStreamTest` 6 用例同步更新签名 + lenient stub，全绿。
+
+**🟠#2 RetryInterceptor 对 POST 429 一刀切拒绝重试（已修复）**
+- 问题：原实现对所有非幂等方法（含 POST）直接不重试。但 LLM chat completions、BGE-M3 embed 均为 POST，且 HTTP 429 表示服务端**未处理**请求（无副作用），此时不重试会使限流即失败，削弱摄取/对话链路可用性。
+- 修复：`shouldRetry(request, code)` 区分状态码——429 对所有方法放行重试（尊重 Retry-After）；5xx 仍仅对幂等方法（GET/HEAD/OPTIONS/PUT/DELETE）重试，保留防重复扣费语义。
+
+**🟠 残留风险（文档标注 + 部署约定，不阻断合并）**
+- **#3 EncryptUtils prod 判定**：仅读系统属性/环境变量 `SPRING_PROFILES_ACTIVE`。**部署约定：生产必须通过环境变量激活 prod profile**，不可仅在 application.yml 写 `spring.profiles.active: prod`（Spring 不会回写同名系统属性，会导致 fail-fast 失效回退开发密钥）。本地/测试无此变量走告警回退，不影响启动。
+- **#4 SsrfGuard DNS rebinding 残留**：`validate()` 解析并校验所有 IP，但 WebClient 连接时会二次独立解析，短 TTL DNS 可在校验后重绑到内网 IP（TOCTOU）。彻底方案需 pin 校验通过的 IP 或出站代理二次拦截；当前已覆盖直接的私网/metadata 访问，rebinding 属已知残留，列入后续跟踪。
+- **#5 AkSkSigningInterceptor 签名含 query 是破坏性变更**：任何验签方须在同一位置纳入 query。经确认当前生产走 SHARED_SECRET 模式、服务端无 Ak/Sk 验签实现，改动不破坏现网；若未来启用 Ak/Sk 验签，需 lockstep 同步签名串格式。
+
+**验证**：全工程 `mvn compile` 通过；conversation 352 测试全绿，common 全绿。

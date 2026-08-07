@@ -22,6 +22,7 @@ import reactor.test.StepVerifier;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 /**
@@ -56,6 +57,8 @@ class ChatControllerStreamTest {
     void setUp() {
         controller = new ChatController(chatService, messageFeedbackService,
                 sessionOwnershipValidator, objectMapper);
+        // 归属校验默认放行，聚焦 wire format 契约；非法 sessionId/空消息用例在校验前已短路，故用 lenient
+        lenient().when(sessionOwnershipValidator.isOwner(anyString(), any(), any())).thenReturn(true);
     }
 
     // -------------------------------------------------------
@@ -72,7 +75,7 @@ class ChatControllerStreamTest {
                         ChatEvent.token("实时天气", objectMapper),
                         ChatEvent.token("\n\n", objectMapper)));
 
-        Flux<ServerSentEvent<String>> stream = controller.streamChat(request("s1", "查天气"));
+        Flux<ServerSentEvent<String>> stream = controller.streamChat(request("s1", "查天气"), null, null);
 
         StepVerifier.create(stream)
                 .assertNext(sse -> {
@@ -101,7 +104,7 @@ class ChatControllerStreamTest {
         when(chatService.stream(anyString(), anyString(), any(), any()))
                 .thenReturn(Flux.just(ChatEvent.transfer(payload)));
 
-        Flux<ServerSentEvent<String>> stream = controller.streamChat(request("s2", "转人工"));
+        Flux<ServerSentEvent<String>> stream = controller.streamChat(request("s2", "转人工"), null, null);
 
         StepVerifier.create(stream)
                 .assertNext(sse -> {
@@ -130,7 +133,7 @@ class ChatControllerStreamTest {
                         ChatEvent.toolCall(callJson),
                         ChatEvent.toolDone(doneJson)));
 
-        Flux<ServerSentEvent<String>> stream = controller.streamChat(request("s3", "查询天气"));
+        Flux<ServerSentEvent<String>> stream = controller.streamChat(request("s3", "查询天气"), null, null);
 
         StepVerifier.create(stream)
                 .assertNext(sse -> {
@@ -164,7 +167,7 @@ class ChatControllerStreamTest {
         when(chatService.stream(anyString(), anyString(), any(), any()))
                 .thenReturn(Flux.just(ChatEvent.error("上游服务异常", objectMapper)));
 
-        Flux<ServerSentEvent<String>> stream = controller.streamChat(request("s4", "hi"));
+        Flux<ServerSentEvent<String>> stream = controller.streamChat(request("s4", "hi"), null, null);
 
         StepVerifier.create(stream)
                 .assertNext(sse -> {
@@ -188,7 +191,7 @@ class ChatControllerStreamTest {
     @DisplayName("非法 sessionId：直接返回 error 事件（JSON 信封）+ done 终止帧，不调用应用层")
     void invalidSessionId_shortCircuitsWithErrorEnvelope() {
         Flux<ServerSentEvent<String>> stream =
-                controller.streamChat(request("bad sid!", "问题"));
+                controller.streamChat(request("bad sid!", "问题"), null, null);
 
         StepVerifier.create(stream)
                 .assertNext(sse -> {
@@ -207,7 +210,7 @@ class ChatControllerStreamTest {
     @Test
     @DisplayName("空消息：直接返回 done 终止帧，不调用应用层")
     void blankMessage_returnsOnlyDoneFrame() {
-        Flux<ServerSentEvent<String>> stream = controller.streamChat(request("s5", "   "));
+        Flux<ServerSentEvent<String>> stream = controller.streamChat(request("s5", "   "), null, null);
 
         StepVerifier.create(stream)
                 .assertNext(this::assertDoneFrame)

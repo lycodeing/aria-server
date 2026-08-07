@@ -78,7 +78,10 @@ public class ChatController {
      */
     @CrossOrigin(origins = "*")
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> streamChat(@RequestBody ChatRequest req) {
+    public Flux<ServerSentEvent<String>> streamChat(
+            @RequestBody ChatRequest req,
+            @RequestHeader(value = HEADER_VISITOR_TOKEN, required = false) String visitorToken,
+            @RequestHeader(value = HEADER_ANONYMOUS_ID, required = false) String anonymousId) {
         if (req.getMessage() == null || req.getMessage().isBlank()) {
             return doneStream();
         }
@@ -87,6 +90,14 @@ public class ChatController {
             // 与业务错误一致：走 ChatEvent.error 保证 data 是 {"message":"..."} JSON 信封
             return Flux.concat(
                     Flux.just(toSse(ChatEvent.error("非法的 sessionId 格式", objectMapper))),
+                    doneStream()
+            );
+        }
+        // 归属校验：防 IDOR——拿到/枚举他人 sessionId 后向其会话注入消息并接收 AI 回复。
+        // 会话由前端先经 /session/init 建立（DB 已记录 visitorId），此处对已存在会话强制校验。
+        if (!sessionOwnershipValidator.isOwner(sessionId, visitorToken, anonymousId)) {
+            return Flux.concat(
+                    Flux.just(toSse(ChatEvent.error("无权访问该会话", objectMapper))),
                     doneStream()
             );
         }
@@ -102,13 +113,20 @@ public class ChatController {
      */
     @CrossOrigin(origins = "*")
     @PostMapping
-    public R<Map<String, String>> chat(@RequestBody ChatRequest req) {
+    public R<Map<String, String>> chat(
+            @RequestBody ChatRequest req,
+            @RequestHeader(value = HEADER_VISITOR_TOKEN, required = false) String visitorToken,
+            @RequestHeader(value = HEADER_ANONYMOUS_ID, required = false) String anonymousId) {
         if (req.getMessage() == null || req.getMessage().isBlank()) {
             return R.fail(400, "消息内容不能为空");
         }
         String sessionId = resolveSessionId(req.getSessionId());
         if (sessionId == null) {
             return R.fail(400, "非法的 sessionId 格式");
+        }
+        // 归属校验：防 IDOR——防止拿到/枚举他人 sessionId 后向其会话注入消息。
+        if (!sessionOwnershipValidator.isOwner(sessionId, visitorToken, anonymousId)) {
+            return R.fail(403, "无权访问该会话");
         }
         String reply = chatService.chat(sessionId, req.getMessage());
         return R.ok(Map.of("reply", reply, "sessionId", sessionId));
