@@ -249,3 +249,22 @@
 **验证**：全工程编译通过；conversation 353 测试全绿。
 
 ⚠️ **前端联调约定**：`/stream`、`POST /`、`/transfer`、`/stream/cancel`、`/messages/feedback` 现均强制归属校验，前端所有访客写请求必须携带 `X-Anonymous-Id`（匿名）或 `X-Visitor-Token`（已短信认证）头，否则被 403 拒绝。上线前须确认 chat-widget 已在这些请求附带对应头。
+
+### 复审轮次 3 — 2026-08-07 — CSAT/VisitorAuth 同源 IDOR 闭环
+
+第三轮评审发现 IDOR 主题在 ChatController 之外仍有同源遗漏，本轮补齐：
+
+**CsatController（rate/skip 写 + pending 读）**
+- `rate`/`skip`：csatId 自增可枚举，新增 `X-Visitor-Token`/`X-Anonymous-Id` 头 + `isCsatOwner`（先经 `CsatService.findSessionIdByCsatId` 反查 sessionId，再 `isOwner` 校验归属），阻止攻击者为他人评价记录提交任意分数/评论并污染 CSAT 统计与下游 webhook；归属失败返回 403。
+- `pending`：刷新恢复场景，新增 `X-Anonymous-Id` 头 + `isAnonymousOwner` 校验，防枚举 sessionId 探测他人评价邀请。
+- `CsatService` 新增 `findSessionIdByCsatId(csatId)` 供归属反查。
+
+**VisitorAuthController.state（读，含 PII）**
+- 泄露 `phoneMask`（部分手机号）+ 认证状态，新增 `X-Anonymous-Id` 头 + `isAnonymousOwner` 校验，防枚举 sessionId 探测他人认证状态与手机号掩码。用 anonymousId 分支（非 token）校验，兼容"刷新丢 token 但 localStorage 仍有 anonymousId"的合法场景。
+
+**SessionOwnershipValidator**
+- 新增 `isAnonymousOwner(sessionId, anonymousId)`：仅以 anonymousId==DB visitorId 判定归属，供刷新恢复类只读接口复用；原 `isOwner` 匿名分支重构为复用该方法。
+
+**验证**：全工程 `mvn -q compile` 通过；conversation 356 测试全绿（含 CSAT rate/pending、VisitorAuth state 的归属失败负向用例）。
+
+**IDOR 主题收敛确认**：访客可达且按 sessionId/csatId 操作的接口已全部接入归属校验——ChatController（history/clearHistory/state/stream/chat/transfer/cancel/feedback）、CsatController（rate/skip/pending）、VisitorAuthController（state）。合理豁免：sms/send、sms/verify（认证引导）、session/init（建会话）。

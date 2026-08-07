@@ -66,6 +66,25 @@ public class SessionOwnershipValidator {
         }
 
         // 分支 2：匿名会话 → X-Anonymous-Id 与 DB visitorId 匹配
+        return isAnonymousOwner(sessionId, anonymousId);
+    }
+
+    /**
+     * 仅凭匿名标识校验会话归属（不要求 token）。
+     *
+     * <p>适用于「刷新恢复」类接口（如 {@code /auth/state}）：访客刷新后本地 token 已丢失，
+     * 但 localStorage 中的 {@code anonymousId} 仍在，故只能也只需用 anonymousId 校验归属。
+     * 与 {@link #isOwner} 的匿名分支逻辑一致：{@code anonymousId} 必须等于该会话在 DB 中记录的
+     * {@code visitorId}，防止枚举他人 sessionId 探测认证状态 / 手机号掩码等信息。
+     *
+     * @param sessionId   目标会话 ID（调用方已完成格式校验）
+     * @param anonymousId 匿名标识（X-Anonymous-Id / ?anonymousId=），可为 null
+     * @return true 表示归属校验通过
+     */
+    public boolean isAnonymousOwner(String sessionId, String anonymousId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return false;
+        }
         if (anonymousId == null || !ANONYMOUS_ID_PATTERN.matcher(anonymousId).matches()) {
             log.warn("[Ownership] 匿名会话缺少合法 anonymousId，拒绝访问 sessionId={}", sessionId);
             return false;

@@ -147,4 +147,16 @@ public class CsatService {
         if (rating == null) throw new BusinessException(NOT_FOUND, "评价记录不存在: " + id);
         return rating;
     }
+
+    /**
+     * 按 csatId 反查其所属 sessionId，供访客侧归属校验（防 IDOR：枚举 csatId 评价他人会话）。
+     *
+     * @param csatId 评价记录 ID
+     * @return 所属 sessionId；记录不存在返回 empty
+     */
+    public java.util.Optional<String> findSessionIdByCsatId(Long csatId) {
+        CsatRatingDO rating = mapper.selectById(csatId);
+        return rating == null ? java.util.Optional.empty()
+                : java.util.Optional.ofNullable(rating.getSessionId());
+    }
 }
