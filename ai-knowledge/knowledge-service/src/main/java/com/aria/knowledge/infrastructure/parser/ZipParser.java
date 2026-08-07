@@ -33,6 +33,8 @@ public class ZipParser extends AbstractDocumentParser {
     private static final int MAX_ENTRIES  = 1000;
     /** 单个成员解压后大小上限（100MB），防御 zip 炸弹 */
     private static final int MAX_MEMBER_BYTES = 100 * 1024 * 1024;
+    /** 单个 ZIP 累计解压总量上限（256MB），防御"众多中等成员累积撑爆堆"型 zip 炸弹 */
+    private static final long MAX_TOTAL_BYTES = 256L * 1024 * 1024;
     /** 嵌套 ZIP 最大递归深度，防止 zip-of-zip 爆栈 */
     private static final int MAX_NESTING_DEPTH = 5;
 
@@ -73,6 +75,7 @@ public class ZipParser extends AbstractDocumentParser {
         int parsedCount              = 0;
         int skippedCount             = 0;
         int virtualPage              = 1;
+        long totalBytes              = 0L;
 
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(content))) {
             ZipEntry entry;
@@ -96,6 +99,13 @@ public class ZipParser extends AbstractDocumentParser {
                     continue;
                 }
                 byte[] memberBytes = readEntry(zis, memberName);
+                totalBytes += memberBytes.length;
+                // 累计解压总量上限：防御「大量中等成员累加撑爆堆」的分片式 zip 炸弹
+                // （单成员上限之外的第二道防线）
+                if (totalBytes > MAX_TOTAL_BYTES) {
+                    throw new BusinessException(5001,
+                        "ZIP 解压累计总量超过上限 " + MAX_TOTAL_BYTES + " bytes，可能存在 zip 炸弹");
+                }
                 try {
                     ParsedDocument memberDoc = multiFormatParser.parse(memberBytes, memberType);
                     if (memberDoc != null && memberDoc.getPages() != null) {

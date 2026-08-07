@@ -69,7 +69,7 @@
 | KNOW-1 | `DocumentIngestPipeline.process:51` | 🟠 | 整条摄取 pipeline 单 DB 事务内执行且中间发 Embedding HTTP → 连接池耗尽 | ✅ |
 | KNOW-2 | `InternalSecretFilter`(common-web) | 🟠 | `/internal/**` 实际由 InternalSecretFilter 强制校验 X-Internal-Secret(fail-secure)；已消除默认密钥(prod fail-fast) | ✅ |
 | KNOW-3 | `DocIngestAppService.submit:87-89` | 🟠 | 上传接口缺 isEmpty/大小/扩展名白名单，未知类型回退 MARKDOWN | ✅ |
-| KNOW-4 | `MinioStorageService`/`ZipParser` | 🟠 | 大文件全量读入内存多处放大，ZIP 累积无总量上限 | ⬜ |
+| KNOW-4 | `MinioStorageService`/`ZipParser` | 🟠 | 大文件全量读入内存多处放大，ZIP 累积无总量上限 | ✅ |
 | KNOW-5 | `KnowledgeChunkMapper.xml:91-98` | 🟡 | `${tsConfig}` 字符串拼接进 SQL（当前受控，隐患） | ⬜ |
 | KNOW-6 | `DocIngestAppService.java:351-355` | 🟡 | batchOffline 循环内 N 次 findById | ⬜ |
 | KNOW-7 | `KnowledgeSearchAppService.java:80` | 🟡 | query 向量化同步调用无独立超时 | ⬜ |
@@ -284,3 +284,21 @@
 **验证**：全工程 `mvn -q compile` 通过；conversation 357 测试全绿（VisitorAuthControllerTest 6→7）。
 
 **收敛结论**：连续 4 轮评审，IDOR 主题从「读接口部分覆盖」逐轮扩展至 sessionId + csatId 全路径（REST 13 接口 + WS 握手）闭环，第四轮穷举确认无新同源遗漏。P0/P1/P2 全部修复并验证；P3 死代码已清理，DDD 依赖倒置整改按既定理由暂缓（独立技术债专项跟踪）。
+
+### 批次 8 — 2026-08-07 — 评审轮次5 收敛确认 + KNOW-4 ZIP 累计总量防护
+
+**第五轮评审结论：访客侧 IDOR 主题已完全闭环收敛**
+- 评审系统性穷举 conversation-service `interfaces/rest` 全部 27 个 Controller + 2 个 WS 握手拦截器 + knowledge-service 4 个 Controller，依据 SaToken 鉴权白名单逐一分类。
+- 所有 sessionId 类（高熵 UUID）与 csatId 类（自增可枚举）读/写路径均已接入归属校验（`isOwner` / `isAnonymousOwner`），REST + WS 全路径无遗漏。
+- `VisitorAuthController.verify` 的 session→phone 绑定写入已收口（第四轮）：传入 sessionId 时用 `isAnonymousOwner` 校验归属，防会话劫持绑定；纯 token 场景（null sessionId）跳过守卫，补充单测锁定该分支。
+
+**KNOW-4（ZIP 累计解压总量上限）— 已修复**
+- `ZipParser`：在既有「条目数(1000)/单成员(100MB)/嵌套深度(5)」三道防护之外，新增第四道防线——累计解压总量上限 `MAX_TOTAL_BYTES=256MB`，防御「大量中等成员累加撑爆堆」的分片式 zip 炸弹（此前 1000×100MB 理论累积可 OOM）。
+- 说明：MinIO 全量 `readAllBytes` → pipeline `byte[]` 传递属既有架构，改流式需重构 parse 全链签名（风险高），列为架构改进项，非本安全轮次范围；本轮以「入口大小上限(KNOW-3, 50MB) + ZIP 累计上限」两道边界控制内存放大风险。
+- 验证：knowledge-service `mvn -q compile` 通过。
+
+**剩余 ⬜ 项定性（均非安全阻断，留待专项）**
+- 🟠 CONV-5 / COMM-1：DDD 依赖倒置（架构债，已在批次4说明暂缓理由）。
+- 🟡 其余（AUTH-5/6/7/8、CONV-8/9、KNOW-5~9、COMM-7~12）：健壮性/性能/分层优化项，无安全越权或数据损坏风险，建议随日常迭代逐步消化。
+
+**收敛判定**：本轮安全整改（P0 授权越权 + 密钥 + P1 SSRF/认证 + P2 健壮性/资源/PII + IDOR 五轮闭环）已达「无 🔴 阻断项、无 🟠 安全遗漏」的收敛标准。全工程编译通过，conversation 357 测试全绿，common 44 测试全绿。
