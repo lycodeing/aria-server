@@ -85,10 +85,26 @@ class VisitorAuthControllerTest {
         when(visitorAuthService.verifyCode("13812345678", "123456", "sess_bind"))
                 .thenReturn("tk_abc");
 
-        R<Map<String, String>> r = controller.verify(req);
+        R<Map<String, String>> r = controller.verify(req, "anon_owner");
 
         assertThat(r.data()).containsEntry("token", "tk_abc");
         verify(visitorAuthService).verifyCode("13812345678", "123456", "sess_bind");
+    }
+
+    @Test
+    void verify_bindSessionNotOwner_returns403AndSkipsService() {
+        VisitorAuthController.VerifyCodeRequest req = new VisitorAuthController.VerifyCodeRequest();
+        req.setPhone("13812345678");
+        req.setCode("123456");
+        req.setSessionId("sess_victim");
+        // 攻击者用自己的 anonymousId 试图把绑定写到受害者会话
+        when(sessionOwnershipValidator.isAnonymousOwner("sess_victim", "anon_attacker"))
+                .thenReturn(false);
+
+        R<Map<String, String>> r = controller.verify(req, "anon_attacker");
+
+        assertThat(r.code()).isEqualTo(403);
+        verify(visitorAuthService, never()).verifyCode(anyString(), anyString(), anyString());
     }
 
     // ------------------ send ------------------

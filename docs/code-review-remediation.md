@@ -268,3 +268,19 @@
 **验证**：全工程 `mvn -q compile` 通过；conversation 356 测试全绿（含 CSAT rate/pending、VisitorAuth state 的归属失败负向用例）。
 
 **IDOR 主题收敛确认**：访客可达且按 sessionId/csatId 操作的接口已全部接入归属校验——ChatController（history/clearHistory/state/stream/chat/transfer/cancel/feedback）、CsatController（rate/skip/pending）、VisitorAuthController（state）。合理豁免：sms/send、sms/verify（认证引导）、session/init（建会话）。
+
+### 批次 7 — 2026-08-07 — 评审轮次4：VisitorAuth.verify 会话绑定归属校验（同源写收口）
+
+**背景**：第四轮评审系统性穷举 conversation 全部 27 个 Controller + 2 个 WS 握手 + knowledge 4 个 Controller，判定「访客侧 IDOR 主题已完全闭环收敛」。同时指出唯一残留的同源写点：`VisitorAuthController.verify` 建立 `session→phone` 绑定时未校验 sessionId 归属。
+
+**VisitorAuth.verify 会话劫持收口（🟡→已修复）**
+- 攻击链：知悉他人 sessionId 者可用自己手机号完成 verify 并写入 `visitor:session:auth:{sessionId}=自己的phone` 绑定，使该会话翻转为「已认证」并被准接管（受害匿名访客被踢分支 + 攻击者 token 可读该会话状态）。虽 sessionId 为 128bit UUID 不可枚举（需泄露），仍属同源写残留。
+- 修复：`verify` 新增 `X-Anonymous-Id` 头，传入 sessionId 时先 `isAnonymousOwner(sessionId, anonymousId)` 校验归属，非归属者返回 403「无权绑定该会话」；未传 sessionId（纯 token 场景）不涉及绑定，不校验。与 pending/state 的匿名归属校验模式一致。
+- 测试：`VisitorAuthControllerTest` verify 用例改双参 + 补「非归属 sessionId 返回 403 且不调用 verifyCode」负向用例。
+
+**评审其余结论（无需改代码）**
+- 🟠 rate/skip 对「已短信认证会话刷新丢 token」可能误拒：属体验问题非安全漏洞，取决于前端刷新后能否重新签发 token，列入前端联调确认项，不阻断收敛判定。
+
+**验证**：全工程 `mvn -q compile` 通过；conversation 357 测试全绿（VisitorAuthControllerTest 6→7）。
+
+**收敛结论**：连续 4 轮评审，IDOR 主题从「读接口部分覆盖」逐轮扩展至 sessionId + csatId 全路径（REST 13 接口 + WS 握手）闭环，第四轮穷举确认无新同源遗漏。P0/P1/P2 全部修复并验证；P3 死代码已清理，DDD 依赖倒置整改按既定理由暂缓（独立技术债专项跟踪）。
