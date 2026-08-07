@@ -1,7 +1,9 @@
 package com.aria.conversation.interfaces.rest;
 
 import com.aria.common.web.response.R;
+import com.aria.conversation.application.service.SessionOwnershipValidator;
 import com.aria.conversation.application.service.VisitorAuthService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -12,20 +14,39 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class VisitorAuthControllerTest {
 
     @Mock VisitorAuthService visitorAuthService;
+    @Mock SessionOwnershipValidator sessionOwnershipValidator;
     @InjectMocks VisitorAuthController controller;
+
+    @BeforeEach
+    void stubOwnership() {
+        // 归属校验默认放行，聚焦 state 状态回查逻辑；非法 sessionId 用例在校验前已短路，故用 lenient
+        lenient().when(sessionOwnershipValidator.isAnonymousOwner(anyString(), any())).thenReturn(true);
+    }
 
     // ------------------ state ------------------
 
     @Test
     void state_invalidSessionId_returns400() {
-        R<Map<String, Object>> r = controller.state("bad session!");
+        R<Map<String, Object>> r = controller.state("bad session!", null);
         assertThat(r.code()).isEqualTo(400);
+        verify(visitorAuthService, never()).resolveSessionPhone(anyString());
+    }
+
+    @Test
+    void state_notOwner_returns403() {
+        when(sessionOwnershipValidator.isAnonymousOwner("sess_other", "anon_x")).thenReturn(false);
+
+        R<Map<String, Object>> r = controller.state("sess_other", "anon_x");
+
+        assertThat(r.code()).isEqualTo(403);
         verify(visitorAuthService, never()).resolveSessionPhone(anyString());
     }
 
@@ -34,7 +55,7 @@ class VisitorAuthControllerTest {
         when(visitorAuthService.resolveSessionPhone("sess_ok"))
                 .thenReturn(Optional.of("13812345678"));
 
-        R<Map<String, Object>> r = controller.state("sess_ok");
+        R<Map<String, Object>> r = controller.state("sess_ok", "anon_ok");
 
         assertThat(r.code()).isEqualTo(200);
         assertThat(r.data()).containsEntry("authenticated", true);
@@ -46,7 +67,7 @@ class VisitorAuthControllerTest {
         when(visitorAuthService.resolveSessionPhone("sess_new"))
                 .thenReturn(Optional.empty());
 
-        R<Map<String, Object>> r = controller.state("sess_new");
+        R<Map<String, Object>> r = controller.state("sess_new", "anon_new");
 
         assertThat(r.code()).isEqualTo(200);
         assertThat(r.data()).containsEntry("authenticated", false);

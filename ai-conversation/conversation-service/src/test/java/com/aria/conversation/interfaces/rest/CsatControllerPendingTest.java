@@ -2,8 +2,10 @@ package com.aria.conversation.interfaces.rest;
 
 import com.aria.common.web.response.R;
 import com.aria.conversation.application.service.CsatService;
+import com.aria.conversation.application.service.SessionOwnershipValidator;
 import com.aria.conversation.domain.CsatStatus;
 import com.aria.conversation.infrastructure.csat.CsatRatingDO;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -15,6 +17,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
@@ -22,11 +25,18 @@ import static org.mockito.Mockito.*;
 class CsatControllerPendingTest {
 
     @Mock CsatService csatService;
+    @Mock SessionOwnershipValidator sessionOwnershipValidator;
     @InjectMocks CsatController controller;
+
+    @BeforeEach
+    void stubOwnership() {
+        // 归属校验默认放行，聚焦 pending 查询契约；非法 sessionId 用例在校验前短路，故用 lenient
+        lenient().when(sessionOwnershipValidator.isAnonymousOwner(anyString(), any())).thenReturn(true);
+    }
 
     @Test
     void pending_invalidSessionId_returns400() {
-        R<Map<String, Object>> r = controller.pending("bad session!");
+        R<Map<String, Object>> r = controller.pending("bad session!", "anon-1");
         assertThat(r.code()).isEqualTo(400);
         verify(csatService, never()).findPending(anyString());
     }
@@ -35,10 +45,20 @@ class CsatControllerPendingTest {
     void pending_noRecord_returnsNullData() {
         when(csatService.findPending("sess_new")).thenReturn(Optional.empty());
 
-        R<Map<String, Object>> r = controller.pending("sess_new");
+        R<Map<String, Object>> r = controller.pending("sess_new", "anon-1");
 
         assertThat(r.code()).isEqualTo(200);
         assertThat(r.data()).isNull();
+    }
+
+    @Test
+    void pending_notOwner_returns403() {
+        when(sessionOwnershipValidator.isAnonymousOwner("sess_other", "anon-1")).thenReturn(false);
+
+        R<Map<String, Object>> r = controller.pending("sess_other", "anon-1");
+
+        assertThat(r.code()).isEqualTo(403);
+        verify(csatService, never()).findPending(anyString());
     }
 
     @Test
@@ -51,7 +71,7 @@ class CsatControllerPendingTest {
         invite.setExpiredAt(expiredAt);
         when(csatService.findPending("sess_hit")).thenReturn(Optional.of(invite));
 
-        R<Map<String, Object>> r = controller.pending("sess_hit");
+        R<Map<String, Object>> r = controller.pending("sess_hit", "anon-1");
 
         assertThat(r.code()).isEqualTo(200);
         assertThat(r.data()).isNotNull();

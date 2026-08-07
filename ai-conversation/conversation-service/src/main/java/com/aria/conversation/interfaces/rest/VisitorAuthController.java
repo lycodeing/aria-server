@@ -1,6 +1,7 @@
 package com.aria.conversation.interfaces.rest;
 
 import com.aria.common.web.response.R;
+import com.aria.conversation.application.service.SessionOwnershipValidator;
 import com.aria.conversation.application.service.VisitorAuthService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -37,7 +38,12 @@ public class VisitorAuthController {
     private static final java.util.regex.Pattern SESSION_ID_PATTERN =
             java.util.regex.Pattern.compile("^[a-zA-Z0-9_\\-]{1,64}$");
 
+    /** 匿名标识请求头名（前端 localStorage 生成的 anonymousId） */
+    private static final String HEADER_ANONYMOUS_ID = "X-Anonymous-Id";
+
     private final VisitorAuthService visitorAuthService;
+    /** 会话归属校验器，防 IDOR——刷新场景用 anonymousId 校验归属 */
+    private final SessionOwnershipValidator sessionOwnershipValidator;
 
     /**
      * 发送短信验证码。
@@ -78,9 +84,16 @@ public class VisitorAuthController {
      * 前端刷新后无法通过 sessionId 反查 token，只能感知"已认证"状态）。
      */
     @GetMapping("/state")
-    public R<Map<String, Object>> state(@RequestParam String sessionId) {
+    public R<Map<String, Object>> state(
+            @RequestParam String sessionId,
+            @RequestHeader(value = HEADER_ANONYMOUS_ID, required = false) String anonymousId) {
         if (sessionId == null || !SESSION_ID_PATTERN.matcher(sessionId).matches()) {
             return R.fail(400, "非法的 sessionId 格式");
+        }
+        // 归属校验：防 IDOR——枚举他人 sessionId 探测其认证状态与手机号掩码。
+        // 刷新场景本地 token 已丢失但 anonymousId 仍在，故用 anonymousId 校验归属。
+        if (!sessionOwnershipValidator.isAnonymousOwner(sessionId, anonymousId)) {
+            return R.fail(403, "无权访问该会话");
         }
         Optional<String> phoneOpt = visitorAuthService.resolveSessionPhone(sessionId);
         Map<String, Object> body = new HashMap<>(2);
