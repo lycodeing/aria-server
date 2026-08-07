@@ -345,7 +345,7 @@
 - **[逻辑/功能] `AbstractWebhookSender.escapeJson`**：原实现只转义 `\`、`\n`、`"`，遗漏 `\r`/`\t`/`\b`/`\f` 及其它控制字符（U+0000–U+001F）。含回车/制表符的访客昵称经 `renderJsonTemplate` 注入平台 JSON 后会产生**非法 JSON**，导致飞书/钉钉/企微解析失败、webhook 静默丢消息。改为逐字符转义，控制字符走 `\uXXXX`。补 CustomWebhookSenderTest 控制字符用例。
 - **[死代码] `AkSkSigningInterceptor.MAX_SKEW_MS`**：声明后全仓无引用（时钟偏移校验在服务端），删除。
 - **[死代码] `WebhookEventSubscriber.running`**：write-only 字段，改为在 `start()` 做幂等保护（已启动则跳过重复启动）真正读取该字段，消除死字段并提供实际价值。
-- **[可读性] `DocIngestAppService`**：`validateUpload` 上方遗留了描述 `resolveFileType` 的孤儿 javadoc（移动方法后残留），移回 `resolveFileType`。
+- **[可读性] `DocIngestAppService`**：`validateUpload` 上方遗留了描述 `resolveFileType` 的孤儿 javadoc（移动方法后残留），删除该错位 javadoc；`resolveFileType` 保留行内注释说明匹配优先级。
 - **[性能] `DocIngestAppService.batchOffline`**：循环内 N 次 `findById`（最多 50 次单查），新增 `KnowledgeDocRepository.findByIds` 一次性 IN 查询批量取回后内存过滤 PUBLISHED，消除 N+1。
 
 **验证**：全工程 `mvn test` BUILD SUCCESS，全部测试通过（含新增 escapeJson 控制字符用例）。
