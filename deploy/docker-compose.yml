@@ -22,7 +22,7 @@ services:
       POSTGRES_DB: aria_cs
     volumes:
       - /root/ai-cs/data/postgres:/var/lib/postgresql/data
-      - /root/ai-cs/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      - /root/ai-cs/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
       # pg_jieba 中文分词扩展（编译产物固化，每次启动自动安装）
       - /root/ai-cs/pg_jieba:/pg_jieba_files:ro
     # entrypoint wrapper：先复制 pg_jieba 编译产物到 PG 目录，再调用官方 entrypoint
